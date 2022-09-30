@@ -11,9 +11,8 @@ sub new {
 
   my $self =
     {
-     'hash', {},		# a hash of log lines by name
      'list', [],		# a list of log lines by position on screen
-     };
+    };
 
   return bless $self, $class;
 }
@@ -29,21 +28,19 @@ sub log($$$) {
   # first look at is it in the list
   foreach my $line (@{$self->{list}}) {
     if($line->{name} eq $name) {
+      # update previous log line with new message
       $found = 1;
       $line->{message} = $message;
-      for(my $i = 0 ; $i < $index ; $i++) {
-	print "\033[F"; # move cursor to beginning of previous line
-      }
-      print "$message\n";
-      for(my $i = 0 ; $i < $index ; $i++) {
-	print "\033[E"; # move cursor to beginning of next line
-      }
-      # update here
+      print "\033[$index"."A";	# move cursor up $index lines
+      # XXX should pad these better (use previous line length for padding amt)
+      print "$message         \n";
+      print "\033[$index"."B";  # move cursor down $index lines
     }
     $index--;
   }
 
   if(!$found) {
+    # add to end of list and print it
     push @{$self->{list}}, $logline;
 
     print "$message\n";
