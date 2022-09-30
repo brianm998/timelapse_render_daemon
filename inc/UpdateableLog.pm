@@ -30,10 +30,18 @@ sub log($$$) {
     if($line->{name} eq $name) {
       # update previous log line with new message
       $found = 1;
+      my $previous_message_length = length($line->{message});
+      my $new_message_length = length($message);
       $line->{message} = $message;
       print "\033[$index"."A";	# move cursor up $index lines
-      # XXX should pad these better (use previous line length for padding amt)
-      print "$message         \n";
+      print $message;
+      if($previous_message_length > $new_message_length) {
+	my $leftover = $previous_message_length - $new_message_length;
+	for(my $i = 0 ; $i < $leftover ; $i++) {
+	  print " ";
+	}
+      }
+      print "\n";
       print "\033[$index"."B";  # move cursor down $index lines
     }
     $index--;
