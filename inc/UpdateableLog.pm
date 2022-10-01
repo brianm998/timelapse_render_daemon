@@ -17,10 +17,47 @@ sub new {
   return bless $self, $class;
 }
 
-sub log($$$) {
-  my ($self, $name, $message) = @_;
+sub sort($) {
+  my ($self) = @_;
+  $self->clear();
+  my @sorted_logs = sort { $a->{value} <=> $b->{value} } @{$self->{list}};
+  $self->{list} = \@sorted_logs;
+  $self->redraw();
+}
 
-  my $logline = UpdateableLogLine->new($name, $message);
+sub redraw($) {
+  my ($self) = @_;
+
+  my $index = scalar(@{$self->{list}});
+  foreach my $line (@{$self->{list}}) {
+    print "\033[$index"."A";	# move cursor up $index lines
+    print $line->{message};
+    print "\n";
+    print "\033[$index"."B";  # move cursor down $index lines
+    $index--;
+  }
+}
+
+sub clear($) {
+  my ($self) = @_;
+
+  my $index = scalar(@{$self->{list}});
+  foreach my $line (@{$self->{list}}) {
+    print "\033[$index"."A";	# move cursor up $index lines
+    my $length_to_clear = length($line->{message});
+    for(my $i = 0 ; $i < $length_to_clear ; $i++) {
+      print " ";
+    }
+    print "\n";
+    print "\033[$index"."B";  # move cursor down $index lines
+    $index--;
+  }
+}
+
+sub log($$$) {
+  my ($self, $name, $message, $value) = @_;
+
+  my $logline = UpdateableLogLine->new($name, $message, $value);
 
   my $found = 0;
 
@@ -53,6 +90,7 @@ sub log($$$) {
 
     print "$message\n";
   }
+  $self->sort();
 }
 
 1;
