@@ -1,0 +1,519 @@
+#!/usr/bin/perl
+
+# this script runs as a daemon to watch for timlapse sequences to render
+# into videos, and renders them when they are ready.
+
+use strict;
+use File::Basename;
+use Cwd;
+
+my $script_dir;	# figure out where this running script exists on disk
+BEGIN { $script_dir = Cwd::realpath( File::Basename::dirname(__FILE__)) }
+
+# add this dir to the include path
+use lib "${script_dir}/inc";
+
+use lib '/Users/brian/iCloud/scripts'; # XXX this sucks :(
+use lib '/Users/brian/git/timelapse_image_blender/inc'; # XXX fuck :(
+use JSON;
+use Exiftool;
+use Timelapse;
+use UpdateableLog;
+use TimelapseExiftool;
+
+# all user visible output goes throuh this log
+my $log = UpdateableLog->new();
+
+my $real_config =
+  {
+   temp_paths =>		# where to look for image sequences
+   [
+    '/qp/tmp',
+    '/rp/tmp',
+    '/op/tmp',
+    '/pp/tmp',
+    '/sp/tmp',			# XXX centralize this list w/ tmp.pl
+   ],
+   source_paths =>
+   [
+    '/Users/brian/Pictures/timelapses/2022/', # location of raw image dirs
+   ],
+   master_videos =>
+   [
+    '/Users/brian/Pictures/timelapses/2022/2022-video', # location of master videos
+   ],
+   image_name_prefix => 'LRT_',
+   temp_sequence_name_prefix => 'LRT_',
+   raw_types => ['ARW'],
+   render_resolutions => [[1080, 720], 'OriRes'],
+   sleep_time_seconds => 15,
+   delete_sequence_after_render_regexes => ['-merge$'],
+  };
+
+my $test_config =
+  {
+   temp_paths =>		# where to look for image sequences
+   [
+    '/qp/test_temp_path',
+    '/qp/test_temp_path2',
+   ],
+   source_paths =>		# location of raw image dirs
+   [
+    '/qp/test_source_path',
+   ],
+   master_videos =>		# location of raw image dirs
+   [
+    '/qp/test_master_videos',
+   ],
+   image_name_prefix => 'LRT_',
+   temp_sequence_name_prefix => 'LRT_',
+   raw_types => ['ARW'],
+   render_resolutions => ['OriRes', [1080, 720], [108, 72]],
+   sleep_time_seconds => 10,
+   delete_sequence_after_render_regexes => ['-merge$'],
+   # XXX expose all render parameters here directly
+  };
+
+
+# logic:
+# read source path dirs and keep a record of name of dir and # of images
+
+# look into temp_paths and try to find paths that match the name from
+# source_dir, and have the right number of fully written output files,
+# and don't have videos rendered in the temp or master_videos dirs with
+# the same names as the config would end up producing
+
+# once identified, render one or more videos based upon the config
+# after each render, check to see if there is an exif json file for the
+# source image sequence, if not, create it.
+# apply this exif json file to the rendered videos
+
+# keep running in daemon mode forever
+
+
+# startup:
+
+# - read source_dir, get initial list of image sequences and lengths
+
+
+# daemon loop:
+
+# - read source_dir, updating info on sequences and lengths
+# - traverse temp_paths, looking for non-rendered videos
+# - render non-existant videos
+# - make json exif file if non existant
+# - embed that into video
+
+# todo:
+
+# - only log in test mode
+# - allow command line log level support, and make logging helpful
+# - expose things like frame rate to config
+# - read config from json
+# - detangle depenency inc mess
+# - support {year} in dirs?
+# - notice when existing master video is older than the new sequence, and still render to temp path, assuming no file at temp path exists yet
+# - allow rendering when base image sequence has been archived, based upon # of images from json
+# - fix problem where deleting dirs makes them show up
+
+my $test = shift;		# any args at all turn on test mode
+
+my $config = undef;
+unless($test) {
+  $config = $real_config;
+} else {
+  $config = $test_config;
+}
+
+while(1) {
+  my $raw_image_sequences = read_raw_image_sequences($config);
+
+#  foreach my $dirname (keys %$raw_image_sequences) {
+#    foreach my $key (keys %{$raw_image_sequences->{$dirname}}) {
+#      print "$key has $raw_image_sequences->{$key} images\n";
+#    }
+#  }
+
+  look_for_videos_to_render($config, $raw_image_sequences);
+#  last if($test);
+  sleep($config->{sleep_time_seconds}) unless($test);
+}
+
+########
+# subs #
+########
+
+
+sub look_for_videos_to_render($$) {
+
+  my ($config, $raw_image_sequences) = @_;
+
+  foreach my $temp_path (@{$config->{temp_paths}}) {
+    opendir my $temp_dir, $temp_path or die "cannot open $temp_path: $!\n";
+
+    foreach my $temp_entry (readdir $temp_dir) {
+      next unless(-d "$temp_path/$temp_entry");
+      my $raw_image_sequence_name = undef;
+
+      foreach my $dirname (keys %$raw_image_sequences) {
+	foreach my $raw_image_sequence (keys %{$raw_image_sequences->{$dirname}}) {
+	  $raw_image_sequence_name = $raw_image_sequence
+	    if ($temp_entry =~ /$config->{temp_sequence_name_prefix}$raw_image_sequence/);
+	}
+      }
+      next unless defined $raw_image_sequence_name;
+#      print "valid temp entry $temp_entry\n";
+
+      # check number of images
+      opendir my $temp_dir, "$temp_path/$temp_entry" or die "cannot open dfs dir: $!\n";
+      my $count = 0;
+      foreach my $entry (readdir $temp_dir) {
+	#print "entry $entry\n";
+	next if($entry =~ /^[.]/);
+	next unless (-f "$temp_path/$temp_entry/$entry"); # only files
+	 # files with .tif or .tiff extensions only
+	if($entry !~ /[.]tiff?$/) {
+	  #print("bad entry $temp_path/$temp_entry/$entry\n");
+	  next;
+	}
+	# what about jpeg?
+	$count++; 		# assume everything else is an image
+      }
+      closedir $temp_dir;
+      my $raw_sequence_length = undef;
+      my $base_dirname = undef;
+      foreach my $dirname (keys %$raw_image_sequences) {
+	if (exists $raw_image_sequences->{$dirname}{$raw_image_sequence_name}) {
+	  $raw_sequence_length = $raw_image_sequences->{$dirname}{$raw_image_sequence_name};
+	  $base_dirname = $dirname;
+	}
+      }
+      if($count == $raw_sequence_length) {
+
+#	$log->log($temp_entry, "$temp_entry has the right number of files");
+
+	my $video_write_json = {}; # exif data to write to video file
+
+	my $would_render = undef;
+	foreach my $resolution (@{$config->{render_resolutions}}) {
+	  if($resolution eq 'OriRes') {
+	    # render full original resolution
+	    my $should_render = render($config, $temp_path, $temp_entry, $video_write_json, $raw_sequence_length, 1);
+	    if ($should_render eq 'error') {
+	      $would_render = 0;
+	    } elsif(defined $would_render) {
+	      $would_render = $should_render || $would_render;
+	    } else {
+	      $would_render = $should_render;
+	    }
+	  } else {
+	    # render to a given resolution
+	    my $should_render = render($config, $temp_path, $temp_entry, $video_write_json, $raw_sequence_length, 1, @$resolution);
+	    if ($should_render eq 'error') {
+	      $would_render = 0;
+	    } elsif(defined $would_render) {
+	      $would_render = $should_render || $would_render;
+	    } else {
+	      $would_render = $should_render;
+	    }
+	  }
+	}
+	next if(!$would_render);
+	my $sequence_size = sizeStringOf("$temp_path/$temp_entry");
+	$log->timeLog($temp_entry, "rendering videos from $sequence_size image sequence $temp_path/$temp_entry", 10);
+
+	# check here to see if we have a json file, if not, create it
+	my $exif_json_filename = "$base_dirname/$raw_image_sequence_name.json";
+	unless(-e $exif_json_filename) {
+	  $log->log($temp_entry, "creating $exif_json_filename", 10);
+
+	  my $exiftool = TimelapseExiftool->new;
+	  my $json_str = $exiftool->json_for_raw_dir("$base_dirname/$raw_image_sequence_name");
+	  open my $filehandle, ">$exif_json_filename" or die "can't open $exif_json_filename: $!\n";
+	  print $filehandle $json_str;
+	  close $filehandle;
+	}
+	# hash ref
+	my $exif_json = TimelapseExiftool::read_json_from($exif_json_filename);
+
+	# remove keys with more than one value
+	foreach my $exif_key (keys %$exif_json) {
+	  my @keys = keys %{$exif_json->{$exif_key}};
+	  my $num = scalar(@keys);
+	  if($num == 1) {
+	    my $value = $keys[0];
+	    $video_write_json->{$exif_key} = $value;
+	  }
+	}
+
+	# attempt to render at each resolution,
+	# existing output files will be skipped
+	my $success = undef;
+	foreach my $resolution (@{$config->{render_resolutions}}) {
+	  #print "attempting $resolution\n";
+	  if($resolution eq 'OriRes') {
+	    # render full original resolution
+	    my $did_render = render($config, $temp_path, $temp_entry, $video_write_json, $raw_sequence_length, 0);
+	    if ($did_render ne 'error') {
+	      unless(defined $success) {
+		$success = $did_render;
+	      }
+	    } else {
+	      $success = 0;
+	    }
+	  } else {
+	    # render to a given resolution
+	    my $did_render = render($config, $temp_path, $temp_entry, $video_write_json, $raw_sequence_length, 0, @$resolution);
+	    if($did_render ne 'error') {
+	      unless(defined $success) {
+		$success = $did_render;
+	      }
+	    } else {
+	      $success = 0;
+	    }
+	  }
+	}
+	if($success) {
+	  my $sequence_size = sizeStringOf("$temp_path/$temp_entry");
+	  $log->timeLog($temp_entry, "done rendering videos from $sequence_size image sequence $temp_path/$temp_entry", -1);
+	  # maybe delete the image sequence after successful render
+	  foreach my $delete_regex (@{$config->{delete_sequence_after_render_regexes}}) {
+	    if("$temp_path/$temp_entry" =~ /$delete_regex/) {
+	      my $rm_cmd = "rm -rf $temp_path/$temp_entry";
+	      $log->log($temp_entry, $rm_cmd, 10);
+	      system($rm_cmd);
+	    }
+	  }
+	}
+      } else {
+	# cannot process this one yet
+	# log of how far along it is
+
+	my $percentage = $count / $raw_sequence_length;
+	my $progress_bar = progress_bar(30,  $percentage);
+
+	my $frames_left = $raw_sequence_length - $count;
+	my $msg = sprintf("(%04.d / %04.d) %04.d more",
+			  $count, $raw_sequence_length,  $frames_left);
+	my $sequence_size = sizeStringOf("$temp_path/$temp_entry/");
+
+	# XXX this is a hack to align layers. usually 4 chars, add another when 3
+	$sequence_size = " $sequence_size" if(length($sequence_size) == 3);
+
+	$log->log($temp_entry, "$progress_bar $msg - $sequence_size $temp_path/$temp_entry", $percentage);
+      }
+    }
+    closedir $temp_dir;
+  }
+#  $log->sort();
+}
+
+# returns a hash of source path/entry to image count
+sub read_raw_image_sequences($) {
+
+  my ($config) = @_;
+
+  my $raw_image_sequences = {};
+  foreach my $source_path (@{$config->{source_paths}}) {
+    opendir my $source_dir, $source_path or die "cannot open fuck $source_path: $!\n";
+
+    foreach my $source_entry (readdir $source_dir) {
+      next if($source_entry =~ /^[.]/);
+      next unless(-d "$source_path/$source_entry");
+
+      my $count = 0;
+      opendir my $entry_dir, "$source_path/$source_entry" or die "cannot open shit dir: $!\n";
+
+      foreach my $entry (readdir $entry_dir) {
+	my $keep = 0;
+	foreach my $raw_type (@{$config->{raw_types}}) {
+	  $keep = 1 if($entry =~ /[.]$raw_type$/);
+	}
+	next unless $keep;
+	$count++;
+      }
+
+      $raw_image_sequences->{$source_path}{$source_entry} = $count;
+      #print "$source_path => $source_entry = $count\n";
+    }
+    closedir $source_dir;
+  }
+  return $raw_image_sequences;
+}
+
+# render a video from the given image sequence
+# empty width and height default to original image resolution
+sub render() {
+  my ($config, $output_dirname, $image_sequence_name,
+      $exif_data, $raw_sequence_length, $check_only, $width, $height) = @_;
+
+  my $image_sequence_dirname = "$output_dirname/$image_sequence_name";
+
+  opendir my $source_dir, $image_sequence_dirname or die "cannot open source dir $image_sequence_dirname: $!\n";
+
+  my $test_image;
+
+  # read all files at the first level of the source dir
+  foreach my $filename (readdir $source_dir) {
+    next if($filename =~ /^[.]/);
+    $test_image = $filename;
+    last;
+  }
+  my $image_type = ".tif";
+  if($test_image =~ /\d+(.*)$/) {
+    $image_type = $1;		# handle everything after the image index number
+  }
+
+  closedir $source_dir;
+
+  my $image_width = $width;
+  my $image_height = $height;
+
+  my $orig_res = 0;
+
+  unless(defined $image_width && defined $image_height) {
+    # use original resolution unless given specific values
+    my $exif = Exiftool::run("$image_sequence_dirname/$test_image");
+
+    $image_width = $exif->{ImageWidth};
+    $image_height = $exif->{ImageHeight};
+    if($image_width <= 0 || $image_height <= 0) {
+      $log->log($image_sequence_name, "cannot read image size from $image_sequence_dirname/$test_image, cannot not render [$image_width, $image_height]", 10);
+      return 'error';
+    }
+    $orig_res = 1;
+  }
+
+  # calculate aspect ratio from width/height
+  my $aspect_ratio = Timelapse::get_aspect_ratio($image_width, $image_height);
+
+  my $output_video_filename = $image_sequence_name;
+
+  # remove the sequence image prefex if it happens to be part of the video filename
+  while($output_video_filename =~ /$config->{temp_sequence_name_prefix}/) {
+    $output_video_filename =~ s/$config->{temp_sequence_name_prefix}//;
+  }
+  while($output_video_filename =~ /$config->{image_name_prefix}/) {
+    $output_video_filename =~ s/$config->{image_name_prefix}//;
+  }
+
+  # XXX expose this more
+  # right now, OriRes is UHQ, everything else is MQ
+  my $res_str = $height."p";
+  my $quality_str = "MQ";
+  my $filter_str = "";
+  my $pix_fmt_str = "yuv422p10le";
+  my $pix_fmt_short_str = "422";
+  if($orig_res) {
+    $res_str = "OriRes";
+    $quality_str = "UHQ";
+    $pix_fmt_str = "yuv444p10le";
+    $pix_fmt_short_str = "444";
+  } else {
+    $filter_str = "-filter_complex 'crop=floor(iw/2)*2:floor(ih/2)*2,zscale=rangein=full:range=full:matrixin=709:matrix=709:primariesin=709:primaries=709:transferin=709:transfer=709:w=$image_width:h=$image_height,setsar=sar=1/1'";
+  }
+
+  # prepend the format and file extention to the end of the filename
+  $output_video_filename .= "_ProRes-$pix_fmt_short_str"."_Rec.709F_$res_str"."_30_$quality_str.mov";
+
+  # check for this file on the master render path
+  my $should_render = 1;
+
+  foreach my $master_video_dirname (@{$config->{master_videos}}) {
+    if (-e "$master_video_dirname/$output_video_filename") {
+      #print("$master_video_dirname/$output_video_filename already exists, will not render\n");
+      $should_render = 0;
+    }
+  }
+  # check for this file on the temp render path
+  foreach my $temp_dirname (@{$config->{temp_paths}}) {
+    if (-e "$temp_dirname/$output_video_filename") {
+      #print("$temp_dirname/$output_video_filename already exists, cannot render\n");
+      $should_render = 0;
+    }
+  }
+  return $should_render if($check_only);
+
+  if($should_render) {
+    # assemble render command
+    # XXX hardcoded five digit sequence number index
+    my $ffmpeg_cmd = "ffmpeg -y -r 30 -i $image_sequence_dirname/$config->{image_name_prefix}%05d$image_type -aspect $aspect_ratio $filter_str -c:v prores_ks -pix_fmt $pix_fmt_str -threads 0 -profile:v 1 -movflags +write_colr -an -color_range 2 -color_primaries bt709 -colorspace bt709 -color_trc bt709 ";
+
+    # attach exif values
+    foreach my $exif_key (keys %$exif_data) {
+      my $exif_value = $exif_data->{$exif_key};
+      $ffmpeg_cmd .= "-metadata '$exif_key=$exif_value' ";
+    }
+
+    $ffmpeg_cmd .= "$output_dirname/$output_video_filename";
+    $log->log($output_video_filename, "starting render of $output_video_filename", 10);
+    open FFMPEG, "$ffmpeg_cmd 2>&1 |";
+#    print "$ffmpeg_cmd\n";
+    my $frame_num = 0;
+    $/ = "";
+    while(<FFMPEG>) {
+      if(/^frame=\s+(\d+)/) {
+	$frame_num = $1;
+	my $progress_percentage = $frame_num / $raw_sequence_length;
+
+	my $progress_bar = progress_bar(30, $progress_percentage);
+
+	$progress_bar .= " rendering frame $frame_num/$raw_sequence_length of";
+	$log->log($output_video_filename, "$progress_bar $output_video_filename", 10);
+      }
+    }
+    $/ = "\n";
+    my $result = close FFMPEG;
+    if ($result == 1) {
+      my $video_size = sizeStringOf("$output_dirname/$output_video_filename");
+      $log->timeLog($output_video_filename, "rendered $video_size $output_dirname/$output_video_filename", -1);
+      return 1;
+    } else {
+#      print("render failed :("); # why?
+      $log->timeLog($output_video_filename, "$output_dirname/$output_video_filename render FAILED", -1);
+      return 'error';
+    }
+  } else {
+    $log->log($image_sequence_name, "$image_sequence_name already rendered", -1);
+  }
+  return 0;
+}
+
+sub progress_bar($$) {
+  my ($length, $percentage) = @_;
+
+  my $progress_bar = "[";
+  for (my $i = 0 ; $i < $length ; $i++) {
+    if ($i/$length < $percentage) {
+      $progress_bar .= '*';
+    } else {
+      $progress_bar .= '-';
+    }
+  }
+  $progress_bar .= "]";
+
+  return $progress_bar;
+}
+
+# a human readable string giving the size of a file (or total of a shell globbed list)
+# XXX copied from backup.pl :(
+sub sizeStringOf {
+  my ($item) = @_;
+  open DU, "du -ch $item |";
+  while (<DU>) { return $1 if $_ =~ /^\s*([\d\w.]+)\s+total/; }
+  close DU;
+}
+# XXX copied from backup.pl :(
+sub read_json_from {
+  my ($filename) = @_;
+
+  my $json_text = do {
+    open(my $json_fh, "<:encoding(UTF-8)", $filename)
+      or warn ("Can't open \"$filename\": $!\n");
+    local $/;
+    <$json_fh>
+  };
+
+  return JSON->new->decode($json_text) if (defined $json_text);
+}
+
