@@ -64,7 +64,7 @@ use Exiftool;
 # - notice when existing master video is older than the new sequence, and still render to temp path, assuming no file at temp path exists yet
 # - allow rendering when base image sequence has been archived, based upon # of images from json
 # - fix problem where deleting dirs makes them show up
-# - add validation for Timlapse and others (ffmpeg exists, etc)
+# - add validation for Timelapse and others (ffmpeg exists, etc)
 
 # all user visible output goes through this log
 my $log = UpdateableLog->new();
@@ -78,9 +78,7 @@ my $config = TimelapseExiftool::read_json_from($config_json_filename);
 # XXX validate it
 
 while(1) {
-  my $raw_image_sequences = read_raw_image_sequences($config);
-
-  look_for_videos_to_render($config, $raw_image_sequences);
+  look_for_videos_to_render($config, read_raw_image_sequences($config), 0);
 
   sleep($config->{sleep_time_seconds})
 }
@@ -90,9 +88,9 @@ while(1) {
 ########
 
 
-sub look_for_videos_to_render($$) {
+sub look_for_videos_to_render($$$) {
 
-  my ($config, $raw_image_sequences) = @_;
+  my ($config, $raw_image_sequences, $no_render) = @_;
 
   foreach my $temp_path (@{$config->{temp_paths}}) {
     opendir my $temp_dir, $temp_path or die "cannot open $temp_path: $!\n";
@@ -135,8 +133,7 @@ sub look_for_videos_to_render($$) {
 	}
       }
       if($count == $raw_sequence_length) {
-
-#	$log->log($temp_entry, "$temp_entry has the right number of files");
+	next if($no_render);
 
 	my $video_write_json = {}; # exif data to write to video file
 
@@ -221,14 +218,19 @@ sub look_for_videos_to_render($$) {
 	}
 	if($success) {
 	  my $sequence_size = sizeStringOf("$temp_path/$temp_entry");
-	  $log->timeLog($temp_entry, "done rendering videos from $sequence_size image sequence $temp_path/$temp_entry", -1);
 	  # maybe delete the image sequence after successful render
+	  my $removed = 0;
 	  foreach my $delete_regex (@{$config->{delete_sequence_after_render_regexes}}) {
 	    if("$temp_path/$temp_entry" =~ /$delete_regex/) {
 	      my $rm_cmd = "rm -rf $temp_path/$temp_entry";
 	      $log->log($temp_entry, $rm_cmd, 10);
 	      system($rm_cmd);
+	      $removed = 1;
+	      $log->timeLog($temp_entry, "done rendering videos from $sequence_size image sequence $temp_path/$temp_entry, image sequence removed", -1);
 	    }
+	  }
+	  if(!$removed) {
+	    $log->timeLog($temp_entry, "done rendering videos from $sequence_size image sequence $temp_path/$temp_entry", -1);
 	  }
 	}
       } else {
@@ -251,7 +253,6 @@ sub look_for_videos_to_render($$) {
     }
     closedir $temp_dir;
   }
-#  $log->sort();
 }
 
 # returns a hash of source path/entry to image count
@@ -347,10 +348,15 @@ sub render() {
   # right now, OriRes is UHQ, everything else is MQ
   my $res_str = $height."p";
   my $quality_str = "MQ";
+  my $pix_fmt_short_str = "422";
+
+  # these are ffmpeg params
   my $filter_str = "";
   my $pix_fmt_str = "yuv422p10le";
-  my $pix_fmt_short_str = "422";
-  if($orig_res) {
+  my $frame_rate = "30";
+  my $color_range = "pc";	# pc or 2
+  my $output_codec = "prores_ks";
+  if ($orig_res) {
     $res_str = "OriRes";
     $quality_str = "UHQ";
     $pix_fmt_str = "yuv444p10le";
@@ -360,7 +366,7 @@ sub render() {
   }
 
   # prepend the format and file extention to the end of the filename
-  $output_video_filename .= "_ProRes-$pix_fmt_short_str"."_Rec.709F_$res_str"."_30_$quality_str.mov";
+  $output_video_filename .= "_ProRes-$pix_fmt_short_str"."_Rec.709F_$res_str"."_$frame_rate"."_$quality_str.mov";
 
   # check for this file on the master render path
   my $should_render = 1;
@@ -383,7 +389,7 @@ sub render() {
   if($should_render) {
     # assemble render command
     # XXX hardcoded five digit sequence number index
-    my $ffmpeg_cmd = "ffmpeg -y -r 30 -i $image_sequence_dirname/$config->{image_name_prefix}%05d$image_type -aspect $aspect_ratio $filter_str -c:v prores_ks -pix_fmt $pix_fmt_str -threads 0 -profile:v 1 -movflags +write_colr -an -color_range 2 -color_primaries bt709 -colorspace bt709 -color_trc bt709 ";
+    my $ffmpeg_cmd = "ffmpeg -y -r $frame_rate -i $image_sequence_dirname/$config->{image_name_prefix}%05d$image_type -aspect $aspect_ratio $filter_str -c:v $output_codec -pix_fmt $pix_fmt_str -threads 0 -profile:v 1 -movflags +write_colr -an -color_range $color_range -color_primaries bt709 -colorspace bt709 -color_trc bt709 ";
 
     # attach exif values
     foreach my $exif_key (keys %$exif_data) {
@@ -394,18 +400,25 @@ sub render() {
     $ffmpeg_cmd .= "$output_dirname/$output_video_filename";
     $log->log($output_video_filename, "starting render of $output_video_filename", 10);
     open FFMPEG, "$ffmpeg_cmd 2>&1 |";
-#    print "$ffmpeg_cmd\n";
     my $frame_num = 0;
+    my $last_update = 0;
+    my $update_after_frames = 10; # how many frames pass before we update the rest of the display
     $/ = "";
     while(<FFMPEG>) {
-      if(/^frame=\s+(\d+)/) {
-	$frame_num = $1;
+      # frame= 1569 fps=0.9 q=-0.0 Lsize=  286475kB time=00:00:52.26 bitrate=44900.6kbits/s speed=0.0292x 
+      if(/^frame=\s+(\d+)\s+fps=(\d+)/) {
+	my ($frame_num, $fps) = ($1, $2);
 	my $progress_percentage = $frame_num / $raw_sequence_length;
 
 	my $progress_bar = progress_bar(30, $progress_percentage);
 
-	$progress_bar .= " rendering frame $frame_num/$raw_sequence_length of";
+	$progress_bar .= " rendering frame $frame_num/$raw_sequence_length ($fps fps) for";
 	$log->log($output_video_filename, "$progress_bar $output_video_filename", 10);
+      }
+      if($frame_num - $last_update > $update_after_frames) {
+	# called to update image sequence progress, no extra render here
+	look_for_videos_to_render($config, read_raw_image_sequences($config), 1);
+	$last_update = $frame_num;
       }
     }
     $/ = "\n";
