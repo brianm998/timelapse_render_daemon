@@ -1,0 +1,25 @@
+{
+    "temp_paths" :	
+    [
+	"/qp/tmp",
+	"/rp/tmp",
+	"/op/tmp",
+	"/pp/tmp",
+	"/sp/tmp"
+    ],
+    "source_paths" :
+    [
+	"/Users/brian/Pictures/timelapses/2022/"
+    ],
+    "master_videos" :
+    [
+	"/Users/brian/Pictures/timelapses/2022/2022-video"
+    ],
+    "image_name_prefix" : "LRT_",
+    "temp_sequence_name_prefix" : "LRT_",
+    "raw_types" : ["ARW"],
+    "render_resolutions" : [[1080, 720], "OriRes"],
+    "sleep_time_seconds" : 15,
+    "delete_sequence_after_render_regexes" : ["-merge$"]
+}
+

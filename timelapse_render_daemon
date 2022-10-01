@@ -1,11 +1,13 @@
 #!/usr/bin/perl
 
 # this script runs as a daemon to watch for timlapse sequences to render
-# into videos, and renders them when they are ready.
+# into videos, and renders them when they are ready, showing a running status
+# update of what's going on.
 
 use strict;
 use File::Basename;
 use Cwd;
+use JSON;
 
 my $script_dir;	# figure out where this running script exists on disk
 BEGIN { $script_dir = Cwd::realpath( File::Basename::dirname(__FILE__)) }
@@ -13,67 +15,14 @@ BEGIN { $script_dir = Cwd::realpath( File::Basename::dirname(__FILE__)) }
 # add this dir to the include path
 use lib "${script_dir}/inc";
 
-use lib '/Users/brian/iCloud/scripts'; # XXX this sucks :(
-use lib '/Users/brian/git/timelapse_image_blender/inc'; # XXX fuck :(
-use JSON;
-use Exiftool;
-use Timelapse;
 use UpdateableLog;
+
+use lib '/Users/brian/iCloud/scripts'; # XXX this sucks :(
 use TimelapseExiftool;
 
-# all user visible output goes throuh this log
-my $log = UpdateableLog->new();
-
-my $real_config =
-  {
-   temp_paths =>		# where to look for image sequences
-   [
-    '/qp/tmp',
-    '/rp/tmp',
-    '/op/tmp',
-    '/pp/tmp',
-    '/sp/tmp',			# XXX centralize this list w/ tmp.pl
-   ],
-   source_paths =>
-   [
-    '/Users/brian/Pictures/timelapses/2022/', # location of raw image dirs
-   ],
-   master_videos =>
-   [
-    '/Users/brian/Pictures/timelapses/2022/2022-video', # location of master videos
-   ],
-   image_name_prefix => 'LRT_',
-   temp_sequence_name_prefix => 'LRT_',
-   raw_types => ['ARW'],
-   render_resolutions => [[1080, 720], 'OriRes'],
-   sleep_time_seconds => 15,
-   delete_sequence_after_render_regexes => ['-merge$'],
-  };
-
-my $test_config =
-  {
-   temp_paths =>		# where to look for image sequences
-   [
-    '/qp/test_temp_path',
-    '/qp/test_temp_path2',
-   ],
-   source_paths =>		# location of raw image dirs
-   [
-    '/qp/test_source_path',
-   ],
-   master_videos =>		# location of raw image dirs
-   [
-    '/qp/test_master_videos',
-   ],
-   image_name_prefix => 'LRT_',
-   temp_sequence_name_prefix => 'LRT_',
-   raw_types => ['ARW'],
-   render_resolutions => ['OriRes', [1080, 720], [108, 72]],
-   sleep_time_seconds => 10,
-   delete_sequence_after_render_regexes => ['-merge$'],
-   # XXX expose all render parameters here directly
-  };
-
+use lib '/Users/brian/git/timelapse_image_blender/inc'; # XXX fuck :(
+use Timelapse;
+use Exiftool;
 
 # logic:
 # read source path dirs and keep a record of name of dir and # of images
@@ -115,28 +64,25 @@ my $test_config =
 # - notice when existing master video is older than the new sequence, and still render to temp path, assuming no file at temp path exists yet
 # - allow rendering when base image sequence has been archived, based upon # of images from json
 # - fix problem where deleting dirs makes them show up
+# - add validation for Timlapse and others (ffmpeg exists, etc)
 
-my $test = shift;		# any args at all turn on test mode
+# all user visible output goes through this log
+my $log = UpdateableLog->new();
 
-my $config = undef;
-unless($test) {
-  $config = $real_config;
-} else {
-  $config = $test_config;
-}
+my $config_json_filename = shift;
+
+# XXX die with usage if no config present (or fall to default?)
+
+my $config = TimelapseExiftool::read_json_from($config_json_filename);
+
+# XXX validate it
 
 while(1) {
   my $raw_image_sequences = read_raw_image_sequences($config);
 
-#  foreach my $dirname (keys %$raw_image_sequences) {
-#    foreach my $key (keys %{$raw_image_sequences->{$dirname}}) {
-#      print "$key has $raw_image_sequences->{$key} images\n";
-#    }
-#  }
-
   look_for_videos_to_render($config, $raw_image_sequences);
-#  last if($test);
-  sleep($config->{sleep_time_seconds}) unless($test);
+
+  sleep($config->{sleep_time_seconds})
 }
 
 ########
@@ -503,17 +449,3 @@ sub sizeStringOf {
   while (<DU>) { return $1 if $_ =~ /^\s*([\d\w.]+)\s+total/; }
   close DU;
 }
-# XXX copied from backup.pl :(
-sub read_json_from {
-  my ($filename) = @_;
-
-  my $json_text = do {
-    open(my $json_fh, "<:encoding(UTF-8)", $filename)
-      or warn ("Can't open \"$filename\": $!\n");
-    local $/;
-    <$json_fh>
-  };
-
-  return JSON->new->decode($json_text) if (defined $json_text);
-}
-

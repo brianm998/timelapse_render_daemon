@@ -1,0 +1,22 @@
+{
+    "temp_paths" :		
+    [
+	"/qp/test_temp_path",
+	"/qp/test_temp_path2"
+    ],
+    "source_paths" :
+    [
+	"/qp/test_source_path"
+    ],
+    "master_videos" :
+    [
+	"/qp/test_master_videos"
+    ],
+    "image_name_prefix" : "LRT_",
+    "temp_sequence_name_prefix" : "LRT_",
+    "raw_types" : ["ARW"],
+    "render_resolutions": ["OriRes", [1080, 720], [108, 72]],
+    "sleep_time_seconds" : 15,
+    "delete_sequence_after_render_regexes" : ["-merge$"]
+}
+
