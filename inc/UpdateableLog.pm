@@ -70,6 +70,7 @@ sub log($$$) {
       my $previous_message_length = length($line->{message});
       my $new_message_length = length($message);
       $line->{message} = $message;
+      $line->{value} = $value;
       print "\033[$index"."A";	# move cursor up $index lines
       print $message;
       if($previous_message_length > $new_message_length) {
