@@ -1,8 +1,10 @@
 package UpdateableLog;
 
 use UpdateableLogLine;
+use Term::ReadKey;
 
 use strict;
+
 
 # a log system that allows updates to log lines after logging
 
@@ -41,17 +43,28 @@ sub redraw($) {
 sub clear($) {
   my ($self) = @_;
 
+  my ($screen_char_width) = GetTerminalSize();
+
   my $index = scalar(@{$self->{list}});
   foreach my $line (@{$self->{list}}) {
     print "\033[$index"."A";	# move cursor up $index lines
-    my $length_to_clear = length($line->{message});
-    for(my $i = 0 ; $i < $length_to_clear ; $i++) {
+    for(my $i = 0 ; $i < $screen_char_width ; $i++) {
       print " ";
     }
     print "\n";
     print "\033[$index"."B";  # move cursor down $index lines
     $index--;
   }
+}
+
+
+sub timeLog($$$) {
+  my ($self, $name, $message, $value) = @_;
+
+  my $d = `date "+%r"`;
+  chomp $d;
+
+  $self->log($name, "$d - $message", $value);
 }
 
 sub log($$$) {
