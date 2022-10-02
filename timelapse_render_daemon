@@ -61,8 +61,11 @@ use Exiftool;
 # - notice when existing master video is older than the new sequence, and still render to temp path, assuming no file at temp path exists yet
 # - allow rendering when base image sequence has been archived, based upon # of images from json
 #   - specify archive locations in config
-# - fix problem where deleting dirs makes them show up
+# - fix problem where deleting dirs makes them show up (tmp_rm hack works for now..)
 # - add validation for Timelapse and others (ffmpeg exists, etc)
+# - watch updates in config.json and update when running
+# - write a real log file as well as the refreshing  console output
+# - add config validation
 
 # all user visible output goes through this log
 my $log = UpdateableLog->new();
@@ -111,7 +114,7 @@ sub search_image_sequences($$) {
       foreach my $dirname (keys %$raw_image_sequences) {
 	foreach my $raw_image_sequence (keys %{$raw_image_sequences->{$dirname}}) {
 	  $raw_image_sequence_name = $raw_image_sequence
-	    if ($temp_entry =~ /$config->{temp_sequence_name_prefix}$raw_image_sequence/);
+	    if ($temp_entry =~ /$config->{image_sequence_dirname_prefix}$raw_image_sequence/);
 	}
       }
       next unless defined $raw_image_sequence_name;
@@ -342,8 +345,8 @@ sub render() {
   my $output_video_filename = $image_sequence_name;
 
   # remove the sequence image prefex if it happens to be part of the video filename
-  while($output_video_filename =~ /$config->{temp_sequence_name_prefix}/) {
-    $output_video_filename =~ s/$config->{temp_sequence_name_prefix}//;
+  while($output_video_filename =~ /$config->{image_sequence_dirname_prefix}/) {
+    $output_video_filename =~ s/$config->{image_sequence_dirname_prefix }//;
   }
   while($output_video_filename =~ /$config->{image_name_prefix}/) {
     $output_video_filename =~ s/$config->{image_name_prefix}//;

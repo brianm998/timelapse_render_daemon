@@ -16,10 +16,10 @@
 	"/Users/brian/Pictures/timelapses/2022/2022-video"
     ],
     "image_name_prefix" : "LRT_",
-    "temp_sequence_name_prefix" : "LRT_",
+    "image_sequence_dirname_prefix" : "LRT_",
     "raw_types" : ["ARW"],
     "render_resolutions" : [[1080, 720], "OriRes"],
-    "sleep_time_seconds" : 15,
+    "sleep_time_seconds" : 2,
     "delete_sequence_after_render_regexes" : ["-merge$"]
 }
 
