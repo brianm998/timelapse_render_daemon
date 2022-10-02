@@ -403,7 +403,7 @@ sub render() {
     $/ = "";			  # don't use newline for <>
     while(<FFMPEG>) {
       # frame= 1569 fps=0.9 q=-0.0 Lsize=  286475kB time=00:00:52.26 bitrate=44900.6kbits/s speed=0.0292x 
-      if(/^frame=\s+(\d+)\s+fps=(\d+)/) {
+      if(/^frame=\s+(\d+)\s+fps=([\d.]+)/) {
 	$frame_num = $1;
 	my $fps = $2;
 	my $progress_percentage = $frame_num / $raw_sequence_length;
