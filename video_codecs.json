@@ -1,0 +1,26 @@
+{
+    "ProResUHQ" : {
+	"ffmpeg" : {
+	    "codec": "prores_ks",
+	    "pixel_format" : "yuv422p10le",
+	    "color_range": "pc"
+	},
+	"filename": {
+	    "pixel_format": "444",
+	    "codec": "ProRes",
+	    "quality": "UHQ"
+	}
+    },
+    "ProResMQ" : {
+	"ffmpeg" : {
+	    "codec": "prores_ks",
+	    "pixel_format" : "yuv444p10le",
+	    "color_range": "pc"
+	},
+	"filename": {
+	    "pixel_format": "422",
+	    "codec": "ProRes",
+	    "quality": "MQ"
+	}
+    }
+}

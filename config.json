@@ -18,7 +18,17 @@
     "image_name_prefix" : "LRT_",
     "image_sequence_dirname_prefix" : "LRT_",
     "raw_types" : ["ARW"],
-    "render_resolutions" : [[1080, 720], "OriRes"],
+    "rendering": [
+	{
+	    "resolution": [1080,720],
+	    "codec": "ProResMQ",
+	    "frame_rate": 30
+	},
+	{
+	    "codec": "ProResUHQ",
+	    "frame_rate": 30
+	}
+    },
     "sleep_time_seconds" : 2,
     "delete_sequence_after_render_regexes" : ["-merge$"]
 }

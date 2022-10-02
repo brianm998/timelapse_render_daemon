@@ -85,7 +85,13 @@ unless(defined $config_json_filename) {
 
 my $config = TimelapseExiftool::read_json_from($config_json_filename);
 
+die unless ($config);
 # XXX validate it
+
+# an addressable list of what codecs we can encode to
+$config->{codecs} = TimelapseExiftool::read_json_from("$script_dir/video_codecs.json");
+# XXX validate that this is there and in right format
+die unless ($config->{codecs});
 
 while(1) {
   search_image_sequences($config, 0);
@@ -147,27 +153,17 @@ sub search_image_sequences($$) {
 	my $video_write_json = {}; # exif data to write to video file
 
 	my $would_render = undef;
-	foreach my $resolution (@{$config->{render_resolutions}}) {
-	  if($resolution eq 'OriRes') {
-	    # render full original resolution
-	    my $should_render = render($config, $temp_path, $temp_entry, $video_write_json, $raw_sequence_length, 1);
-	    if ($should_render eq 'error') {
-	      $would_render = 0;
-	    } elsif(defined $would_render) {
-	      $would_render = $should_render || $would_render;
-	    } else {
-	      $would_render = $should_render;
-	    }
+	foreach my $render_type (@{$config->{rendering}}) {
+	  # 1 means rendered
+	  # 'error' means there was an error
+	  # 0 means it was skipped because of existing video file of same name
+	  my $should_render = render($config, $temp_path, $temp_entry, $video_write_json, $raw_sequence_length, $render_type, 1);
+	  if ($should_render eq 'error') {
+	    $would_render = 0;
+	  } elsif (defined $would_render) {
+	    $would_render = $should_render || $would_render;
 	  } else {
-	    # render to a given resolution
-	    my $should_render = render($config, $temp_path, $temp_entry, $video_write_json, $raw_sequence_length, 1, @$resolution);
-	    if ($should_render eq 'error') {
-	      $would_render = 0;
-	    } elsif(defined $would_render) {
-	      $would_render = $should_render || $would_render;
-	    } else {
-	      $would_render = $should_render;
-	    }
+	    $would_render = $should_render;
 	  }
 	}
 	next if(!$would_render);
@@ -201,27 +197,18 @@ sub search_image_sequences($$) {
 	# attempt to render at each resolution,
 	# existing output files will be skipped
 	my $success = undef;
-	foreach my $resolution (@{$config->{render_resolutions}}) {
-	  if($resolution eq 'OriRes') {
-	    # render full original resolution
-	    my $did_render = render($config, $temp_path, $temp_entry, $video_write_json, $raw_sequence_length, 0);
-	    if ($did_render ne 'error') {
-	      unless(defined $success) {
-		$success = $did_render;
-	      }
-	    } else {
-	      $success = 0;
+
+	foreach my $render_type (@{$config->{rendering}}) {
+	  # 1 means rendered
+	  # 'error' means there was an error
+	  # 0 means it was skipped because of existing video file of same name
+	  my $did_render = render($config, $temp_path, $temp_entry, $video_write_json, $raw_sequence_length, $render_type, 0);
+	  if($did_render ne 'error') {
+	    unless(defined $success) {
+	      $success = $did_render;
 	    }
 	  } else {
-	    # render to a given resolution
-	    my $did_render = render($config, $temp_path, $temp_entry, $video_write_json, $raw_sequence_length, 0, @$resolution);
-	    if($did_render ne 'error') {
-	      unless(defined $success) {
-		$success = $did_render;
-	      }
-	    } else {
-	      $success = 0;
-	    }
+	    $success = 0;
 	  }
 	}
 	if($success) {
@@ -300,7 +287,7 @@ sub read_raw_image_sequences($) {
 # empty width and height default to original image resolution
 sub render() {
   my ($config, $output_dirname, $image_sequence_name,
-      $exif_data, $raw_sequence_length, $check_only, $width, $height) = @_;
+      $exif_data, $raw_sequence_length, $render_type, $check_only) = @_;
 
   my $image_sequence_dirname = "$output_dirname/$image_sequence_name";
 
@@ -321,10 +308,10 @@ sub render() {
 
   closedir $source_dir;
 
-  my $image_width = $width;
-  my $image_height = $height;
+  my $image_width = $render_type->{resolution}[0];
+  my $image_height = $render_type->{resolution}[1];
 
-  my $orig_res = 0;
+  my $should_resize = 1;
 
   unless(defined $image_width && defined $image_height) {
     # use original resolution unless given specific values
@@ -336,7 +323,7 @@ sub render() {
       $log->log($image_sequence_name, "cannot read image size from $image_sequence_dirname/$test_image, cannot not render [$image_width, $image_height]", 10);
       return 'error';
     }
-    $orig_res = 1;
+    $should_resize = 0;
   }
 
   # calculate aspect ratio from width/height
@@ -352,29 +339,25 @@ sub render() {
     $output_video_filename =~ s/$config->{image_name_prefix}//;
   }
 
-  # XXX expose this more
-  # right now, OriRes is UHQ, everything else is MQ
-  my $res_str = $height."p";
-  my $quality_str = "MQ";
-  my $pix_fmt_short_str = "422";
+  my $res_str = "OriRes";
+  my $config_codec = $config->{codecs}{$render_type->{codec}};
+  my $quality_str = $config_codec->{filename}{quality};
+  my $pix_fmt_short_str = $config_codec->{filename}{pixel_format};
+  my $codec_for_filename = $config_codec->{filename}{codec};
 
   # these are ffmpeg params
   my $filter_str = "";
-  my $pix_fmt_str = "yuv422p10le";
-  my $frame_rate = "30";
-  my $color_range = "pc";	# pc or 2
-  my $output_codec = "prores_ks";
-  if ($orig_res) {
-    $res_str = "OriRes";
-    $quality_str = "UHQ";
-    $pix_fmt_str = "yuv444p10le";
-    $pix_fmt_short_str = "444";
-  } else {
+  my $pix_fmt_str = $config_codec->{ffmpeg}{pixel_format};
+  my $frame_rate = $render_type->{frame_rate};
+  my $color_range = $config_codec->{ffmpeg}{color_range};
+  my $output_codec = $config_codec->{ffmpeg}{codec};
+  if ($should_resize) {
     $filter_str = "-filter_complex 'crop=floor(iw/2)*2:floor(ih/2)*2,zscale=rangein=full:range=full:matrixin=709:matrix=709:primariesin=709:primaries=709:transferin=709:transfer=709:w=$image_width:h=$image_height,setsar=sar=1/1'";
+    $res_str = $image_height."p";
   }
 
   # prepend the format and file extention to the end of the filename
-  $output_video_filename .= "_ProRes-$pix_fmt_short_str"."_Rec.709F_$res_str"."_$frame_rate"."_$quality_str.mov";
+  $output_video_filename .= "_".$codec_for_filename."-$pix_fmt_short_str"."_Rec.709F_$res_str"."_$frame_rate"."_$quality_str.mov";
 
   # check for this file on the master render path
   my $should_render = 1;
@@ -411,7 +394,7 @@ sub render() {
     my $frame_num = 0;
     my $last_update = 0;
     my $update_after_frames = 10; # how many frames pass before we update the rest of the display
-    $/ = "";
+    $/ = "";			  # don't use newline for <>
     while(<FFMPEG>) {
       # frame= 1569 fps=0.9 q=-0.0 Lsize=  286475kB time=00:00:52.26 bitrate=44900.6kbits/s speed=0.0292x 
       if(/^frame=\s+(\d+)\s+fps=(\d+)/) {
@@ -423,7 +406,7 @@ sub render() {
 	$progress_bar .= " rendering frame $frame_num/$raw_sequence_length ($fps fps) for";
 	$log->log($output_video_filename, "$progress_bar $output_video_filename", 10);
 	if ($frame_num - $last_update > $update_after_frames) {
-	  $/ = "\n";
+	  $/ = "\n";		# just incase any method called here uses <> expecting \n
 	  # called to update image sequence progress, no extra render here
 	  search_image_sequences($config, 1);
 	  $last_update = $frame_num;
