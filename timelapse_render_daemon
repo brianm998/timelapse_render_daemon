@@ -55,30 +55,37 @@ use Exiftool;
 
 # todo:
 
-# - only log in test mode
-# - allow command line log level support, and make logging helpful
 # - expose things like frame rate to config
-# - read config from json
 # - detangle depenency inc mess
 # - support {year} in dirs?
 # - notice when existing master video is older than the new sequence, and still render to temp path, assuming no file at temp path exists yet
 # - allow rendering when base image sequence has been archived, based upon # of images from json
+#   - specify archive locations in config
 # - fix problem where deleting dirs makes them show up
 # - add validation for Timelapse and others (ffmpeg exists, etc)
 
 # all user visible output goes through this log
 my $log = UpdateableLog->new();
 
+# allow json config file to be referenced on the command line
 my $config_json_filename = shift;
 
-# XXX die with usage if no config present (or fall to default?)
+unless(defined $config_json_filename) {
+  # if no config given on command line, default to this
+  if(-e "$script_dir/config.json") {
+    $config_json_filename = "$script_dir/config.json";
+  } else {
+    # XXX die with usage if no config present
+    die;
+  }
+}
 
 my $config = TimelapseExiftool::read_json_from($config_json_filename);
 
 # XXX validate it
 
 while(1) {
-  look_for_videos_to_render($config, read_raw_image_sequences($config), 0);
+  search_image_sequences($config, 0);
 
   sleep($config->{sleep_time_seconds})
 }
@@ -88,9 +95,11 @@ while(1) {
 ########
 
 
-sub look_for_videos_to_render($$$) {
+sub search_image_sequences($$) {
 
-  my ($config, $raw_image_sequences, $no_render) = @_;
+  my ($config, $no_render) = @_;
+
+  my $raw_image_sequences = read_raw_image_sequences($config);
 
   foreach my $temp_path (@{$config->{temp_paths}}) {
     opendir my $temp_dir, $temp_path or die "cannot open $temp_path: $!\n";
@@ -106,18 +115,15 @@ sub look_for_videos_to_render($$$) {
 	}
       }
       next unless defined $raw_image_sequence_name;
-#      print "valid temp entry $temp_entry\n";
 
       # check number of images
       opendir my $temp_dir, "$temp_path/$temp_entry" or die "cannot open dfs dir: $!\n";
       my $count = 0;
       foreach my $entry (readdir $temp_dir) {
-	#print "entry $entry\n";
 	next if($entry =~ /^[.]/);
 	next unless (-f "$temp_path/$temp_entry/$entry"); # only files
 	 # files with .tif or .tiff extensions only
-	if($entry !~ /[.]tiff?$/) {
-	  #print("bad entry $temp_path/$temp_entry/$entry\n");
+	if($entry !~ /[.]tiff?$/) { # XXX expose this in config so jpeg works too
 	  next;
 	}
 	# what about jpeg?
@@ -193,7 +199,6 @@ sub look_for_videos_to_render($$$) {
 	# existing output files will be skipped
 	my $success = undef;
 	foreach my $resolution (@{$config->{render_resolutions}}) {
-	  #print "attempting $resolution\n";
 	  if($resolution eq 'OriRes') {
 	    # render full original resolution
 	    my $did_render = render($config, $temp_path, $temp_entry, $video_write_json, $raw_sequence_length, 0);
@@ -414,11 +419,13 @@ sub render() {
 
 	$progress_bar .= " rendering frame $frame_num/$raw_sequence_length ($fps fps) for";
 	$log->log($output_video_filename, "$progress_bar $output_video_filename", 10);
-      }
-      if($frame_num - $last_update > $update_after_frames) {
-	# called to update image sequence progress, no extra render here
-	look_for_videos_to_render($config, read_raw_image_sequences($config), 1);
-	$last_update = $frame_num;
+	if ($frame_num - $last_update > $update_after_frames) {
+	  $/ = "\n";
+	  # called to update image sequence progress, no extra render here
+	  search_image_sequences($config, 1);
+	  $last_update = $frame_num;
+	  $/ = "";
+	}
       }
     }
     $/ = "\n";
@@ -428,7 +435,7 @@ sub render() {
       $log->timeLog($output_video_filename, "rendered $video_size $output_dirname/$output_video_filename", -1);
       return 1;
     } else {
-#      print("render failed :("); # why?
+      # failed, why?
       $log->timeLog($output_video_filename, "$output_dirname/$output_video_filename render FAILED", -1);
       return 'error';
     }
