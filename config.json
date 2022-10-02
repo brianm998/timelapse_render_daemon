@@ -28,7 +28,7 @@
 	    "codec": "ProResUHQ",
 	    "frame_rate": 30
 	}
-    },
+    ],
     "sleep_time_seconds" : 2,
     "delete_sequence_after_render_regexes" : ["-merge$"]
 }
