@@ -66,6 +66,7 @@ use Exiftool;
 # - watch updates in config.json and update when running
 # - write a real log file as well as the refreshing  console output
 # - add config validation
+# - avoid printing lines longer than the console
 
 # all user visible output goes through this log
 my $log = UpdateableLog->new();
@@ -93,9 +94,14 @@ $config->{codecs} = TimelapseExiftool::read_json_from("$script_dir/video_codecs.
 # XXX validate that this is there and in right format
 die unless ($config->{codecs});
 
+# run once without renders to fully flesh out the display
+search_image_sequences($config, 1);
+
 while(1) {
+  # search again and render if any image sequences are ready
   search_image_sequences($config, 0);
 
+  # sleep and repeat
   sleep($config->{sleep_time_seconds})
 }
 
@@ -398,7 +404,8 @@ sub render() {
     while(<FFMPEG>) {
       # frame= 1569 fps=0.9 q=-0.0 Lsize=  286475kB time=00:00:52.26 bitrate=44900.6kbits/s speed=0.0292x 
       if(/^frame=\s+(\d+)\s+fps=(\d+)/) {
-	my ($frame_num, $fps) = ($1, $2);
+	$frame_num = $1;
+	my $fps = $2;
 	my $progress_percentage = $frame_num / $raw_sequence_length;
 
 	my $progress_bar = progress_bar(30, $progress_percentage);
@@ -418,7 +425,7 @@ sub render() {
     my $result = close FFMPEG;
     if ($result == 1) {
       my $video_size = sizeStringOf("$output_dirname/$output_video_filename");
-      $log->timeLog($output_video_filename, "rendered $video_size $output_dirname/$output_video_filename", -1);
+      $log->timeLog($output_video_filename, "rendered $video_size $frame_num frame $output_dirname/$output_video_filename", -1);
       return 1;
     } else {
       # failed, why?
