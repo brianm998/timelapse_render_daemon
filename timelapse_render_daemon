@@ -110,9 +110,9 @@ while(1) {
 ########
 
 
-sub search_image_sequences($$) {
+sub search_image_sequences($$$) {
 
-  my ($config, $no_render) = @_;
+  my ($config, $no_render, $currently_rendering_sequence_name) = @_;
 
   my $raw_image_sequences = read_raw_image_sequences($config);
 
@@ -154,8 +154,6 @@ sub search_image_sequences($$) {
 	}
       }
       if($count == $raw_sequence_length) {
-	next if($no_render);
-
 	my $video_write_json = {}; # exif data to write to video file
 
 	my $would_render = undef;
@@ -174,6 +172,11 @@ sub search_image_sequences($$) {
 	}
 	next if(!$would_render);
 	my $sequence_size = sizeStringOf("$temp_path/$temp_entry");
+	unless("$config->{image_sequence_dirname_prefix}$currently_rendering_sequence_name" eq $temp_entry) {
+	  $log->timeLog($temp_entry, "$sequence_size image sequence $temp_path/$temp_entry is ready to render", 1);
+	}
+	next if($no_render);
+
 	$log->timeLog($temp_entry, "rendering videos from $sequence_size image sequence $temp_path/$temp_entry", 10);
 
 	# check here to see if we have a json file, if not, create it
@@ -335,15 +338,14 @@ sub render() {
   # calculate aspect ratio from width/height
   my $aspect_ratio = Timelapse::get_aspect_ratio($image_width, $image_height);
 
-  my $output_video_filename = $image_sequence_name;
-
   # remove the sequence image prefex if it happens to be part of the video filename
-  while($output_video_filename =~ /$config->{image_sequence_dirname_prefix}/) {
-    $output_video_filename =~ s/$config->{image_sequence_dirname_prefix }//;
+  while($image_sequence_name =~ /$config->{image_sequence_dirname_prefix}/) {
+    $image_sequence_name =~ s/$config->{image_sequence_dirname_prefix }//;
   }
-  while($output_video_filename =~ /$config->{image_name_prefix}/) {
-    $output_video_filename =~ s/$config->{image_name_prefix}//;
+  while($image_sequence_name =~ /$config->{image_name_prefix}/) {
+    $image_sequence_name =~ s/$config->{image_name_prefix}//;
   }
+  my $output_video_filename = $image_sequence_name;
 
   my $res_str = "OriRes";
   my $config_codec = $config->{codecs}{$render_type->{codec}};
@@ -399,7 +401,7 @@ sub render() {
     open FFMPEG, "$ffmpeg_cmd 2>&1 |";
     my $frame_num = 0;
     my $last_update = 0;
-    my $update_after_frames = 10; # how many frames pass before we update the rest of the display
+    my $update_after_frames = 2;  # how many frames pass before we update the rest of the display
     $/ = "";			  # don't use newline for <>
     while(<FFMPEG>) {
       # frame= 1569 fps=0.9 q=-0.0 Lsize=  286475kB time=00:00:52.26 bitrate=44900.6kbits/s speed=0.0292x 
@@ -415,7 +417,7 @@ sub render() {
 	if ($frame_num - $last_update > $update_after_frames) {
 	  $/ = "\n";		# just incase any method called here uses <> expecting \n
 	  # called to update image sequence progress, no extra render here
-	  search_image_sequences($config, 1);
+	  search_image_sequences($config, 1, $image_sequence_name);
 	  $last_update = $frame_num;
 	  $/ = "";
 	}
