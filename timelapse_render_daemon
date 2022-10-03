@@ -182,7 +182,7 @@ sub search_image_sequences($$$) {
 	# check here to see if we have a json file, if not, create it
 	my $exif_json_filename = "$base_dirname/$raw_image_sequence_name.json";
 	unless(-e $exif_json_filename) {
-	  $log->log($temp_entry, "creating $exif_json_filename", 10);
+	  $log->timeLog($temp_entry, "creating $exif_json_filename", 10);
 
 	  my $exiftool = TimelapseExiftool->new;
 	  my $json_str = $exiftool->json_for_raw_dir("$base_dirname/$raw_image_sequence_name");
@@ -227,7 +227,7 @@ sub search_image_sequences($$$) {
 	  foreach my $delete_regex (@{$config->{delete_sequence_after_render_regexes}}) {
 	    if("$temp_path/$temp_entry" =~ /$delete_regex/) {
 	      my $rm_cmd = "rm -rf $temp_path/$temp_entry";
-	      $log->log($temp_entry, $rm_cmd, 10);
+	      $log->timeLog($temp_entry, "running $rm_cmd", 10);
 	      system($rm_cmd);
 	      $removed = 1;
 	      $log->timeLog($temp_entry, "done rendering videos from $sequence_size image sequence $temp_path/$temp_entry, image sequence removed", -1);
@@ -329,7 +329,7 @@ sub render() {
     $image_width = $exif->{ImageWidth};
     $image_height = $exif->{ImageHeight};
     if($image_width <= 0 || $image_height <= 0) {
-      $log->log($image_sequence_name, "cannot read image size from $image_sequence_dirname/$test_image, cannot not render [$image_width, $image_height]", 10);
+      $log->timeLog($image_sequence_name, "cannot read image size from $image_sequence_dirname/$test_image, cannot not render [$image_width, $image_height]", 10);
       return 'error';
     }
     $should_resize = 0;
@@ -397,7 +397,7 @@ sub render() {
     }
 
     $ffmpeg_cmd .= "$output_dirname/$output_video_filename";
-    $log->log($output_video_filename, "starting render of $output_video_filename", 10);
+    $log->timeLog($output_video_filename, "starting render of $output_video_filename", 10);
     open FFMPEG, "$ffmpeg_cmd 2>&1 |";
     my $frame_num = 0;
     my $last_update = 0;
@@ -435,7 +435,7 @@ sub render() {
       return 'error';
     }
   } else {
-    $log->log($image_sequence_name, "$image_sequence_name already rendered", -1);
+    $log->timeLog($image_sequence_name, "$output_dirname/$output_video_filename already rendered", -1);
   }
   return 0;
 }
