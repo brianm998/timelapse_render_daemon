@@ -70,6 +70,7 @@ use Exiftool;
 # - check to see running on macos and run caffeinate to keep alive in background
 # - when creating json file messaging could be better
 # - after creating json file message doesn't disappear
+# - allow more than one concurrent render (fork, write ffmpeg to file, monitor from main proc)
 
 # all user visible output goes through this log
 my $log = UpdateableLog->new();
@@ -180,12 +181,10 @@ sub search_image_sequences($$$) {
 	}
 	next if($no_render);
 
-	$log->timeLog($temp_entry, "rendering videos from $sequence_size image sequence $temp_path/$temp_entry", 10);
-
 	# check here to see if we have a json file, if not, create it
 	my $exif_json_filename = "$base_dirname/$raw_image_sequence_name.json";
 	unless(-e $exif_json_filename) {
-	  $log->timeLog($temp_entry, "creating $exif_json_filename", 10);
+	  $log->timeLog($temp_entry, "creating json exif file for $temp_entry", 10);
 
 	  my $exiftool = TimelapseExiftool->new;
 	  my $json_str = $exiftool->json_for_raw_dir("$base_dirname/$raw_image_sequence_name");
@@ -193,6 +192,8 @@ sub search_image_sequences($$$) {
 	  print $filehandle $json_str;
 	  close $filehandle;
 	}
+	$log->timeLog($temp_entry, "rendering videos from $sequence_size image sequence $temp_path/$temp_entry", 10);
+
 	# hash ref
 	my $exif_json = TimelapseExiftool::read_json_from($exif_json_filename);
 
