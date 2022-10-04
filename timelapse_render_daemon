@@ -119,7 +119,7 @@ sub search_and_render($$$) {
   # a hash of all raw image sequences to their number of raw images
   my $raw_image_sequence_counts = count_raw_image_sequences($config);
 
-  # search each 
+  # search each path where processed frame images are written to
   foreach my $temp_path (@{$config->{temp_paths}}) {
     opendir my $temp_dir, $temp_path or die "cannot open $temp_path: $!\n";
 
@@ -127,11 +127,17 @@ sub search_and_render($$$) {
       next unless(-d "$temp_path/$image_sequence_dirname");
       my $raw_image_sequence_name = undef;
 
+      my $raw_sequence_length = undef;
+      my $base_dirname = undef;	# the dirname of the raw image sequence
+
       # look for a raw image sequence that may have been used to generate this image sequence
       foreach my $dirname (keys %$raw_image_sequence_counts) {
 	foreach my $raw_image_sequence (keys %{$raw_image_sequence_counts->{$dirname}}) {
-	  $raw_image_sequence_name = $raw_image_sequence
-	    if ($image_sequence_dirname =~ /$config->{image_sequence_dirname_prefix}$raw_image_sequence/);
+	  if ($image_sequence_dirname =~ /$config->{image_sequence_dirname_prefix}$raw_image_sequence/) {
+	    $raw_image_sequence_name = $raw_image_sequence;
+	    $raw_sequence_length = $raw_image_sequence_counts->{$dirname}{$raw_image_sequence_name};
+	    $base_dirname = $dirname;
+	  }
 	}
       }
       # we need to know the $raw_image_sequence_name for this generated image sequence
@@ -151,14 +157,7 @@ sub search_and_render($$$) {
 	$number_of_generated_images++; 		# assume everything else is an image
       }
       closedir $temp_dir;
-      my $raw_sequence_length = undef;
-      my $base_dirname = undef;
-      foreach my $dirname (keys %$raw_image_sequence_counts) {
-	if (exists $raw_image_sequence_counts->{$dirname}{$raw_image_sequence_name}) {
-	  $raw_sequence_length = $raw_image_sequence_counts->{$dirname}{$raw_image_sequence_name};
-	  $base_dirname = $dirname;
-	}
-      }
+
       if($number_of_generated_images == $raw_sequence_length) {
 	my $would_render = undef;
 
