@@ -68,9 +68,8 @@ use Exiftool;
 # - avoid printing lines longer than the console
 # - have timeLog not update time on log when message is the same
 # - check to see running on macos and run caffeinate to keep alive in background
-# - when creating json file messaging could be better
-# - after creating json file message doesn't disappear
 # - allow more than one concurrent render (fork, write ffmpeg to file, monitor from main proc)
+# - allow re-reading config every so often (add validation first)
 
 # all user visible output goes through this log
 my $log = UpdateableLog->new();
@@ -123,92 +122,107 @@ sub search_and_render($$$) {
   foreach my $temp_path (@{$config->{temp_paths}}) {
     opendir my $temp_dir, $temp_path or die "cannot open $temp_path: $!\n";
 
-    foreach my $image_sequence_dirname (readdir $temp_dir) {
-      next unless(-d "$temp_path/$image_sequence_dirname");
-      my $raw_image_sequence_name = undef;
+    search_and_render_from_temp_dir($config, $no_render,
+				    $currently_rendering_sequence_name,
+				    $raw_image_sequence_counts,
+				    $temp_dir, $temp_path);
 
-      my $raw_sequence_length = undef;
-      my $base_dirname = undef;	# the dirname of the raw image sequence
-
-      # look for a raw image sequence that may have been used to generate this image sequence
-      foreach my $dirname (keys %$raw_image_sequence_counts) {
-	foreach my $raw_image_sequence (keys %{$raw_image_sequence_counts->{$dirname}}) {
-	  if ($image_sequence_dirname =~ /$config->{image_sequence_dirname_prefix}$raw_image_sequence/) {
-	    $raw_image_sequence_name = $raw_image_sequence;
-	    $raw_sequence_length = $raw_image_sequence_counts->{$dirname}{$raw_image_sequence_name};
-	    $base_dirname = $dirname;
-	  }
-	}
-      }
-      # we need to know the $raw_image_sequence_name for this generated image sequence
-      next unless defined $raw_image_sequence_name;
-
-      # check number of generated images present
-      opendir my $temp_dir, "$temp_path/$image_sequence_dirname" or die "cannot open dfs dir: $!\n";
-      my $number_of_generated_images = 0;
-      foreach my $entry (readdir $temp_dir) {
-	next if($entry =~ /^[.]/);
-	next unless (-f "$temp_path/$image_sequence_dirname/$entry"); # only files
-	 # files with .tif or .tiff extensions only
-	if($entry !~ /[.]tiff?$/) { # XXX expose this in config so jpeg works too
-	  next;
-	}
-	# what about jpeg?
-	$number_of_generated_images++; 		# assume everything else is an image
-      }
-      closedir $temp_dir;
-
-      if($number_of_generated_images == $raw_sequence_length) {
-	my $would_render = undef;
-
-	foreach my $render_type (@{$config->{rendering}}) {
-	  my $output_video_filename = output_video_filename($config,
-							    $render_type,
-							    $image_sequence_dirname);
-	  my $should_render = should_render($config, $output_video_filename);
-
-	  if (defined $would_render) {
-	    $would_render = $should_render || $would_render;
-	  } else {
-	    $would_render = $should_render;
-	  }
-	}
-	next unless($would_render);
-
-	unless($currently_rendering_sequence_name eq $image_sequence_dirname) {
-	  my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname");
-	  $log->timeLog($image_sequence_dirname, "$sequence_size $raw_sequence_length frame image sequence $temp_path/$image_sequence_dirname is ready to render", 1);
-	}
-
-	next if($no_render);
-
-	render_all_videos_for_image_sequence($config,
-					     $temp_path,
-					     $image_sequence_dirname,
-					     $base_dirname,
-					     $raw_image_sequence_name,
-					     $raw_sequence_length)
-      } else {
-	# cannot process this one yet
-	# log of how far along it is
-
-	my $percentage = $number_of_generated_images / $raw_sequence_length;
-	my $progress_bar = progress_bar(30,  $percentage);
-
-	my $frames_left = $raw_sequence_length - $number_of_generated_images;
-	my $msg = sprintf("(%04.d / %04.d) %04.d more",
-			  $number_of_generated_images, $raw_sequence_length,  $frames_left);
-	my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname");
-
-	# XXX this is a hack to align layers. usually 4 chars, add another when 3
-	$sequence_size = " $sequence_size" if(length($sequence_size) == 3);
-
-	$log->log($image_sequence_dirname, "$progress_bar $msg - $sequence_size $temp_path/$image_sequence_dirname", $percentage);
-      }
-    }
     closedir $temp_dir;
   }
 }
+
+sub search_and_render_from_temp_dir($$$$$$) {
+  my ($config, $no_render, $currently_rendering_sequence_name,
+      $raw_image_sequence_counts, $temp_dir, $temp_path) = @_;
+
+  foreach my $image_sequence_dirname (readdir $temp_dir) {
+    next unless(-d "$temp_path/$image_sequence_dirname");
+    my $raw_image_sequence_name = undef;
+
+    my $raw_sequence_length = undef;
+    my $base_dirname = undef;  # the dirname of the raw image sequence
+
+    # look for a raw image sequence that may have been used to generate this image sequence
+    foreach my $dirname (keys %$raw_image_sequence_counts) {
+      foreach my $raw_image_sequence (keys %{$raw_image_sequence_counts->{$dirname}}) {
+	if ($image_sequence_dirname =~ /$config->{image_sequence_dirname_prefix}$raw_image_sequence/) {
+	  $raw_image_sequence_name = $raw_image_sequence;
+	  $raw_sequence_length = $raw_image_sequence_counts->{$dirname}{$raw_image_sequence_name};
+	  $base_dirname = $dirname;
+	}
+      }
+    }
+    # we need to know the $raw_image_sequence_name for this generated image sequence
+    next unless defined $raw_image_sequence_name;
+
+    # XXX refactor point
+
+    # check number of generated images present
+    opendir my $temp_dir, "$temp_path/$image_sequence_dirname" or die "cannot open dfs dir: $!\n";
+    my $number_of_generated_images = 0;
+    foreach my $entry (readdir $temp_dir) {
+      next if($entry =~ /^[.]/);
+      next unless (-f "$temp_path/$image_sequence_dirname/$entry"); # only files
+      # files with .tif or .tiff extensions only
+      if ($entry !~ /[.]tiff?$/) { # XXX expose this in config so jpeg works too
+	next;
+      }
+      # what about jpeg?
+      $number_of_generated_images++; # assume everything else is an image
+    }
+    closedir $temp_dir;
+
+    if ($number_of_generated_images == $raw_sequence_length) {
+      my $would_render = undef;
+
+      foreach my $render_type (@{$config->{rendering}}) {
+	my $output_video_filename = output_video_filename($config,
+							  $render_type,
+							  $image_sequence_dirname);
+	my $should_render = should_render($config, $output_video_filename);
+
+	if (defined $would_render) {
+	  $would_render = $should_render || $would_render;
+	} else {
+	  $would_render = $should_render;
+	}
+      }
+      next unless($would_render);
+
+      unless ($currently_rendering_sequence_name eq $image_sequence_dirname) {
+	my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname");
+	$log->timeLog($image_sequence_dirname, "$sequence_size $raw_sequence_length frame image sequence $temp_path/$image_sequence_dirname is ready to render", 1);
+      }
+
+      next if($no_render);
+
+      # actually try to render
+      render_all_videos_for_image_sequence($config,
+					   $temp_path,
+					   $image_sequence_dirname,
+					   $base_dirname,
+					   $raw_image_sequence_name,
+					   $raw_sequence_length)
+    } else {
+      # cannot process this one yet, not enough images
+      # log of how far along it is
+
+      my $percentage = $number_of_generated_images / $raw_sequence_length;
+      my $progress_bar = progress_bar(30,  $percentage);
+
+      my $frames_left = $raw_sequence_length - $number_of_generated_images;
+      my $msg = sprintf("(%04.d / %04.d) %04.d more",
+			$number_of_generated_images, $raw_sequence_length,  $frames_left);
+      my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname");
+
+      # XXX this is a hack to align layers. usually 4 chars, add another when 3
+      $sequence_size = " $sequence_size" if(length($sequence_size) == 3);
+
+      $log->log($image_sequence_dirname, "$progress_bar $msg - $sequence_size $temp_path/$image_sequence_dirname", $percentage);
+    }
+  }
+}
+
 
 # reads all the raw image sequences based upon the config
 # and returns a hash of source path/entry to raw image count
