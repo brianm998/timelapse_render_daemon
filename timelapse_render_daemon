@@ -298,100 +298,126 @@ sub render_all_videos_for_image_sequence() {
   }
 }
 
-# render a video from the given image sequence
-# empty width and height default to original image resolution
-sub render() {
-  my ($config, $output_dirname, $image_sequence_name,
-      $exif_data, $raw_sequence_length, $render_type, $check_only) = @_;
+sub output_video_filename($$$) {
+  my ($config, $render_type, $image_sequence_name) = @_;
 
-  my $image_sequence_dirname = "$output_dirname/$image_sequence_name";
-
-  opendir my $source_dir, $image_sequence_dirname or die "cannot open source dir $image_sequence_dirname: $!\n";
-
-  my $test_image;
-
-  # read all files at the first level of the source dir
-  foreach my $filename (readdir $source_dir) {
-    next if($filename =~ /^[.]/);
-    $test_image = $filename;
-    last;
-  }
-  my $image_type = ".tif";
-  if($test_image =~ /\d+(.*)$/) {
-    $image_type = $1;		# handle everything after the image index number
-  }
-
-  closedir $source_dir;
-
-  my $image_width = $render_type->{resolution}[0];
-  my $image_height = $render_type->{resolution}[1];
-
-  my $should_resize = 1;
-
-  unless(defined $image_width && defined $image_height) {
-    # use original resolution unless given specific values
-    my $exif = Exiftool::run("$image_sequence_dirname/$test_image");
-
-    $image_width = $exif->{ImageWidth};
-    $image_height = $exif->{ImageHeight};
-    if($image_width <= 0 || $image_height <= 0) {
-      $log->timeLog($image_sequence_name, "cannot read image size from $image_sequence_dirname/$test_image, cannot not render [$image_width, $image_height]", 10);
-      return 'error';
-    }
-    $should_resize = 0;
-  }
-
-  # calculate aspect ratio from width/height
-  my $aspect_ratio = Timelapse::get_aspect_ratio($image_width, $image_height);
-
-  # remove the sequence image prefex if it happens to be part of the video filename
-  while($image_sequence_name =~ /$config->{image_sequence_dirname_prefix}/) {
-    $image_sequence_name =~ s/$config->{image_sequence_dirname_prefix }//;
-  }
-  while($image_sequence_name =~ /$config->{image_name_prefix}/) {
-    $image_sequence_name =~ s/$config->{image_name_prefix}//;
-  }
   my $output_video_filename = $image_sequence_name;
+  # remove the sequence image prefex if it happens to be part of the video filename
+  while($output_video_filename =~ /$config->{image_sequence_dirname_prefix}/) {
+    $output_video_filename =~ s/$config->{image_sequence_dirname_prefix }//;
+  }
+  while($output_video_filename =~ /$config->{image_name_prefix}/) {
+    $output_video_filename =~ s/$config->{image_name_prefix}//;
+  }
 
-  my $res_str = "OriRes";
   my $config_codec = $config->{codecs}{$render_type->{codec}};
   my $quality_str = $config_codec->{filename}{quality};
   my $pix_fmt_short_str = $config_codec->{filename}{pixel_format};
   my $codec_for_filename = $config_codec->{filename}{codec};
 
-  # these are ffmpeg params
-  my $filter_str = "";
-  my $pix_fmt_str = $config_codec->{ffmpeg}{pixel_format};
   my $frame_rate = $render_type->{frame_rate};
-  my $color_range = $config_codec->{ffmpeg}{color_range};
-  my $output_codec = $config_codec->{ffmpeg}{codec};
-  if ($should_resize) {
-    $filter_str = "-filter_complex 'crop=floor(iw/2)*2:floor(ih/2)*2,zscale=rangein=full:range=full:matrixin=709:matrix=709:primariesin=709:primaries=709:transferin=709:transfer=709:w=$image_width:h=$image_height,setsar=sar=1/1'";
+
+  my $res_str = "OriRes";
+  my $image_height = $render_type->{resolution}[1];
+  if (defined $image_height) {
     $res_str = $image_height."p";
   }
 
   # prepend the format and file extention to the end of the filename
   $output_video_filename .= "_".$codec_for_filename."-$pix_fmt_short_str"."_Rec.709F_$res_str"."_$frame_rate"."_$quality_str.mov";
 
+  return $output_video_filename;
+}
+
+# does this video file exist already or not?
+sub should_render($$) {
+  my ($config, $output_video_filename) = @_;
+
   # check for this file on the master render path
   my $should_render = 1;
 
   foreach my $master_video_dirname (@{$config->{master_videos}}) {
     if (-e "$master_video_dirname/$output_video_filename") {
-      #print("$master_video_dirname/$output_video_filename already exists, will not render\n");
       $should_render = 0;
     }
   }
   # check for this file on the temp render path
   foreach my $temp_dirname (@{$config->{temp_paths}}) {
     if (-e "$temp_dirname/$output_video_filename") {
-      #print("$temp_dirname/$output_video_filename already exists, cannot render\n");
       $should_render = 0;
     }
   }
+
+  return $should_render;
+}
+
+# render a video from the given image sequence
+# empty width and height default to original image resolution
+sub render() {
+  my ($config, $output_dirname, $image_sequence_name,
+      $exif_data, $raw_sequence_length, $render_type, $check_only) = @_;
+
+  my $output_video_filename = output_video_filename($config, $render_type, $image_sequence_name);
+
+  my $should_render = should_render($config, $output_video_filename);
+
   return $should_render if($check_only);
 
+  # XXX here
   if($should_render) {
+    my $image_sequence_dirname = "$output_dirname/$image_sequence_name";
+
+    opendir my $source_dir, $image_sequence_dirname or die "cannot open source dir $image_sequence_dirname: $!\n";
+
+    my $test_image;
+
+    # read all files at the first level of the source dir
+    foreach my $filename (readdir $source_dir) {
+      next if($filename =~ /^[.]/);
+      $test_image = $filename;
+      last;
+    }
+    my $image_type = ".tif";
+    if ($test_image =~ /\d+(.*)$/) {
+      $image_type = $1;	# handle everything after the image index number
+    }
+
+    closedir $source_dir;
+
+
+    my $image_width = $render_type->{resolution}[0];
+    my $image_height = $render_type->{resolution}[1];
+
+    my $should_resize = 1;
+
+    unless (defined $image_width && defined $image_height) {
+      # use original resolution unless given specific values
+      my $exif = Exiftool::run("$image_sequence_dirname/$test_image");
+
+      $image_width = $exif->{ImageWidth};
+      $image_height = $exif->{ImageHeight};
+      if ($image_width <= 0 || $image_height <= 0) {
+	$log->timeLog($image_sequence_name, "cannot read image size from $image_sequence_dirname/$test_image, cannot not render [$image_width, $image_height]", 10);
+	return 'error';
+      }
+      $should_resize = 0;
+    }
+
+    # calculate aspect ratio from width/height
+    my $aspect_ratio = Timelapse::get_aspect_ratio($image_width, $image_height);
+
+    my $config_codec = $config->{codecs}{$render_type->{codec}};
+
+    # these are ffmpeg params
+    my $filter_str = "";
+    my $pix_fmt_str = $config_codec->{ffmpeg}{pixel_format};
+    my $color_range = $config_codec->{ffmpeg}{color_range};
+    my $output_codec = $config_codec->{ffmpeg}{codec};
+    my $frame_rate = $render_type->{frame_rate};
+    if ($should_resize) {
+      $filter_str = "-filter_complex 'crop=floor(iw/2)*2:floor(ih/2)*2,zscale=rangein=full:range=full:matrixin=709:matrix=709:primariesin=709:primaries=709:transferin=709:transfer=709:w=$image_width:h=$image_height,setsar=sar=1/1'";
+    }
+
     # assemble render command
     # XXX hardcoded five digit sequence number index
     my $ffmpeg_cmd = "ffmpeg -y -r $frame_rate -i $image_sequence_dirname/$config->{image_name_prefix}%05d$image_type -aspect $aspect_ratio $filter_str -c:v $output_codec -pix_fmt $pix_fmt_str -threads 0 -profile:v 1 -movflags +write_colr -an -color_range $color_range -color_primaries bt709 -colorspace bt709 -color_trc bt709 ";
@@ -453,7 +479,7 @@ sub read_exif_json() {
   my $image_sequence_exif = {};
 
   unless (-e $exif_json_filename) {
-    $log->timeLog($temp_entry, "creating json exif file for $temp_entry", 10);
+    $log->timeLog($temp_entry, "creating json exif file for $base_dirname/$raw_image_sequence_name", 10);
 
     my $exiftool = TimelapseExiftool->new;
     my $json_str = $exiftool->json_for_raw_dir("$base_dirname/$raw_image_sequence_name");
