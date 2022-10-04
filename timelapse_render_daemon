@@ -55,7 +55,6 @@ use Exiftool;
 
 # todo:
 
-# - expose things like frame rate to config
 # - detangle depenency inc mess
 # - support {year} in dirs?
 # - notice when existing master video is older than the new sequence, and still render to temp path, assuming no file at temp path exists yet
@@ -67,6 +66,10 @@ use Exiftool;
 # - write a real log file as well as the refreshing  console output
 # - add config validation
 # - avoid printing lines longer than the console
+# - have timeLog not update time on log when message is the same
+# - check to see running on macos and run caffeinate to keep alive in background
+# - when creating json file messaging could be better
+# - after creating json file message doesn't disappear
 
 # all user visible output goes through this log
 my $log = UpdateableLog->new();
@@ -173,7 +176,7 @@ sub search_image_sequences($$$) {
 	next if(!$would_render);
 	my $sequence_size = sizeStringOf("$temp_path/$temp_entry");
 	unless("$config->{image_sequence_dirname_prefix}$currently_rendering_sequence_name" eq $temp_entry) {
-	  $log->timeLog($temp_entry, "$sequence_size image sequence $temp_path/$temp_entry is ready to render", 1);
+	  $log->timeLog($temp_entry, "$sequence_size $raw_sequence_length frame image sequence $temp_path/$temp_entry is ready to render", 1);
 	}
 	next if($no_render);
 
@@ -215,6 +218,8 @@ sub search_image_sequences($$$) {
 	  if($did_render ne 'error') {
 	    unless(defined $success) {
 	      $success = $did_render;
+	    } else {
+	      $success = $did_render || $success;
 	    }
 	  } else {
 	    $success = 0;
@@ -233,7 +238,9 @@ sub search_image_sequences($$$) {
 	      $log->timeLog($temp_entry, "done rendering videos from $sequence_size image sequence $temp_path/$temp_entry, image sequence removed", -1);
 	    }
 	  }
-	  if(!$removed) {
+	  unless($removed) {
+	    # potential bug where this doesn't show up when only
+	    # some videos needed to be rendered
 	    $log->timeLog($temp_entry, "done rendering videos from $sequence_size image sequence $temp_path/$temp_entry", -1);
 	  }
 	}
@@ -285,7 +292,6 @@ sub read_raw_image_sequences($) {
       }
 
       $raw_image_sequences->{$source_path}{$source_entry} = $count;
-      #print "$source_path => $source_entry = $count\n";
     }
     closedir $source_dir;
   }
