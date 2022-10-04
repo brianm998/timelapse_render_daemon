@@ -99,11 +99,11 @@ $config->{codecs} = TimelapseExiftool::read_json_from("$script_dir/video_codecs.
 die unless ($config->{codecs});
 
 # run once without renders to fully flesh out the display
-search_image_sequences($config, 1);
+search_and_render($config, 1);
 
 while(1) {
   # search again and render if any image sequences are ready
-  search_image_sequences($config, 0);
+  search_and_render($config, 0);
 
   # sleep and repeat
   sleep($config->{sleep_time_seconds})
@@ -113,11 +113,13 @@ while(1) {
 # subs #
 ########
 
-sub search_image_sequences($$$) {
+sub search_and_render($$$) {
   my ($config, $no_render, $currently_rendering_sequence_name) = @_;
 
-  my $raw_image_sequences = read_raw_image_sequences($config);
+  # a hash of all raw image sequences to their number of raw images
+  my $raw_image_sequence_counts = count_raw_image_sequences($config);
 
+  # search each 
   foreach my $temp_path (@{$config->{temp_paths}}) {
     opendir my $temp_dir, $temp_path or die "cannot open $temp_path: $!\n";
 
@@ -125,17 +127,19 @@ sub search_image_sequences($$$) {
       next unless(-d "$temp_path/$image_sequence_dirname");
       my $raw_image_sequence_name = undef;
 
-      foreach my $dirname (keys %$raw_image_sequences) {
-	foreach my $raw_image_sequence (keys %{$raw_image_sequences->{$dirname}}) {
+      # look for a raw image sequence that may have been used to generate this image sequence
+      foreach my $dirname (keys %$raw_image_sequence_counts) {
+	foreach my $raw_image_sequence (keys %{$raw_image_sequence_counts->{$dirname}}) {
 	  $raw_image_sequence_name = $raw_image_sequence
 	    if ($image_sequence_dirname =~ /$config->{image_sequence_dirname_prefix}$raw_image_sequence/);
 	}
       }
+      # we need to know the $raw_image_sequence_name for this generated image sequence
       next unless defined $raw_image_sequence_name;
 
-      # check number of images
+      # check number of generated images present
       opendir my $temp_dir, "$temp_path/$image_sequence_dirname" or die "cannot open dfs dir: $!\n";
-      my $count = 0;
+      my $number_of_generated_images = 0;
       foreach my $entry (readdir $temp_dir) {
 	next if($entry =~ /^[.]/);
 	next unless (-f "$temp_path/$image_sequence_dirname/$entry"); # only files
@@ -144,18 +148,18 @@ sub search_image_sequences($$$) {
 	  next;
 	}
 	# what about jpeg?
-	$count++; 		# assume everything else is an image
+	$number_of_generated_images++; 		# assume everything else is an image
       }
       closedir $temp_dir;
       my $raw_sequence_length = undef;
       my $base_dirname = undef;
-      foreach my $dirname (keys %$raw_image_sequences) {
-	if (exists $raw_image_sequences->{$dirname}{$raw_image_sequence_name}) {
-	  $raw_sequence_length = $raw_image_sequences->{$dirname}{$raw_image_sequence_name};
+      foreach my $dirname (keys %$raw_image_sequence_counts) {
+	if (exists $raw_image_sequence_counts->{$dirname}{$raw_image_sequence_name}) {
+	  $raw_sequence_length = $raw_image_sequence_counts->{$dirname}{$raw_image_sequence_name};
 	  $base_dirname = $dirname;
 	}
       }
-      if($count == $raw_sequence_length) {
+      if($number_of_generated_images == $raw_sequence_length) {
 	my $would_render = undef;
 
 	foreach my $render_type (@{$config->{rendering}}) {
@@ -170,11 +174,13 @@ sub search_image_sequences($$$) {
 	    $would_render = $should_render;
 	  }
 	}
-	next if(!$would_render);
-	my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname");
+	next unless($would_render);
+
 	unless($currently_rendering_sequence_name eq $image_sequence_dirname) {
+	  my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname");
 	  $log->timeLog($image_sequence_dirname, "$sequence_size $raw_sequence_length frame image sequence $temp_path/$image_sequence_dirname is ready to render", 1);
 	}
+
 	next if($no_render);
 
 	render_all_videos_for_image_sequence($config,
@@ -187,13 +193,13 @@ sub search_image_sequences($$$) {
 	# cannot process this one yet
 	# log of how far along it is
 
-	my $percentage = $count / $raw_sequence_length;
+	my $percentage = $number_of_generated_images / $raw_sequence_length;
 	my $progress_bar = progress_bar(30,  $percentage);
 
-	my $frames_left = $raw_sequence_length - $count;
+	my $frames_left = $raw_sequence_length - $number_of_generated_images;
 	my $msg = sprintf("(%04.d / %04.d) %04.d more",
-			  $count, $raw_sequence_length,  $frames_left);
-	my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname/");
+			  $number_of_generated_images, $raw_sequence_length,  $frames_left);
+	my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname");
 
 	# XXX this is a hack to align layers. usually 4 chars, add another when 3
 	$sequence_size = " $sequence_size" if(length($sequence_size) == 3);
@@ -205,12 +211,13 @@ sub search_image_sequences($$$) {
   }
 }
 
-# returns a hash of source path/entry to image count
-sub read_raw_image_sequences($) {
+# reads all the raw image sequences based upon the config
+# and returns a hash of source path/entry to raw image count
+sub count_raw_image_sequences($) {
 
   my ($config) = @_;
 
-  my $raw_image_sequences = {};
+  my $raw_image_sequence_counts = {};
   foreach my $source_path (@{$config->{source_paths}}) {
     opendir my $source_dir, $source_path or die "cannot open fuck $source_path: $!\n";
 
@@ -218,7 +225,7 @@ sub read_raw_image_sequences($) {
       next if($source_entry =~ /^[.]/);
       next unless(-d "$source_path/$source_entry");
 
-      my $count = 0;
+      my $raw_image_count = 0;
       opendir my $entry_dir, "$source_path/$source_entry" or die "cannot open shit dir: $!\n";
 
       foreach my $entry (readdir $entry_dir) {
@@ -227,14 +234,14 @@ sub read_raw_image_sequences($) {
 	  $keep = 1 if($entry =~ /[.]$raw_type$/);
 	}
 	next unless $keep;
-	$count++;
+	$raw_image_count++;
       }
 
-      $raw_image_sequences->{$source_path}{$source_entry} = $count;
+      $raw_image_sequence_counts->{$source_path}{$source_entry} = $raw_image_count;
     }
     closedir $source_dir;
   }
-  return $raw_image_sequences;
+  return $raw_image_sequence_counts;
 }
 
 sub render_all_videos_for_image_sequence() {
@@ -441,7 +448,7 @@ sub render() {
 	if ($frame_num - $last_update > $update_after_frames) {
 	  $/ = "\n";		# just incase any method called here uses <> expecting \n
 	  # called to update image sequence progress, no extra render here
-	  search_image_sequences($config, 1, $image_sequence_name);
+	  search_and_render($config, 1, $image_sequence_name);
 	  $last_update = $frame_num;
 	  $/ = "";
 	}
