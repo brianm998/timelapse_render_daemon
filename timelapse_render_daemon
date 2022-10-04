@@ -113,9 +113,7 @@ while(1) {
 # subs #
 ########
 
-
 sub search_image_sequences($$$) {
-
   my ($config, $no_render, $currently_rendering_sequence_name) = @_;
 
   my $raw_image_sequences = read_raw_image_sequences($config);
@@ -123,24 +121,24 @@ sub search_image_sequences($$$) {
   foreach my $temp_path (@{$config->{temp_paths}}) {
     opendir my $temp_dir, $temp_path or die "cannot open $temp_path: $!\n";
 
-    foreach my $temp_entry (readdir $temp_dir) {
-      next unless(-d "$temp_path/$temp_entry");
+    foreach my $image_sequence_dirname (readdir $temp_dir) {
+      next unless(-d "$temp_path/$image_sequence_dirname");
       my $raw_image_sequence_name = undef;
 
       foreach my $dirname (keys %$raw_image_sequences) {
 	foreach my $raw_image_sequence (keys %{$raw_image_sequences->{$dirname}}) {
 	  $raw_image_sequence_name = $raw_image_sequence
-	    if ($temp_entry =~ /$config->{image_sequence_dirname_prefix}$raw_image_sequence/);
+	    if ($image_sequence_dirname =~ /$config->{image_sequence_dirname_prefix}$raw_image_sequence/);
 	}
       }
       next unless defined $raw_image_sequence_name;
 
       # check number of images
-      opendir my $temp_dir, "$temp_path/$temp_entry" or die "cannot open dfs dir: $!\n";
+      opendir my $temp_dir, "$temp_path/$image_sequence_dirname" or die "cannot open dfs dir: $!\n";
       my $count = 0;
       foreach my $entry (readdir $temp_dir) {
 	next if($entry =~ /^[.]/);
-	next unless (-f "$temp_path/$temp_entry/$entry"); # only files
+	next unless (-f "$temp_path/$image_sequence_dirname/$entry"); # only files
 	 # files with .tif or .tiff extensions only
 	if($entry !~ /[.]tiff?$/) { # XXX expose this in config so jpeg works too
 	  next;
@@ -159,30 +157,29 @@ sub search_image_sequences($$$) {
       }
       if($count == $raw_sequence_length) {
 	my $would_render = undef;
+
 	foreach my $render_type (@{$config->{rendering}}) {
-	  # 1 means rendered
-	  # 'error' means there was an error
-	  # 0 means it was skipped because of existing video file of same name
-	  my $should_render = render($config, $temp_path, $temp_entry,
-				     {}, $raw_sequence_length, $render_type, 1);
-	  if ($should_render eq 'error') {
-	    $would_render = 0;
-	  } elsif (defined $would_render) {
+	  my $output_video_filename = output_video_filename($config,
+							    $render_type,
+							    $image_sequence_dirname);
+	  my $should_render = should_render($config, $output_video_filename);
+
+	  if (defined $would_render) {
 	    $would_render = $should_render || $would_render;
 	  } else {
 	    $would_render = $should_render;
 	  }
 	}
 	next if(!$would_render);
-	my $sequence_size = sizeStringOf("$temp_path/$temp_entry");
-	unless("$config->{image_sequence_dirname_prefix}$currently_rendering_sequence_name" eq $temp_entry) {
-	  $log->timeLog($temp_entry, "$sequence_size $raw_sequence_length frame image sequence $temp_path/$temp_entry is ready to render", 1);
+	my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname");
+	unless($currently_rendering_sequence_name eq $image_sequence_dirname) {
+	  $log->timeLog($image_sequence_dirname, "$sequence_size $raw_sequence_length frame image sequence $temp_path/$image_sequence_dirname is ready to render", 1);
 	}
 	next if($no_render);
 
 	render_all_videos_for_image_sequence($config,
 					     $temp_path,
-					     $temp_entry,
+					     $image_sequence_dirname,
 					     $base_dirname,
 					     $raw_image_sequence_name,
 					     $raw_sequence_length)
@@ -196,12 +193,12 @@ sub search_image_sequences($$$) {
 	my $frames_left = $raw_sequence_length - $count;
 	my $msg = sprintf("(%04.d / %04.d) %04.d more",
 			  $count, $raw_sequence_length,  $frames_left);
-	my $sequence_size = sizeStringOf("$temp_path/$temp_entry/");
+	my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname/");
 
 	# XXX this is a hack to align layers. usually 4 chars, add another when 3
 	$sequence_size = " $sequence_size" if(length($sequence_size) == 3);
 
-	$log->log($temp_entry, "$progress_bar $msg - $sequence_size $temp_path/$temp_entry", $percentage);
+	$log->log($image_sequence_dirname, "$progress_bar $msg - $sequence_size $temp_path/$image_sequence_dirname", $percentage);
       }
     }
     closedir $temp_dir;
@@ -243,20 +240,20 @@ sub read_raw_image_sequences($) {
 sub render_all_videos_for_image_sequence() {
   my ($config,
       $temp_path,
-      $temp_entry,
+      $image_sequence_dirname,
       $base_dirname,
       $raw_image_sequence_name,
       $raw_sequence_length) = @_;
 
   # check here to see if we have an exif json file for this image sequence,
   # if not, create it, and return the collected exif values to to pass to ffmpeg
-  my $image_sequence_exif = read_exif_json($temp_entry,
+  my $image_sequence_exif = read_exif_json($image_sequence_dirname,
 					   $base_dirname,
 					   $raw_image_sequence_name);
 
-  my $sequence_size = sizeStringOf("$temp_path/$temp_entry");
+  my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname");
 
-  $log->timeLog($temp_entry, "rendering videos from $sequence_size image sequence $temp_path/$temp_entry", 10);
+  $log->timeLog($image_sequence_dirname, "rendering videos from $sequence_size image sequence $temp_path/$image_sequence_dirname", 10);
 
   # attempt to render at each resolution,
   # existing output files will be skipped
@@ -266,7 +263,8 @@ sub render_all_videos_for_image_sequence() {
     # 1 means rendered
     # 'error' means there was an error
     # 0 means it was skipped because of existing video file of same name
-    my $did_render = render($config, $temp_path, $temp_entry, $image_sequence_exif, $raw_sequence_length, $render_type, 0);
+    my $did_render = render($config, $temp_path, $image_sequence_dirname,
+			    $image_sequence_exif, $raw_sequence_length, $render_type);
     if ($did_render ne 'error') {
       unless (defined $success) {
 	$success = $did_render;
@@ -278,22 +276,22 @@ sub render_all_videos_for_image_sequence() {
     }
   }
   if ($success) {
-    my $sequence_size = sizeStringOf("$temp_path/$temp_entry");
+    my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname");
     # maybe delete the image sequence after successful render
     my $removed = 0;
     foreach my $delete_regex (@{$config->{delete_sequence_after_render_regexes}}) {
-      if ("$temp_path/$temp_entry" =~ /$delete_regex/) {
-	my $rm_cmd = "rm -rf $temp_path/$temp_entry";
-	$log->timeLog($temp_entry, "running $rm_cmd", 10);
+      if ("$temp_path/$image_sequence_dirname" =~ /$delete_regex/) {
+	my $rm_cmd = "rm -rf $temp_path/$image_sequence_dirname";
+	$log->timeLog($image_sequence_dirname, "running $rm_cmd", 10);
 	system($rm_cmd);
 	$removed = 1;
-	$log->timeLog($temp_entry, "done rendering videos from $sequence_size image sequence $temp_path/$temp_entry, image sequence removed", -1);
+	$log->timeLog($image_sequence_dirname, "done rendering videos from $sequence_size image sequence $temp_path/$image_sequence_dirname, image sequence removed", -1);
       }
     }
     unless ($removed) {
       # potential bug where this doesn't show up when only
       # some videos needed to be rendered
-      $log->timeLog($temp_entry, "done rendering videos from $sequence_size image sequence $temp_path/$temp_entry", -1);
+      $log->timeLog($image_sequence_dirname, "done rendering videos from $sequence_size image sequence $temp_path/$image_sequence_dirname", -1);
     }
   }
 }
@@ -351,21 +349,21 @@ sub should_render($$) {
   return $should_render;
 }
 
-# render a video from the given image sequence
+# render a video from the given image sequence for a render type (encoding, size, framerate)
 # empty width and height default to original image resolution
 sub render() {
   my ($config, $output_dirname, $image_sequence_name,
-      $exif_data, $raw_sequence_length, $render_type, $check_only) = @_;
+      $exif_data, $raw_sequence_length, $render_type) = @_;
 
   my $output_video_filename = output_video_filename($config, $render_type, $image_sequence_name);
 
-  my $should_render = should_render($config, $output_video_filename);
-
-  return $should_render if($check_only);
-
-  # XXX here
-  if($should_render) {
+  if(should_render($config, $output_video_filename)) {
     my $image_sequence_dirname = "$output_dirname/$image_sequence_name";
+
+    my $image_width = $render_type->{resolution}[0];
+    my $image_height = $render_type->{resolution}[1];
+
+    my $should_resize = 1;
 
     opendir my $source_dir, $image_sequence_dirname or die "cannot open source dir $image_sequence_dirname: $!\n";
 
@@ -379,16 +377,10 @@ sub render() {
     }
     my $image_type = ".tif";
     if ($test_image =~ /\d+(.*)$/) {
-      $image_type = $1;	# handle everything after the image index number
+      $image_type = $1; # handle everything after the image index number
     }
 
     closedir $source_dir;
-
-
-    my $image_width = $render_type->{resolution}[0];
-    my $image_height = $render_type->{resolution}[1];
-
-    my $should_resize = 1;
 
     unless (defined $image_width && defined $image_height) {
       # use original resolution unless given specific values
@@ -472,14 +464,14 @@ sub render() {
   return 0;
 }
 
-sub read_exif_json() {
-  my ($temp_entry, $base_dirname, $raw_image_sequence_name) = @_;
+sub read_exif_json($$$) {
+  my ($image_sequence_dirname, $base_dirname, $raw_image_sequence_name) = @_;
 
   my $exif_json_filename = "$base_dirname/$raw_image_sequence_name.json";
   my $image_sequence_exif = {};
 
   unless (-e $exif_json_filename) {
-    $log->timeLog($temp_entry, "creating json exif file for $base_dirname/$raw_image_sequence_name", 10);
+    $log->timeLog($image_sequence_dirname, "creating json exif file for $base_dirname/$raw_image_sequence_name", 10);
 
     my $exiftool = TimelapseExiftool->new;
     my $json_str = $exiftool->json_for_raw_dir("$base_dirname/$raw_image_sequence_name");
