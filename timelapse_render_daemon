@@ -181,31 +181,13 @@ sub search_image_sequences($$$) {
 	}
 	next if($no_render);
 
-	# check here to see if we have a json file, if not, create it
-	my $exif_json_filename = "$base_dirname/$raw_image_sequence_name.json";
-	unless(-e $exif_json_filename) {
-	  $log->timeLog($temp_entry, "creating json exif file for $temp_entry", 10);
+	# check here to see if we have an exif json file for this image sequence,
+	# if not, create it, and return the collected exif values to to pass to ffmpeg
+	my $image_sequence_exif = read_exif_json($temp_entry,
+						 $base_dirname,
+						 $raw_image_sequence_name);
 
-	  my $exiftool = TimelapseExiftool->new;
-	  my $json_str = $exiftool->json_for_raw_dir("$base_dirname/$raw_image_sequence_name");
-	  open my $filehandle, ">$exif_json_filename" or die "can't open $exif_json_filename: $!\n";
-	  print $filehandle $json_str;
-	  close $filehandle;
-	}
 	$log->timeLog($temp_entry, "rendering videos from $sequence_size image sequence $temp_path/$temp_entry", 10);
-
-	# hash ref
-	my $exif_json = TimelapseExiftool::read_json_from($exif_json_filename);
-
-	# remove keys with more than one value
-	foreach my $exif_key (keys %$exif_json) {
-	  my @keys = keys %{$exif_json->{$exif_key}};
-	  my $num = scalar(@keys);
-	  if($num == 1) {
-	    my $value = $keys[0];
-	    $video_write_json->{$exif_key} = $value;
-	  }
-	}
 
 	# attempt to render at each resolution,
 	# existing output files will be skipped
@@ -215,7 +197,7 @@ sub search_image_sequences($$$) {
 	  # 1 means rendered
 	  # 'error' means there was an error
 	  # 0 means it was skipped because of existing video file of same name
-	  my $did_render = render($config, $temp_path, $temp_entry, $video_write_json, $raw_sequence_length, $render_type, 0);
+	  my $did_render = render($config, $temp_path, $temp_entry, $image_sequence_exif, $raw_sequence_length, $render_type, 0);
 	  if($did_render ne 'error') {
 	    unless(defined $success) {
 	      $success = $did_render;
@@ -445,6 +427,36 @@ sub render() {
     $log->timeLog($image_sequence_name, "$output_dirname/$output_video_filename already rendered", -1);
   }
   return 0;
+}
+
+sub read_exif_json() {
+  my ($temp_entry, $base_dirname, $raw_image_sequence_name) = @_;
+
+  my $exif_json_filename = "$base_dirname/$raw_image_sequence_name.json";
+  my $image_sequence_exif = {};
+
+  unless (-e $exif_json_filename) {
+    $log->timeLog($temp_entry, "creating json exif file for $temp_entry", 10);
+
+    my $exiftool = TimelapseExiftool->new;
+    my $json_str = $exiftool->json_for_raw_dir("$base_dirname/$raw_image_sequence_name");
+    open my $filehandle, ">$exif_json_filename" or die "can't open $exif_json_filename: $!\n";
+    print $filehandle $json_str;
+    close $filehandle;
+  }
+  # hash ref
+  my $exif_json = TimelapseExiftool::read_json_from($exif_json_filename);
+
+  # remove keys with more than one value
+  foreach my $exif_key (keys %$exif_json) {
+    my @keys = keys %{$exif_json->{$exif_key}};
+    my $num = scalar(@keys);
+    if ($num == 1) {
+      my $value = $keys[0];
+      $image_sequence_exif->{$exif_key} = $value;
+    }
+  }
+  return $image_sequence_exif;
 }
 
 sub progress_bar($$) {
