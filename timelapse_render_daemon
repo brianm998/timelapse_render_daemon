@@ -158,14 +158,13 @@ sub search_image_sequences($$$) {
 	}
       }
       if($count == $raw_sequence_length) {
-	my $video_write_json = {}; # exif data to write to video file
-
 	my $would_render = undef;
 	foreach my $render_type (@{$config->{rendering}}) {
 	  # 1 means rendered
 	  # 'error' means there was an error
 	  # 0 means it was skipped because of existing video file of same name
-	  my $should_render = render($config, $temp_path, $temp_entry, $video_write_json, $raw_sequence_length, $render_type, 1);
+	  my $should_render = render($config, $temp_path, $temp_entry,
+				     {}, $raw_sequence_length, $render_type, 1);
 	  if ($should_render eq 'error') {
 	    $would_render = 0;
 	  } elsif (defined $would_render) {
@@ -181,52 +180,12 @@ sub search_image_sequences($$$) {
 	}
 	next if($no_render);
 
-	# check here to see if we have an exif json file for this image sequence,
-	# if not, create it, and return the collected exif values to to pass to ffmpeg
-	my $image_sequence_exif = read_exif_json($temp_entry,
-						 $base_dirname,
-						 $raw_image_sequence_name);
-
-	$log->timeLog($temp_entry, "rendering videos from $sequence_size image sequence $temp_path/$temp_entry", 10);
-
-	# attempt to render at each resolution,
-	# existing output files will be skipped
-	my $success = undef;
-
-	foreach my $render_type (@{$config->{rendering}}) {
-	  # 1 means rendered
-	  # 'error' means there was an error
-	  # 0 means it was skipped because of existing video file of same name
-	  my $did_render = render($config, $temp_path, $temp_entry, $image_sequence_exif, $raw_sequence_length, $render_type, 0);
-	  if($did_render ne 'error') {
-	    unless(defined $success) {
-	      $success = $did_render;
-	    } else {
-	      $success = $did_render || $success;
-	    }
-	  } else {
-	    $success = 0;
-	  }
-	}
-	if($success) {
-	  my $sequence_size = sizeStringOf("$temp_path/$temp_entry");
-	  # maybe delete the image sequence after successful render
-	  my $removed = 0;
-	  foreach my $delete_regex (@{$config->{delete_sequence_after_render_regexes}}) {
-	    if("$temp_path/$temp_entry" =~ /$delete_regex/) {
-	      my $rm_cmd = "rm -rf $temp_path/$temp_entry";
-	      $log->timeLog($temp_entry, "running $rm_cmd", 10);
-	      system($rm_cmd);
-	      $removed = 1;
-	      $log->timeLog($temp_entry, "done rendering videos from $sequence_size image sequence $temp_path/$temp_entry, image sequence removed", -1);
-	    }
-	  }
-	  unless($removed) {
-	    # potential bug where this doesn't show up when only
-	    # some videos needed to be rendered
-	    $log->timeLog($temp_entry, "done rendering videos from $sequence_size image sequence $temp_path/$temp_entry", -1);
-	  }
-	}
+	render_all_videos_for_image_sequence($config,
+					     $temp_path,
+					     $temp_entry,
+					     $base_dirname,
+					     $raw_image_sequence_name,
+					     $raw_sequence_length)
       } else {
 	# cannot process this one yet
 	# log of how far along it is
@@ -279,6 +238,64 @@ sub read_raw_image_sequences($) {
     closedir $source_dir;
   }
   return $raw_image_sequences;
+}
+
+sub render_all_videos_for_image_sequence() {
+  my ($config,
+      $temp_path,
+      $temp_entry,
+      $base_dirname,
+      $raw_image_sequence_name,
+      $raw_sequence_length) = @_;
+
+  # check here to see if we have an exif json file for this image sequence,
+  # if not, create it, and return the collected exif values to to pass to ffmpeg
+  my $image_sequence_exif = read_exif_json($temp_entry,
+					   $base_dirname,
+					   $raw_image_sequence_name);
+
+  my $sequence_size = sizeStringOf("$temp_path/$temp_entry");
+
+  $log->timeLog($temp_entry, "rendering videos from $sequence_size image sequence $temp_path/$temp_entry", 10);
+
+  # attempt to render at each resolution,
+  # existing output files will be skipped
+  my $success = undef;
+
+  foreach my $render_type (@{$config->{rendering}}) {
+    # 1 means rendered
+    # 'error' means there was an error
+    # 0 means it was skipped because of existing video file of same name
+    my $did_render = render($config, $temp_path, $temp_entry, $image_sequence_exif, $raw_sequence_length, $render_type, 0);
+    if ($did_render ne 'error') {
+      unless (defined $success) {
+	$success = $did_render;
+      } else {
+	$success = $did_render || $success;
+      }
+    } else {
+      $success = 0;
+    }
+  }
+  if ($success) {
+    my $sequence_size = sizeStringOf("$temp_path/$temp_entry");
+    # maybe delete the image sequence after successful render
+    my $removed = 0;
+    foreach my $delete_regex (@{$config->{delete_sequence_after_render_regexes}}) {
+      if ("$temp_path/$temp_entry" =~ /$delete_regex/) {
+	my $rm_cmd = "rm -rf $temp_path/$temp_entry";
+	$log->timeLog($temp_entry, "running $rm_cmd", 10);
+	system($rm_cmd);
+	$removed = 1;
+	$log->timeLog($temp_entry, "done rendering videos from $sequence_size image sequence $temp_path/$temp_entry, image sequence removed", -1);
+      }
+    }
+    unless ($removed) {
+      # potential bug where this doesn't show up when only
+      # some videos needed to be rendered
+      $log->timeLog($temp_entry, "done rendering videos from $sequence_size image sequence $temp_path/$temp_entry", -1);
+    }
+  }
 }
 
 # render a video from the given image sequence
