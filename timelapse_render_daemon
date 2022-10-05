@@ -76,8 +76,8 @@ use Exiftool;
 #   (would help with being able to not log about deleting sequences)
 
 # all user visible output goes through this log
-#my $log = UpdateableLog->new();
-my $log = DebugLog->new();
+my $log = UpdateableLog->new();
+#my $log = DebugLog->new();
 
 # allow json config file to be referenced on the command line
 my $config_json_filename = shift;
@@ -111,27 +111,28 @@ while(1) {
   # search again and render if any image sequences are ready
   search_and_render($config, 0);
 
+  my $number_of_renderers = scalar(keys %{$config->{renderer_map}});
+
+#  print("we have $number_of_renderers renderers\n");
+
   if(scalar(keys %{$config->{renderer_map}}) > 0) {
     foreach my $output_video (keys %{$config->{renderer_map}}) {
-      print "renderer for $output_video\n";
+ #     print "renderer for $output_video\n";
       my $renderer = $config->{renderer_map}{$output_video};
       unless($renderer->{is_running}) {
-	print "start renderer for $output_video\n";
+#	print "start renderer for $output_video\n";
 	$renderer->start();	# XXX check max
+      } elsif($renderer->{is_done}) {
+#	print "finish render for $output_video\n";
+	delete $config->{renderer_map}{$output_video};
       } else {
-	print "render renderer for $output_video\n";
+#	print "render renderer for $output_video\n";
 	$renderer->render_frame();
       }
     }
-    # need to check to see how many are running
-
-    # maybe start one
-
-    # maybe render a frame on each
   }
 
-  # sleep and repeat
-# XXX   sleep($config->{sleep_time_seconds})
+  #sleep($config->{sleep_time_seconds})
 }
 
 ########
@@ -527,6 +528,11 @@ sub progress_bar($$) {
 sub sizeStringOf {
   my ($item) = @_;
   open DU, "du -ch $item |";
+  local $/ = "\n";
   while (<DU>) { return $1 if $_ =~ /^\s*([\d\w.]+)\s+total/; }
   close DU;
+}
+sub sizeStringOf_WRONG {
+  my ($item) = @_;
+  return "6.4G      total\n";
 }
