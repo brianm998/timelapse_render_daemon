@@ -105,7 +105,7 @@ die unless ($config->{codecs});
 # run once without renders to fully flesh out the display
 search_and_render($config, 1);
 
-my $max_renders = 1;
+my $max_cuncurrent_renders = 1;
 my $current_renders = 0;
 
 while(1) {
@@ -128,7 +128,7 @@ while(1) {
 	$current_renders--;
       } elsif(!$renderer->{is_running}) {
 	#print "start renderer for $output_video\n";
-	if ($current_renders < $max_renders) {
+	if ($current_renders < $max_cuncurrent_renders) {
 	  $renderer->start();	# XXX check max
 	  $current_renders++;
 	}
