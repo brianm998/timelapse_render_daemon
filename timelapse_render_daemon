@@ -70,6 +70,8 @@ use Exiftool;
 # - check to see running on macos and run caffeinate to keep alive in background
 # - allow more than one concurrent render (fork, write ffmpeg to file, monitor from main proc)
 # - allow re-reading config every so often (add validation first)
+# - introduce a state system to track where image sequences are
+#   (would help with being able to not log about deleting sequences)
 
 # all user visible output goes through this log
 my $log = UpdateableLog->new();
@@ -112,6 +114,7 @@ while(1) {
 # subs #
 ########
 
+# look for image sequences that might be ready to render
 sub search_and_render($$$) {
   my ($config, $no_render, $currently_rendering_sequence_name) = @_;
 
@@ -131,6 +134,7 @@ sub search_and_render($$$) {
   }
 }
 
+# look into a specific temp dir for image sequences that might be ready to render
 sub search_and_render_from_temp_dir($$$$$$) {
   my ($config, $no_render, $currently_rendering_sequence_name,
       $raw_image_sequence_counts, $temp_dir, $temp_path) = @_;
@@ -236,7 +240,6 @@ sub process_image_sequence($$$$$$) {
   }
 }
 
-
 # reads all the raw image sequences based upon the config
 # and returns a hash of source path/entry to raw image count
 sub count_raw_image_sequences($) {
@@ -329,6 +332,7 @@ sub render_all_videos_for_image_sequence() {
   }
 }
 
+# returns the name of the video file that would be output
 sub output_video_filename($$$) {
   my ($config, $render_type, $image_sequence_name) = @_;
 
@@ -396,8 +400,6 @@ sub render() {
     my $image_width = $render_type->{resolution}[0];
     my $image_height = $render_type->{resolution}[1];
 
-    my $should_resize = 1;
-
     opendir my $source_dir, $image_sequence_dirname or die "cannot open source dir $image_sequence_dirname: $!\n";
 
     my $test_image;
@@ -415,6 +417,9 @@ sub render() {
 
     closedir $source_dir;
 
+    my $should_resize = 1;
+
+    # figure out if we're resiging when rendering or not
     unless (defined $image_width && defined $image_height) {
       # use original resolution unless given specific values
       my $exif = Exiftool::run("$image_sequence_dirname/$test_image");
