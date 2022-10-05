@@ -106,6 +106,7 @@ die unless ($config->{codecs});
 search_and_render($config, 1);
 
 my $max_renders = 1;
+my $current_renders = 0;
 
 while(1) {
   # search again and render if any image sequences are ready
@@ -113,26 +114,32 @@ while(1) {
 
   my $number_of_renderers = scalar(keys %{$config->{renderer_map}});
 
-#  print("we have $number_of_renderers renderers\n");
+  #print("we have $number_of_renderers renderers\n");
 
   if(scalar(keys %{$config->{renderer_map}}) > 0) {
     foreach my $output_video (keys %{$config->{renderer_map}}) {
- #     print "renderer for $output_video\n";
+      #print "renderer for $output_video\n";
       my $renderer = $config->{renderer_map}{$output_video};
-      unless($renderer->{is_running}) {
-#	print "start renderer for $output_video\n";
-	$renderer->start();	# XXX check max
-      } elsif($renderer->{is_done}) {
-#	print "finish render for $output_video\n";
+      if($renderer->{is_done}) {
+	#print "finish render for $output_video\n";
+	#print("b4 delete we have $number_of_renderers renderers\n");
 	delete $config->{renderer_map}{$output_video};
+	#print("after delete we have $number_of_renderers renderers\n");
+	$current_renders--;
+      } elsif(!$renderer->{is_running}) {
+	#print "start renderer for $output_video\n";
+	if ($current_renders < $max_renders) {
+	  $renderer->start();	# XXX check max
+	  $current_renders++;
+	}
       } else {
-#	print "render renderer for $output_video\n";
+	#print "render renderer for $output_video\n";
 	$renderer->render_frame();
       }
     }
   }
 
-  #sleep($config->{sleep_time_seconds})
+  sleep($config->{sleep_time_seconds}) if $current_renders == 0;
 }
 
 ########

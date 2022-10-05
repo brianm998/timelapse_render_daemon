@@ -38,7 +38,7 @@ sub start($) {
 
   my $FFMPEG_OUT;
 
-#  print "FFMPEG: $self->{ffmpeg_cmd}\n";
+  #print "FFMPEG: $self->{output_video_filename}\n";
 
   open FFMPEG_OUT, "$self->{ffmpeg_cmd} 2>&1 |" || die "cannot open FFMPEG: $!\n";
   $self->{FFMPEG_OUT} = \*FFMPEG_OUT;
@@ -56,32 +56,37 @@ sub render_frame($) {
 # print "self->{FFMPEG_OUT} $self->{FFMPEG_OUT}\n";
  my $ret = undef;
  $/ = ""; # don't use newline for <> XXX explore 'local' for this more
- my $line = readline($self->{FFMPEG_OUT});
- $/ = "\n";
- if(defined $line) {
-#   $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} INSIDE", 10);
-
-   # frame= 1569 fps=0.9 q=-0.0 Lsize=  286475kB time=00:00:52.26 bitrate=44900.6kbits/s speed=0.0292x 
-   if ($line =~ /^frame\s*=\s*(\d+)\s+fps\s*=\s*([\d.]+)/) {
-     $self->{frame_num} = $1;
-     my $fps = $2;
-#     $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} HIT $1 $2", 10);
-     my $progress_percentage = $self->{frame_num} / $self->{raw_sequence_length};
-
-     my $progress_bar = progress_bar(30, $progress_percentage); # XXX move to inc
-
-     $progress_bar .= " rendering frame $self->{frame_num}/$self->{raw_sequence_length} ($fps fps) for";
-     $self->{log}->log($self->{output_video_filename}, "$progress_bar $self->{output_video_filename}", 10);
-   } else {
-#     $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} MISS '$line'", 10);
-   }
-   $ret = 0;
- } else {
-#   $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} OUTSIDE", 10);
+ if(eof($self->{FFMPEG_OUT})) {
+   #print "EOF $self->{output_video_filename}\n";
    $self->finish();
-   $ret = $self->{result};
+ } else {
+   my $line = readline($self->{FFMPEG_OUT});
+   $/ = "\n";
+   if (defined $line) {
+     #   $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} INSIDE", 10);
+
+     # frame= 1569 fps=0.9 q=-0.0 Lsize=  286475kB time=00:00:52.26 bitrate=44900.6kbits/s speed=0.0292x 
+     if ($line =~ /^frame\s*=\s*(\d+)\s+fps\s*=\s*([\d.]+)/) {
+       $self->{frame_num} = $1;
+       my $fps = $2;
+       #     $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} HIT $1 $2", 10);
+       my $progress_percentage = $self->{frame_num} / $self->{raw_sequence_length};
+
+       my $progress_bar = progress_bar(30, $progress_percentage); # XXX move to inc
+
+       $progress_bar .= " rendering frame $self->{frame_num}/$self->{raw_sequence_length} ($fps fps) for";
+       $self->{log}->log($self->{output_video_filename}, "$progress_bar $self->{output_video_filename}", 10);
+     } else {
+       #     $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} MISS '$line'", 10);
+     }
+     $ret = 0;
+   } else {
+     $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} OUTSIDE", 10);
+#     $self->finish();
+#     $ret = $self->{result};
+   }
+   $/ = "\n";
  }
- $/ = "\n";
  return $ret;
 }
 
@@ -120,8 +125,19 @@ sub finish($) {
 
  $self->{log}->timeLog($self->{output_video_filename}, "FINISH for $self->{output_video_filename}", 10);
 
- $self->{is_done} = 1;
+ #print "self->{FFMPEG_OUT} $self->{FFMPEG_OUT}\n";
  my $result = close $self->{FFMPEG_OUT};
+ #print "result '$result'\n";
+ return unless(defined $result && length $result > 0);
+ $self->{is_done} = 1;
+
+ # XXX XXX XXX
+ # XXX XXX XXX
+ # XXX XXX XXX
+# $result = 1;			# XXX the close above isn't always returning a value
+ # XXX XXX XXX
+ # XXX XXX XXX
+ # XXX XXX XXX
 
  if ($result == 1) {
    my $video_size = sizeStringOf("$self->{output_dirname}/$self->{output_video_filename}");
