@@ -81,7 +81,7 @@ sub render_frame($) {
      }
      $ret = 0;
    } else {
-     $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} OUTSIDE", 10);
+#     $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} OUTSIDE", 10);
 #     $self->finish();
 #     $ret = $self->{result};
    }
@@ -123,7 +123,7 @@ sub log_finished_result($) {
 sub finish($) {
  my ($self) = @_;
 
- $self->{log}->timeLog($self->{output_video_filename}, "FINISH for $self->{output_video_filename}", 10);
+# $self->{log}->timeLog($self->{output_video_filename}, "FINISH for $self->{output_video_filename}", 10);
 
  #print "self->{FFMPEG_OUT} $self->{FFMPEG_OUT}\n";
  my $result = close $self->{FFMPEG_OUT};
