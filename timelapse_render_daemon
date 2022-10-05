@@ -18,7 +18,7 @@ use lib "${script_dir}/inc";
 use UpdateableLog;
 
 use lib '/Users/brian/iCloud/scripts'; # XXX this sucks :(
-use TimelapseExiftool;
+use TimelapseExiftool;		       # used by backup.pl too
 
 use lib '/Users/brian/git/timelapse_image_blender/inc'; # XXX fuck :(
 use Timelapse;
@@ -60,7 +60,7 @@ use Exiftool;
 # - notice when existing master video is older than the new sequence, and still render to temp path, assuming no file at temp path exists yet
 # - allow rendering when base image sequence has been archived, based upon # of images from json
 #   - specify archive locations in config
-# - fix problem where deleting dirs makes them show up (tmp_rm hack works for now..)
+# - fix problem where deleting dirs makes them show up (tmp_rm hack works for now, kindof)
 # - add validation for Timelapse and others (ffmpeg exists, etc)
 # - watch updates in config.json and update when running
 # - write a real log file as well as the refreshing  console output
@@ -419,7 +419,7 @@ sub render() {
 
     my $should_resize = 1;
 
-    # figure out if we're resiging when rendering or not
+    # figure out if we're resizing when rendering or not
     unless (defined $image_width && defined $image_height) {
       # use original resolution unless given specific values
       my $exif = Exiftool::run("$image_sequence_dirname/$test_image");
