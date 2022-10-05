@@ -15,7 +15,9 @@ BEGIN { $script_dir = Cwd::realpath( File::Basename::dirname(__FILE__)) }
 # add this dir to the include path
 use lib "${script_dir}/inc";
 
+use Renderer;
 use UpdateableLog;
+use DebugLog;
 
 use lib '/Users/brian/iCloud/scripts'; # XXX this sucks :(
 use TimelapseExiftool;		       # used by backup.pl too
@@ -74,7 +76,8 @@ use Exiftool;
 #   (would help with being able to not log about deleting sequences)
 
 # all user visible output goes through this log
-my $log = UpdateableLog->new();
+#my $log = UpdateableLog->new();
+my $log = DebugLog->new();
 
 # allow json config file to be referenced on the command line
 my $config_json_filename = shift;
@@ -102,12 +105,33 @@ die unless ($config->{codecs});
 # run once without renders to fully flesh out the display
 search_and_render($config, 1);
 
+my $max_renders = 1;
+
 while(1) {
   # search again and render if any image sequences are ready
   search_and_render($config, 0);
 
+  if(scalar(keys %{$config->{renderer_map}}) > 0) {
+    foreach my $output_video (keys %{$config->{renderer_map}}) {
+      print "renderer for $output_video\n";
+      my $renderer = $config->{renderer_map}{$output_video};
+      unless($renderer->{is_running}) {
+	print "start renderer for $output_video\n";
+	$renderer->start();	# XXX check max
+      } else {
+	print "render renderer for $output_video\n";
+	$renderer->render_frame();
+      }
+    }
+    # need to check to see how many are running
+
+    # maybe start one
+
+    # maybe render a frame on each
+  }
+
   # sleep and repeat
-  sleep($config->{sleep_time_seconds})
+# XXX   sleep($config->{sleep_time_seconds})
 }
 
 ########
@@ -291,44 +315,9 @@ sub render_all_videos_for_image_sequence() {
 
   $log->timeLog($image_sequence_dirname, "rendering videos from $sequence_size image sequence $temp_path/$image_sequence_dirname", 10);
 
-  # attempt to render at each resolution,
-  # existing output files will be skipped
-  my $success = undef;
-
   foreach my $render_type (@{$config->{rendering}}) {
-    # 1 means rendered
-    # 'error' means there was an error
-    # 0 means it was skipped because of existing video file of same name
-    my $did_render = render($config, $temp_path, $image_sequence_dirname,
-			    $image_sequence_exif, $raw_sequence_length, $render_type);
-    if ($did_render ne 'error') {
-      unless (defined $success) {
-	$success = $did_render;
-      } else {
-	$success = $did_render || $success;
-      }
-    } else {
-      $success = 0;
-    }
-  }
-  if ($success) {
-    my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname");
-    # maybe delete the image sequence after successful render
-    my $removed = 0;
-    foreach my $delete_regex (@{$config->{delete_sequence_after_render_regexes}}) {
-      if ("$temp_path/$image_sequence_dirname" =~ /$delete_regex/) {
-	my $rm_cmd = "rm -rf $temp_path/$image_sequence_dirname";
-	$log->timeLog($image_sequence_dirname, "running $rm_cmd", 10);
-	system($rm_cmd);
-	$removed = 1;
-	$log->timeLog($image_sequence_dirname, "done rendering videos from $sequence_size image sequence $temp_path/$image_sequence_dirname, image sequence removed", -1);
-      }
-    }
-    unless ($removed) {
-      # potential bug where this doesn't show up when only
-      # some videos needed to be rendered
-      $log->timeLog($image_sequence_dirname, "done rendering videos from $sequence_size image sequence $temp_path/$image_sequence_dirname", -1);
-    }
+     render($config, $temp_path, $image_sequence_dirname,
+	    $image_sequence_exif, $raw_sequence_length, $render_type);
   }
 }
 
@@ -383,6 +372,13 @@ sub should_render($$) {
     }
   }
 
+  # make sure we've not already got a renderer setup for this video file
+  foreach my $render_filename (keys %{$config->{renderer_map}}) {
+    if($render_filename eq $output_video_filename) {
+      $should_render = 0;
+    }
+  }
+
   return $should_render;
 }
 
@@ -428,7 +424,7 @@ sub render() {
       $image_height = $exif->{ImageHeight};
       if ($image_width <= 0 || $image_height <= 0) {
 	$log->timeLog($image_sequence_name, "cannot read image size from $image_sequence_dirname/$test_image, cannot not render [$image_width, $image_height]", 10);
-	return 'error';
+	return undef;
       }
       $should_resize = 0;
     }
@@ -459,47 +455,25 @@ sub render() {
     }
 
     $ffmpeg_cmd .= "$output_dirname/$output_video_filename";
-    $log->timeLog($output_video_filename, "starting render of $output_video_filename", 10);
-    open FFMPEG, "$ffmpeg_cmd 2>&1 |";
-    my $frame_num = 0;
-    my $last_update = 0;
-    my $update_after_frames = 2;  # how many frames pass before we update the rest of the display
-    $/ = "";			  # don't use newline for <>
-    while(<FFMPEG>) {
-      # frame= 1569 fps=0.9 q=-0.0 Lsize=  286475kB time=00:00:52.26 bitrate=44900.6kbits/s speed=0.0292x 
-      if(/^frame=\s+(\d+)\s+fps=([\d.]+)/) {
-	$frame_num = $1;
-	my $fps = $2;
-	my $progress_percentage = $frame_num / $raw_sequence_length;
 
-	my $progress_bar = progress_bar(30, $progress_percentage);
+    # XXX refactor point
+    # XXX make an object to encapsulate all of the logic below here
+    # XXX pass that object back as a result from here all the way to the top level loop
+    # XXX The top level loop both looks for more of these render objects to find, and
+    # XXX also iterates over the current list until they're done.
+    # XXX the while loop below repeats the new render_frame() method each time
 
-	$progress_bar .= " rendering frame $frame_num/$raw_sequence_length ($fps fps) for";
-	$log->log($output_video_filename, "$progress_bar $output_video_filename", 10);
-	if ($frame_num - $last_update > $update_after_frames) {
-	  $/ = "\n";		# just incase any method called here uses <> expecting \n
-	  # called to update image sequence progress, no extra render here
-	  search_and_render($config, 1, $image_sequence_name);
-	  $last_update = $frame_num;
-	  $/ = "";
-	}
-      }
-    }
-    $/ = "\n";
-    my $result = close FFMPEG;
-    if ($result == 1) {
-      my $video_size = sizeStringOf("$output_dirname/$output_video_filename");
-      $log->timeLog($output_video_filename, "rendered $video_size $frame_num frame $output_dirname/$output_video_filename", -1);
-      return 1;
-    } else {
-      # failed, why?
-      $log->timeLog($output_video_filename, "$output_dirname/$output_video_filename render FAILED", -1);
-      return 'error';
-    }
+    my $renderer = Renderer->new($log,
+				 $ffmpeg_cmd,
+				 $raw_sequence_length,
+				 $output_dirname,
+				 $output_video_filename,
+				 $image_sequence_name);
+#    $renderer->start();
+    $config->{renderer_map}{$output_video_filename} = $renderer;
   } else {
     $log->timeLog($image_sequence_name, "$output_dirname/$output_video_filename already rendered", -1);
   }
-  return 0;
 }
 
 sub read_exif_json($$$) {
