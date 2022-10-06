@@ -8,10 +8,9 @@ sub new {
   my ($class,
       $log,
       $ffmpeg_cmd,
-      $raw_sequence_length,
+      $image_sequence_length,
       $output_dirname,
       $output_video_filename,
-      $image_sequence_name,
       $group,
       $finished_callback,
      )
@@ -20,9 +19,8 @@ sub new {
   my $self =
     {
      log => $log,
-     image_sequence_name => $image_sequence_name,
      ffmpeg_cmd => $ffmpeg_cmd,
-     raw_sequence_length => $raw_sequence_length,
+     image_sequence_length => $image_sequence_length,
      output_dirname => $output_dirname,
      output_video_filename => $output_video_filename,
      frame_num =>  0,
@@ -91,11 +89,11 @@ sub render_frame($) {
        $self->{frame_num} = $1;
        my $fps = $2;
 #       $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} HIT $1 $2", 10);
-       my $progress_percentage = $self->{frame_num} / $self->{raw_sequence_length};
+       my $progress_percentage = $self->{frame_num} / $self->{image_sequence_length};
 
        my $progress_bar = progress_bar(30, $progress_percentage); # XXX move to inc
 
-       $progress_bar .= " rendering frame $self->{frame_num}/$self->{raw_sequence_length} ($fps fps) for";
+       $progress_bar .= " rendering frame $self->{frame_num}/$self->{image_sequence_length} ($fps fps) for";
        $self->{log}->log($self->{output_video_filename}, "$progress_bar $self->{output_video_filename}", 10, $progress_percentage);
      } else {
 #       $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} MISS '$line'", 10);
