@@ -8,6 +8,7 @@ use strict;
 use File::Basename;
 use Cwd;
 use JSON;
+use Term::ANSIColor qw(:constants);
 
 my $script_dir;	# figure out where this running script exists on disk
 BEGIN { $script_dir = Cwd::realpath( File::Basename::dirname(__FILE__)) }
@@ -276,14 +277,14 @@ sub process_image_sequence($$$$$$) {
     my $progress_bar = Renderer::progress_bar(30,  $percentage);
 
     my $frames_left = $raw_sequence_length - $number_of_generated_images;
-    my $msg = sprintf("(%04.d / %04.d) %04.d more",
-		      $number_of_generated_images, $raw_sequence_length,  $frames_left);
+    my $msg = sprintf(YELLOW."waiting ".RESET."for %04.d more frames (%04.d / %04.d)",
+		      $number_of_generated_images, $frames_left, $raw_sequence_length);
     my $sequence_size = Renderer::sizeStringOf("$temp_path/$image_sequence_dirname");
 
     # XXX this is a hack to align layers. usually 4 chars, add another when 3
     $sequence_size = " $sequence_size" if(length($sequence_size) == 3);
 
-    $log->log($image_sequence_dirname, "$progress_bar $msg - $sequence_size $temp_path/$image_sequence_dirname", $percentage);
+    $log->log($image_sequence_dirname, "$progress_bar $msg for ".CYAN."$sequence_size".BLUE." $temp_path/$image_sequence_dirname".RESET, $percentage);
   }
 }
 
@@ -338,34 +339,40 @@ sub render_all_videos_for_image_sequence() {
 
   my $sequence_size = Renderer::sizeStringOf("$temp_path/$image_sequence_dirname");
 
-  $log->timeLog($image_sequence_dirname, "rendering videos from $sequence_size image sequence $temp_path/$image_sequence_dirname", 10);
-
   my $group = [];		# these renderers all share a group
 
-  my $finished_callback = sub($) {
+  my $group_finished_callback = sub($) {
     # called when this group is done rendering
     my ($self) = @_;
-
+    my $group_size = scalar(@$group);
     if ($self->{result}) {
       # maybe delete the image sequence after successful render
       my $removed = 0;
       foreach my $delete_regex (@{$config->{delete_sequence_after_render_regexes}}) {
 	if ("$temp_path/$image_sequence_dirname" =~ /$delete_regex/) {
 	  my $rm_cmd = "rm -rf $temp_path/$image_sequence_dirname";
-	  $log->timeLog($image_sequence_dirname, "running $rm_cmd", 10);
+	  $log->timeLog($image_sequence_dirname, MAGENTA."running".RED." $rm_cmd".RESET, 10);
 	  system($rm_cmd);
 	  $removed = 1;
-	  $log->timeLog($image_sequence_dirname, "done rendering videos from $sequence_size image sequence $temp_path/$image_sequence_dirname, image sequence removed", -1);
+	  $log->timeLog($image_sequence_dirname, GREEN."rendered".RESET." $group_size videos from".CYAN." $sequence_size".RESET." image sequence".BLUE." $temp_path/$image_sequence_dirname".RESET.", image sequence".RED." removed".RESET, -1);
 	}
       }
       unless ($removed) {
 	# potential bug where this doesn't show up when only
 	# some videos needed to be rendered
-	$log->timeLog($image_sequence_dirname, "done rendering videos from $sequence_size image sequence $temp_path/$image_sequence_dirname", -1);
+	$log->timeLog($image_sequence_dirname, GREEN."rendered ".RESET."$group_size videos from".CYAN." $sequence_size".RESET." image sequence".BLUE." $temp_path/$image_sequence_dirname".RESET, -1);
       }
     } else {
-      $log->timeLog($image_sequence_dirname, "appears to have failed :(", -1);
+      $log->timeLog($image_sequence_dirname, RED."appears to have failed :(".RESET, -1);
     }
+  };
+
+  my $finished_callback = sub {
+    my $items_left = 0;
+    foreach my $item (@$group) {
+      $items_left++ unless($item->{is_done})
+    }
+    $log->timeLog($image_sequence_dirname, MAGENTA."rendering ".RESET."$items_left videos from".CYAN." $sequence_size".RESET." image sequence".BLUE." $temp_path/$image_sequence_dirname".RESET, 10);
   };
 
   foreach my $render_type (@{$config->{rendering}}) {
@@ -376,8 +383,10 @@ sub render_all_videos_for_image_sequence() {
 		    $raw_sequence_length,
 		    $render_type,
 		    $group,
-		    $finished_callback);
+		    $finished_callback,
+		    $group_finished_callback);
   }
+  &$finished_callback();
 }
 
 # returns the name of the video file that would be output
@@ -451,7 +460,8 @@ sub create_renderer() {
       $raw_sequence_length,
       $render_type,
       $group,
-      $finished_callback) = @_;
+      $finished_callback,
+      $group_finished_callback) = @_;
 
   my $output_video_filename = output_video_filename($config, $render_type, $image_sequence_name);
 
@@ -527,7 +537,8 @@ sub create_renderer() {
 				 $output_dirname,
 				 $output_video_filename,
 				 $group,
-				 $finished_callback);
+				 $finished_callback,
+				 $group_finished_callback);
 
     $config->{ffmpeg}{$output_video_filename} = $renderer;
     push @$group, $renderer;
@@ -549,7 +560,7 @@ sub read_exif_json($$$) {
   unless (-e $exif_json_filename) {
     return if $exif_map->{$exif_json_filename};
 
-    $log->timeLog($image_sequence_dirname, "creating json exif file for $base_dirname/$raw_image_sequence_name", 10);
+    $log->timeLog($image_sequence_dirname, MAGENTA."creating".RESET." json exif file for".BLUE." $base_dirname/$raw_image_sequence_name".RESET, 10);
 
     $exif_map->{$exif_json_filename} = 1;
     my $dirname = "$base_dirname/$raw_image_sequence_name";
@@ -582,6 +593,7 @@ sub read_exif_json($$$) {
       my $full_filename = "$dirname/$filename";
       my $runner = ExiftoolRunner->new($full_filename,
 				       $group,
+				       undef,
 				       $completion_callback);
       $config->{exiftool}{$full_filename} = $runner;
       push @$group, $runner;

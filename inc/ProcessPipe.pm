@@ -11,6 +11,7 @@ sub new {
       $shell_command,
       $group,
       $finished_callback,
+      $group_finished_callback,
      )
       = @_;
 
@@ -21,6 +22,7 @@ sub new {
      is_done => 0,
      is_running => 0,
      group => $group,
+     group_finished_callback => $group_finished_callback,
      finished_callback => $finished_callback,
     };
 
@@ -43,12 +45,15 @@ sub finish($) {
 
   $self->{is_done} = 1;
 
+  my $finished_callback = $self->{finished_callback};
+  &$finished_callback($self) if defined $finished_callback;
+
   $self->{is_running} = 0;
   if ($self->group_is_done()) {
     # only after all renders are done for this group
 
-    my $finished_callback = $self->{finished_callback};
-    &$finished_callback($self) if defined $finished_callback;
+    my $group_finished_callback = $self->{group_finished_callback};
+    &$group_finished_callback($self) if defined $group_finished_callback;
   }
 }
 

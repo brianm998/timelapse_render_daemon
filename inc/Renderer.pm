@@ -4,6 +4,8 @@ use strict;
 
 use parent 'ProcessPipe';
 
+use Term::ANSIColor qw(:constants);
+
 # an object that can be used to render an image sequence into a video
 
 sub new {
@@ -15,10 +17,12 @@ sub new {
       $output_video_filename,
       $group,
       $finished_callback,
+      $group_finished_callback,
      )
       = @_;
 
-  my $self = $class->SUPER::new($log, $ffmpeg_cmd, $group, $finished_callback);
+  my $self = $class->SUPER::new($log, $ffmpeg_cmd, $group,
+				$finished_callback, $group_finished_callback);
   $self->{image_sequence_length} = $image_sequence_length;
   $self->{output_dirname} = $output_dirname;
   $self->{output_video_filename} = $output_video_filename;
@@ -44,7 +48,7 @@ sub start($) {
 
   $self->SUPER::start();
 
-  $self->{log}->timeLog($self->{output_video_filename}, "starting render of $self->{output_video_filename}", 10);
+  $self->{log}->timeLog($self->{output_video_filename}, MAGENTA."starting ".RESET."render of".BLUE." $self->{output_video_filename}".RESET, 10);
 }
 
 sub read_line($) {
@@ -71,8 +75,8 @@ sub read_line($) {
 
        my $progress_bar = progress_bar(30, $progress_percentage); # XXX move to inc
 
-       $progress_bar .= " rendering frame $self->{frame_num}/$self->{image_sequence_length} ($fps fps) for";
-       $self->{log}->log($self->{output_video_filename}, "$progress_bar $self->{output_video_filename}", 10, $progress_percentage);
+       $progress_bar .= MAGENTA" rendering ".RESET."frame $self->{frame_num}/$self->{image_sequence_length} (".CYAN."$fps fps".RESET.") for";
+       $self->{log}->log($self->{output_video_filename}, $progress_bar.BLUE." $self->{output_video_filename}".RESET, 10, $progress_percentage);
      } else {
 #       $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} MISS '$line'", 10);
      }
@@ -93,7 +97,7 @@ sub finish($) {
 
   if ($self->output_video_exists()) {
     my $video_size = sizeStringOf($full_filename);
-    $self->{log}->timeLog($self->{output_video_filename}, "rendered $video_size $self->{frame_num} frame $full_filename", -1);
+    $self->{log}->timeLog($self->{output_video_filename}, GREEN."rendered".CYAN." $video_size".RESET." $self->{frame_num} frame".BLUE." $full_filename".RESET, -1);
     $self->{result} = 1;
   } else {
     # failed, why?
@@ -119,15 +123,15 @@ sub sizeStringOf {
 sub progress_bar($$) {
   my ($length, $percentage) = @_;
 
-  my $progress_bar = "[";
+  my $progress_bar = BLUE."[";
   for (my $i = 0 ; $i < $length ; $i++) {
     if ($i/$length < $percentage) {
-      $progress_bar .= '*';
+      $progress_bar .= GREEN.'*';
     } else {
-      $progress_bar .= '-';
+      $progress_bar .= YELLOW.'-';
     }
   }
-  $progress_bar .= "]";
+  $progress_bar .= BLUE"]".RESET;
 
   return $progress_bar;
 }

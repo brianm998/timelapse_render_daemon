@@ -5,6 +5,7 @@ use Term::ReadKey;
 
 use strict;
 
+use Term::ANSIColor qw(:constants);
 
 # a log system that allows updates to log lines after logging
 
@@ -70,7 +71,7 @@ sub timeLog($$$) {
   my $d = `date "+%r"`;
   chomp $d;
 
-  $self->log($name, "$d - $message", $value, time);
+  $self->log($name, YELLOW.$d.RESET." - $message", $value, time);
 }
 
 sub log($$$) {
