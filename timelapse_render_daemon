@@ -70,7 +70,6 @@ use Exiftool;
 # - avoid printing lines longer than the console
 # - have timeLog not update time on log when message is the same
 # - check to see running on macos and run caffeinate to keep alive in background
-# - allow more than one concurrent render (fork, write ffmpeg to file, monitor from main proc)
 # - allow re-reading config every so often (add validation first)
 # - introduce a state system to track where image sequences are
 #   (would help with being able to not log about deleting sequences)
@@ -103,37 +102,27 @@ $config->{codecs} = TimelapseExiftool::read_json_from("$script_dir/video_codecs.
 die unless ($config->{codecs});
 
 # run once without renders to fully flesh out the display
-search_and_render($config, 1);
+search_and_discover($config, 1);
 
-my $max_cuncurrent_renders = 1;
+my $max_cuncurrent_renders = 3;	# XXX stick this in the config
 my $current_renders = 0;
 
 while(1) {
   # search again and render if any image sequences are ready
-  search_and_render($config, 0);
-
-  my $number_of_renderers = scalar(keys %{$config->{renderer_map}});
-
-  #print("we have $number_of_renderers renderers\n");
+  search_and_discover($config, 0);
 
   if(scalar(keys %{$config->{renderer_map}}) > 0) {
     foreach my $output_video (keys %{$config->{renderer_map}}) {
-      #print "renderer for $output_video\n";
       my $renderer = $config->{renderer_map}{$output_video};
       if($renderer->{is_done}) {
-	#print "finish render for $output_video\n";
-	#print("b4 delete we have $number_of_renderers renderers\n");
 	delete $config->{renderer_map}{$output_video};
-	#print("after delete we have $number_of_renderers renderers\n");
 	$current_renders--;
       } elsif(!$renderer->{is_running}) {
-	#print "start renderer for $output_video\n";
 	if ($current_renders < $max_cuncurrent_renders) {
 	  $renderer->start();	# XXX check max
 	  $current_renders++;
 	}
       } else {
-	#print "render renderer for $output_video\n";
 	$renderer->render_frame();
       }
     }
@@ -147,7 +136,7 @@ while(1) {
 ########
 
 # look for image sequences that might be ready to render
-sub search_and_render($$$) {
+sub search_and_discover($$$) {
   my ($config, $no_render, $currently_rendering_sequence_name) = @_;
 
   # a hash of all raw image sequences to their number of raw images
@@ -157,7 +146,7 @@ sub search_and_render($$$) {
   foreach my $temp_path (@{$config->{temp_paths}}) {
     opendir my $temp_dir, $temp_path or die "cannot open $temp_path: $!\n";
 
-    search_and_render_from_temp_dir($config, $no_render,
+    search_and_discover_from_temp_dir($config, $no_render,
 				    $currently_rendering_sequence_name,
 				    $raw_image_sequence_counts,
 				    $temp_dir, $temp_path);
@@ -167,7 +156,7 @@ sub search_and_render($$$) {
 }
 
 # look into a specific temp dir for image sequences that might be ready to render
-sub search_and_render_from_temp_dir($$$$$$) {
+sub search_and_discover_from_temp_dir($$$$$$) {
   my ($config, $no_render, $currently_rendering_sequence_name,
       $raw_image_sequence_counts, $temp_dir, $temp_path) = @_;
 
@@ -240,7 +229,7 @@ sub process_image_sequence($$$$$$) {
     return unless($would_render);
 
     unless ($currently_rendering_sequence_name eq $image_sequence_dirname) {
-      my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname");
+      my $sequence_size = Renderer::sizeStringOf("$temp_path/$image_sequence_dirname");
       $log->timeLog($image_sequence_dirname, "$sequence_size $raw_sequence_length frame image sequence $temp_path/$image_sequence_dirname is ready to render", 1);
     }
 
@@ -258,12 +247,12 @@ sub process_image_sequence($$$$$$) {
     # log of how far along it is
 
     my $percentage = $number_of_generated_images / $raw_sequence_length;
-    my $progress_bar = progress_bar(30,  $percentage);
+    my $progress_bar = Renderer::progress_bar(30,  $percentage);
 
     my $frames_left = $raw_sequence_length - $number_of_generated_images;
     my $msg = sprintf("(%04.d / %04.d) %04.d more",
 		      $number_of_generated_images, $raw_sequence_length,  $frames_left);
-    my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname");
+    my $sequence_size = Renderer::sizeStringOf("$temp_path/$image_sequence_dirname");
 
     # XXX this is a hack to align layers. usually 4 chars, add another when 3
     $sequence_size = " $sequence_size" if(length($sequence_size) == 3);
@@ -319,13 +308,13 @@ sub render_all_videos_for_image_sequence() {
 					   $base_dirname,
 					   $raw_image_sequence_name);
 
-  my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname");
+  my $sequence_size = Renderer::sizeStringOf("$temp_path/$image_sequence_dirname");
 
   $log->timeLog($image_sequence_dirname, "rendering videos from $sequence_size image sequence $temp_path/$image_sequence_dirname", 10);
 
   foreach my $render_type (@{$config->{rendering}}) {
-     render($config, $temp_path, $image_sequence_dirname,
-	    $image_sequence_exif, $raw_sequence_length, $render_type);
+    render($config, $temp_path, $image_sequence_dirname,
+	   $image_sequence_exif, $raw_sequence_length, $render_type);
   }
 }
 
@@ -471,6 +460,8 @@ sub render() {
     # XXX also iterates over the current list until they're done.
     # XXX the while loop below repeats the new render_frame() method each time
 
+    #print("XXX render for $output_video_filename\n");
+
     my $renderer = Renderer->new($log,
 				 $ffmpeg_cmd,
 				 $raw_sequence_length,
@@ -512,34 +503,4 @@ sub read_exif_json($$$) {
     }
   }
   return $image_sequence_exif;
-}
-
-sub progress_bar($$) {
-  my ($length, $percentage) = @_;
-
-  my $progress_bar = "[";
-  for (my $i = 0 ; $i < $length ; $i++) {
-    if ($i/$length < $percentage) {
-      $progress_bar .= '*';
-    } else {
-      $progress_bar .= '-';
-    }
-  }
-  $progress_bar .= "]";
-
-  return $progress_bar;
-}
-
-# a human readable string giving the size of a file (or total of a shell globbed list)
-# XXX copied from backup.pl :(
-sub sizeStringOf {
-  my ($item) = @_;
-  open DU, "du -ch $item |";
-  local $/ = "\n";
-  while (<DU>) { return $1 if $_ =~ /^\s*([\d\w.]+)\s+total/; }
-  close DU;
-}
-sub sizeStringOf_WRONG {
-  my ($item) = @_;
-  return "6.4G      total\n";
 }

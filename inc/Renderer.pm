@@ -156,7 +156,7 @@ sub finish($) {
 
 # a human readable string giving the size of a file (or total of a shell globbed list)
 # XXX copied from backup.pl :(
-# XXX fix thisx
+# XXX fix this
 sub sizeStringOf {
   my ($item) = @_;
   open DU, "du -ch $item |";
@@ -165,13 +165,6 @@ sub sizeStringOf {
   close DU;
 }
 
-sub sizeStringOf_WRONG {
-  my ($item) = @_;
-  return "9.4G      total\n";
-
-}
-
-# XXX copied, move this
 sub progress_bar($$) {
   my ($length, $percentage) = @_;
 
