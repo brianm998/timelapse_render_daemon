@@ -12,6 +12,7 @@ sub new {
       $output_dirname,
       $output_video_filename,
       $image_sequence_name,
+      $group,
      )
       = @_;
 
@@ -26,9 +27,19 @@ sub new {
      frame_num =>  0,
      is_done => 0,
      is_running => 0,
+     group => $group,
     };
 
   return bless $self, $class;
+}
+
+sub group_is_done() {
+  my ($self) = @_;
+
+  foreach my $renderer (@{$self->{group}}) {
+    return 0 unless $renderer->{is_done};
+  }
+  return $self->{is_done};
 }
 
 sub output_video_exists() {
@@ -126,27 +137,30 @@ sub log_finished_result($) {
 }
 
 sub finish($) {
- my ($self) = @_;
+  my ($self) = @_;
 
-# $self->{log}->timeLog($self->{output_video_filename}, "FINISH for $self->{output_video_filename}", 10);
+  # $self->{log}->timeLog($self->{output_video_filename}, "FINISH for $self->{output_video_filename}", 10);
 
- close $self->{FFMPEG_OUT};
+  close $self->{FFMPEG_OUT};
 
- $self->{is_done} = 1;
+  $self->{is_done} = 1;
 
- my $full_filename = $self->full_output_video_filename();
+  my $full_filename = $self->full_output_video_filename();
 
- if ($self->output_video_exists()) {
-   my $video_size = sizeStringOf($full_filename);
-   $self->{log}->timeLog($self->{output_video_filename}, "rendered $video_size $self->{frame_num} frame $full_filename", -1);
-   $self->{result} = 1;
- } else {
-   # failed, why?
-   $self->{log}->timeLog($self->{output_video_filename}, "$full_filename render FAILED", -1);
-   $self->{result} = 'error';	# XXX expose errors somehow
- }
+  if ($self->output_video_exists()) {
+    my $video_size = sizeStringOf($full_filename);
+    $self->{log}->timeLog($self->{output_video_filename}, "rendered $video_size $self->{frame_num} frame $full_filename", -1);
+    $self->{result} = 1;
+  } else {
+    # failed, why?
+    $self->{log}->timeLog($self->{output_video_filename}, "$full_filename render FAILED", -1);
+    $self->{result} = 'error';	# XXX expose errors somehow
+  }
 
- $self->log_finished_result();
+  if ($self->group_is_done()) {
+    # only after all renders are done for this group
+    $self->log_finished_result();
+  }
 }
 
 

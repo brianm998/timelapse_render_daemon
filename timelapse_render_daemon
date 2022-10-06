@@ -318,9 +318,15 @@ sub render_all_videos_for_image_sequence() {
 
   $log->timeLog($image_sequence_dirname, "rendering videos from $sequence_size image sequence $temp_path/$image_sequence_dirname", 10);
 
+  my $group = [];
+
   foreach my $render_type (@{$config->{rendering}}) {
-    render($config, $temp_path, $image_sequence_dirname,
-	   $image_sequence_exif, $raw_sequence_length, $render_type);
+    my $renderer = create_renderer($config, $temp_path,
+				   $image_sequence_dirname,
+				   $image_sequence_exif,
+				   $raw_sequence_length,
+				   $render_type,
+				   $group);
   }
 }
 
@@ -387,9 +393,9 @@ sub should_render($$) {
 
 # render a video from the given image sequence for a render type (encoding, size, framerate)
 # empty width and height default to original image resolution
-sub render() {
+sub create_renderer() {
   my ($config, $output_dirname, $image_sequence_name,
-      $exif_data, $raw_sequence_length, $render_type) = @_;
+      $exif_data, $raw_sequence_length, $render_type, $group) = @_;
 
   my $output_video_filename = output_video_filename($config, $render_type, $image_sequence_name);
 
@@ -473,9 +479,13 @@ sub render() {
 				 $raw_sequence_length,
 				 $output_dirname,
 				 $output_video_filename,
-				 $image_sequence_name);
-#    $renderer->start();
+				 $image_sequence_name,
+				 $group);
+
     $config->{renderer_map}{$output_video_filename} = $renderer;
+    push @$group, $renderer;
+
+    return $renderer;
   } else {
     $log->timeLog($image_sequence_name, "$output_dirname/$output_video_filename already rendered", -1);
   }
