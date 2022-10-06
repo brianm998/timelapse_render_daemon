@@ -114,6 +114,21 @@ while(1) {
   # search again and populate the render map
   search_and_discover($config, 0);
 
+  process_render_map($config);
+
+  process_exif_list($config);
+
+  sleep($config->{sleep_time_seconds})
+    if($current_renders == 0 && $current_exiftools == 0);
+}
+
+########
+# subs #
+########
+
+sub process_render_map($) {
+  my ($config) = @_;
+
   if(scalar(keys %{$config->{renderer_map}}) > 0) {
     # we've got some active Renderer objects
     foreach my $output_video_filename (keys %{$config->{renderer_map}}) {
@@ -134,6 +149,10 @@ while(1) {
       }
     }
   }
+}
+
+sub process_exif_list($) {
+  my ($config) = @_;
 
   if(scalar(keys %{$config->{exif_list}}) > 0) {
     # there is some exiftool action happening
@@ -152,14 +171,7 @@ while(1) {
       }
     }
   }
-
-  sleep($config->{sleep_time_seconds})
-    if($current_renders == 0 && $current_exiftools == 0);
 }
-
-########
-# subs #
-########
 
 # look for image sequences that might be ready to render
 sub search_and_discover($$$) {
