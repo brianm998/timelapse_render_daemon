@@ -18,7 +18,7 @@ sub timeLog($$$) {
   my ($self, $name, $message) = @_;
 
   my $d = `date "+%r"`;
-  chomp $d;
+  chop $d;
 
   $self->log($name, "$d - $message");
 }

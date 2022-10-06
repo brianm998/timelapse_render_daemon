@@ -31,6 +31,18 @@ sub new {
   return bless $self, $class;
 }
 
+sub output_video_exists() {
+  my ($self) = @_;
+
+  return -e $self->full_output_video_filename();
+}
+
+sub full_output_video_filename() {
+  my ($self) = @_;
+
+  return "$self->{output_dirname}/$self->{output_video_filename}";
+}
+
 sub start($) {
   my ($self) = @_;
 
@@ -38,10 +50,8 @@ sub start($) {
 
   my $FFMPEG_OUT;
 
-  #print "FFMPEG: $self->{output_video_filename}\n";
-
-  open FFMPEG_OUT, "$self->{ffmpeg_cmd} 2>&1 |" || die "cannot open FFMPEG: $!\n";
-  $self->{FFMPEG_OUT} = \*FFMPEG_OUT;
+  open $FFMPEG_OUT, "$self->{ffmpeg_cmd} 2>&1 |" || die "cannot open FFMPEG: $!\n";
+  $self->{FFMPEG_OUT} = \*$FFMPEG_OUT;
   $self->{frame_num} = 0;
   $self->{is_running} = 1;
 
@@ -53,13 +63,13 @@ sub render_frame($) {
 
 # $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename}", 10);
 
-# print "self->{FFMPEG_OUT} $self->{FFMPEG_OUT}\n";
+ #print "self->{FFMPEG_OUT} $self->{FFMPEG_OUT}\n";
  my $ret = undef;
- $/ = ""; # don't use newline for <> XXX explore 'local' for this more
  if(eof($self->{FFMPEG_OUT})) {
    #print "EOF $self->{output_video_filename}\n";
    $self->finish();
  } else {
+   $/ = ""; # don't use newline for <> XXX explore 'local' for this more
    my $line = readline($self->{FFMPEG_OUT});
    $/ = "\n";
    if (defined $line) {
@@ -69,7 +79,7 @@ sub render_frame($) {
      if ($line =~ /^frame\s*=\s*(\d+)\s+fps\s*=\s*([\d.]+)/) {
        $self->{frame_num} = $1;
        my $fps = $2;
-       #     $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} HIT $1 $2", 10);
+#       $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} HIT $1 $2", 10);
        my $progress_percentage = $self->{frame_num} / $self->{raw_sequence_length};
 
        my $progress_bar = progress_bar(30, $progress_percentage); # XXX move to inc
@@ -77,15 +87,12 @@ sub render_frame($) {
        $progress_bar .= " rendering frame $self->{frame_num}/$self->{raw_sequence_length} ($fps fps) for";
        $self->{log}->log($self->{output_video_filename}, "$progress_bar $self->{output_video_filename}", 10);
      } else {
-       #     $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} MISS '$line'", 10);
+#       $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} MISS '$line'", 10);
      }
      $ret = 0;
    } else {
-#     $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} OUTSIDE", 10);
-#     $self->finish();
-#     $ret = $self->{result};
+     $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} OUTSIDE", 10);
    }
-   $/ = "\n";
  }
  return $ret;
 }
@@ -126,26 +133,20 @@ sub finish($) {
 # $self->{log}->timeLog($self->{output_video_filename}, "FINISH for $self->{output_video_filename}", 10);
 
  #print "self->{FFMPEG_OUT} $self->{FFMPEG_OUT}\n";
- my $result = close $self->{FFMPEG_OUT};
+ close $self->{FFMPEG_OUT};
  #print "result '$result'\n";
- return unless(defined $result && length $result > 0);
+# return unless(defined $result && length $result > 0);
  $self->{is_done} = 1;
 
- # XXX XXX XXX
- # XXX XXX XXX
- # XXX XXX XXX
-# $result = 1;			# XXX the close above isn't always returning a value
- # XXX XXX XXX
- # XXX XXX XXX
- # XXX XXX XXX
+ my $full_filename = $self->full_output_video_filename();
 
- if ($result == 1) {
-   my $video_size = sizeStringOf("$self->{output_dirname}/$self->{output_video_filename}");
-   $self->{log}->timeLog($self->{output_video_filename}, "rendered $video_size $self->{frame_num} frame $self->{output_dirname}/$self->{output_video_filename}", -1);
+ if ($self->output_video_exists()) {
+   my $video_size = sizeStringOf($full_filename);
+   $self->{log}->timeLog($self->{output_video_filename}, "rendered $video_size $self->{frame_num} frame $full_filename", -1);
    $self->{result} = 1;
  } else {
    # failed, why?
-   $self->{log}->timeLog($self->{output_video_filename}, "$self->{output_dirname}/$self->{output_video_filename} render FAILED", -1);
+   $self->{log}->timeLog($self->{output_video_filename}, "$full_filename render FAILED", -1);
    $self->{result} = 'error';	# XXX expose errors somehow
  }
 
