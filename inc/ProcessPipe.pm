@@ -47,7 +47,7 @@ sub finish($) {
     # only after all renders are done for this group
 
     my $finished_callback = $self->{finished_callback};
-    &$finished_callback($self);
+    &$finished_callback($self) if defined $finished_callback;
   }
 }
 
