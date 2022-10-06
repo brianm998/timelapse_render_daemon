@@ -99,28 +99,25 @@ $config->{codecs} = read_json_from("$script_dir/video_codecs.json");
 # XXX validate that this is there and in right format
 die unless ($config->{codecs});
 
+# each possible process type needs to be listed here
+$config->{max_processes}{exiftool} = 10 unless defined $config->{max_processes}{exiftool};
+$config->{max_processes}{ffmpeg} = 1 unless defined $config->{max_processes}{ffmpeg};
+
 # run once without renders to fully flesh out the display
 search_and_discover($config, 1);
 
-$config->{max_processes}{exif_list} = 10 unless defined $config->{max_processes}{exif_list};
-$config->{max_processes}{renderer_map} = 1 unless defined $config->{max_processes}{renderer_map};
-
-$config->{current_processes}{exif_list} = 0;
-$config->{current_processes}{renderer_map} = 0;
-# XXX rename renderer
-
 while(1) {
-  # search again and populate the current pipes
-  search_and_discover($config, 0);
+  # search again and populate the current processes we should run
+  search_and_discover($config);
 
   my $sleep = 1;		# assume we need to sleep
 
-  foreach my $pipe_type (keys %{$config->{current_processes}}) {
+  foreach my $process_type (keys %{$config->{max_processes}}) {
     # process one line for each pipe of this type
-    process_pipe_map($config, $pipe_type);
+    manage_processes($config, $process_type);
 
     # don't sleep if we have active pipes
-    $sleep = 0 unless $config->{current_processes}{$pipe_type} == 0;
+    $sleep = 0 unless $config->{current_processes}{$process_type} == 0;
   }
 
   sleep($config->{sleep_time_seconds}) if($sleep);
@@ -130,34 +127,34 @@ while(1) {
 # subs #
 ########
 
-# handle the render map
+# manage the running processes
 # if any keys are present, each iteration will then:
 #  - remove any done renderers from the map
 #  - maybe start some new renderers
 #  - have all other renderers process one more line of ffmpeg output
-sub process_pipe_map($$$) {
-  my ($config, $pipe_type) = @_;
+sub manage_processes($$$) {
+  my ($config, $process_type) = @_;
 
-  my $map = $config->{$pipe_type};
-  my $map_size = scalar(keys %$map);
-  if($map_size > 0) {
-    # we've got some active Renderer objects
-    foreach my $key (keys %$map) {
-      my $pipe = $map->{$key};
-      if($pipe->{is_done}) {
-	# get rid of renderers that are done
-	delete $map->{$key};
-	$config->{current_processes}{$pipe_type} = $config->{current_processes}{$pipe_type} - 1;
-      } elsif(!$pipe->{is_running}) {
-	# if not done and not running, maybe start it
-	if ($config->{current_processes}{$pipe_type} < $config->{max_processes}{$pipe_type}) {
-	  $pipe->start();
-	  $config->{current_processes}{$pipe_type} = $config->{current_processes}{$pipe_type} + 1;
-	}
-      } else {
-	# not done and still running, read output to update display
-	$pipe->read_line();
+  my $map = $config->{$process_type};
+  # we've got some active Renderer objects
+  foreach my $key (keys %$map) {
+    my $proc = $map->{$key};
+    if ($proc->{is_done}) {
+      # get rid of processes that are done
+      delete $map->{$key};
+      $config->{current_processes}{$process_type} =
+	$config->{current_processes}{$process_type} - 1;
+    } elsif (!$proc->{is_running}) {
+      # if not done and not running, maybe start it
+      if ($config->{current_processes}{$process_type} <
+	  $config->{max_processes}{$process_type}) {
+	$proc->start();
+	$config->{current_processes}{$process_type} =
+	  $config->{current_processes}{$process_type} + 1;
       }
+    } else {
+      # not done and still running, read output, update display
+      $proc->read_line();
     }
   }
 }
@@ -435,7 +432,7 @@ sub should_render($$) {
   }
 
   # make sure we've not already got a renderer setup for this video file
-  foreach my $render_filename (keys %{$config->{renderer_map}}) {
+  foreach my $render_filename (keys %{$config->{ffmpeg}}) {
     if($render_filename eq $output_video_filename) {
       $should_render = 0;
     }
@@ -532,7 +529,7 @@ sub create_renderer() {
 				 $group,
 				 $finished_callback);
 
-    $config->{renderer_map}{$output_video_filename} = $renderer;
+    $config->{ffmpeg}{$output_video_filename} = $renderer;
     push @$group, $renderer;
 
     return $renderer;
@@ -586,7 +583,7 @@ sub read_exif_json($$$) {
       my $runner = ExiftoolRunner->new($full_filename,
 				       $group,
 				       $completion_callback);
-      $config->{exif_list}{$full_filename} = $runner;
+      $config->{exiftool}{$full_filename} = $runner;
       push @$group, $runner;
     }
     closedir $dir;
