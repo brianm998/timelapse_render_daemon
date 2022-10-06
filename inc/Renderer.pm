@@ -13,6 +13,7 @@ sub new {
       $output_video_filename,
       $image_sequence_name,
       $group,
+      $finished_callback,
      )
       = @_;
 
@@ -28,6 +29,7 @@ sub new {
      is_done => 0,
      is_running => 0,
      group => $group,
+     finished_callback => $finished_callback,
     };
 
   return bless $self, $class;
@@ -106,36 +108,6 @@ sub render_frame($) {
  return $ret;
 }
 
-sub log_finished_result($) {
- my ($self) = @_;
-
-# $self->{log}->timeLog($self->{output_video_filename}, "LOG_FINISHED_RESULT for $self->{output_video_filename}", 10);
-
- $self->{is_running} = 0;
-
- if ($self->{result}) {
-   my $sequence_size = sizeStringOf("$self->{output_dirname}/$self->{image_sequence_name}");
-   # maybe delete the image sequence after successful render
-   my $removed = 0;
-   foreach my $delete_regex (@{$self->{config}{delete_sequence_after_render_regexes}}) {
-     if ("$self->{output_dirname}/$self->{image_sequence_name}" =~ /$delete_regex/) {
-       my $rm_cmd = "rm -rf $self->{output_dirname}/$self->{image_sequence_name}";
-       $self->{log}->timeLog($self->{image_sequence_name}, "running $rm_cmd", 10);
-       system($rm_cmd);
-       $removed = 1;
-       $self->{log}->timeLog($self->{image_sequence_name}, "done rendering videos from $sequence_size image sequence $self->{output_dirname}/$self->{image_sequence_name}, image sequence removed", -1);
-     }
-   }
-   unless ($removed) {
-     # potential bug where this doesn't show up when only
-     # some videos needed to be rendered
-     $self->{log}->timeLog($self->{image_sequence_name}, "done rendering videos from $sequence_size image sequence $self->{output_dirname}/$self->{image_sequence_name}", -1);
-   }
- } else {
-   $self->{log}->timeLog($self->{image_sequence_name}, "appears to have failed :(", -1);
- }
-}
-
 sub finish($) {
   my ($self) = @_;
 
@@ -159,7 +131,10 @@ sub finish($) {
 
   if ($self->group_is_done()) {
     # only after all renders are done for this group
-    $self->log_finished_result();
+    $self->{is_running} = 0;
+
+    my $finished_callback = $self->{finished_callback};
+    &$finished_callback($self);
   }
 }
 
