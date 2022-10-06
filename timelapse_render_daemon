@@ -465,15 +465,6 @@ sub create_renderer() {
 
     $ffmpeg_cmd .= "$output_dirname/$output_video_filename";
 
-    # XXX refactor point
-    # XXX make an object to encapsulate all of the logic below here
-    # XXX pass that object back as a result from here all the way to the top level loop
-    # XXX The top level loop both looks for more of these render objects to find, and
-    # XXX also iterates over the current list until they're done.
-    # XXX the while loop below repeats the new render_frame() method each time
-
-    #print("XXX render for $output_video_filename\n");
-
     my $renderer = Renderer->new($log,
 				 $ffmpeg_cmd,
 				 $raw_sequence_length,
