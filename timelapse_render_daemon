@@ -126,6 +126,11 @@ while(1) {
 # subs #
 ########
 
+# handle the render map
+# if any keys are present, each iteration will then:
+#  - remove any done renderers from the map
+#  - maybe start some new renderers
+#  - have all other renderers process one more line of ffmpeg output
 sub process_render_map($) {
   my ($config) = @_;
 
@@ -151,6 +156,11 @@ sub process_render_map($) {
   }
 }
 
+# handle the exif map
+# if any keys are present, each iteration will then:
+#  - remove any done exiftools from the map
+#  - maybe start some new exiftools
+#  - have all other exiftools process one more line of exiftool output
 sub process_exif_list($) {
   my ($config) = @_;
 
