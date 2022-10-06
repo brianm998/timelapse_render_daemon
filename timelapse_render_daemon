@@ -16,7 +16,7 @@ BEGIN { $script_dir = Cwd::realpath( File::Basename::dirname(__FILE__)) }
 # add this dir to the include path
 use lib "${script_dir}/inc";
 
-use Renderer;
+use RenderRunner;
 use UpdateableLog;
 use ExiftoolRunner;
 use DebugLog;
@@ -126,14 +126,14 @@ while(1) {
 
 # manage the running processes
 # if any keys are present, each iteration will then:
-#  - remove any done renderers from the map
-#  - maybe start some new renderers
-#  - have all other renderers process one more line of ffmpeg output
+#  - remove any done processes from the map
+#  - maybe start some new processes
+#  - have all other processes process one more line of ffmpeg output
 sub manage_processes($$$) {
   my ($config, $process_type) = @_;
 
   my $map = $config->{$process_type};
-  # we've got some active Renderer objects
+  # we've got some active RenderRunner objects
   foreach my $key (keys %$map) {
     my $proc = $map->{$key};
     if ($proc->{is_done}) {
@@ -250,7 +250,7 @@ sub process_image_sequence($$$$$$) {
     return unless($would_render);
 
     unless ($currently_rendering_sequence_name eq $image_sequence_dirname) {
-      my $sequence_size = Renderer::sizeStringOf("$temp_path/$image_sequence_dirname");
+      my $sequence_size = RenderRunner::sizeStringOf("$temp_path/$image_sequence_dirname");
       if(-e "$temp_path/$image_sequence_dirname.json") {
 	$log->timeLog($image_sequence_dirname, "$sequence_size $raw_sequence_length frame image sequence $temp_path/$image_sequence_dirname is ready to render", 1);
       }
@@ -270,12 +270,12 @@ sub process_image_sequence($$$$$$) {
     # log of how far along it is
 
     my $percentage = $number_of_generated_images / $raw_sequence_length;
-    my $progress_bar = Renderer::progress_bar(30,  $percentage);
+    my $progress_bar = RenderRunner::progress_bar(30,  $percentage);
 
     my $frames_left = $raw_sequence_length - $number_of_generated_images;
     my $msg = sprintf(YELLOW."waiting ".RESET."for %04.d more frames (%04.d / %04.d)",
 		      $number_of_generated_images, $frames_left, $raw_sequence_length);
-    my $sequence_size = Renderer::sizeStringOf("$temp_path/$image_sequence_dirname");
+    my $sequence_size = RenderRunner::sizeStringOf("$temp_path/$image_sequence_dirname");
 
     # XXX this is a hack to align layers. usually 4 chars, add another when 3
     $sequence_size = " $sequence_size" if(length($sequence_size) == 3);
@@ -333,9 +333,9 @@ sub render_all_videos_for_image_sequence() {
 
   return unless defined $image_sequence_exif;
 
-  my $sequence_size = Renderer::sizeStringOf("$temp_path/$image_sequence_dirname");
+  my $sequence_size = RenderRunner::sizeStringOf("$temp_path/$image_sequence_dirname");
 
-  my $group = [];		# these renderers all share a group
+  my $group = [];		# these processes all share a group
 
   my $group_finished_callback = sub($) {
     # called when this group is done rendering
@@ -372,7 +372,7 @@ sub render_all_videos_for_image_sequence() {
   };
 
   foreach my $render_type (@{$config->{rendering}}) {
-    create_renderer($config,
+    initiate_render($config,
 		    $temp_path,
 		    $image_sequence_dirname,
 		    $image_sequence_exif,
@@ -438,7 +438,7 @@ sub should_render($$) {
     }
   }
 
-  # make sure we've not already got a renderer setup for this video file
+  # make sure we've not already got a render setup for this video file
   foreach my $render_filename (keys %{$config->{ffmpeg}}) {
     if($render_filename eq $output_video_filename) {
       $should_render = 0;
@@ -450,7 +450,7 @@ sub should_render($$) {
 
 # render a video from the given image sequence for a render type (encoding, size, framerate)
 # empty width and height default to original image resolution
-sub create_renderer() {
+sub initiate_render() {
   my ($config,
       $output_dirname,
       $image_sequence_name,
@@ -529,19 +529,19 @@ sub create_renderer() {
 
     $ffmpeg_cmd .= "$output_dirname/$output_video_filename 2>&1";
 
-    my $renderer = Renderer->new($log,
-				 $ffmpeg_cmd,
-				 $raw_sequence_length,
-				 $output_dirname,
-				 $output_video_filename,
-				 $group,
-				 $finished_callback,
-				 $group_finished_callback);
+    my $runner = RenderRunner->new($log,
+				   $ffmpeg_cmd,
+				   $raw_sequence_length,
+				   $output_dirname,
+				   $output_video_filename,
+				   $group,
+				   $finished_callback,
+				   $group_finished_callback);
 
-    $config->{ffmpeg}{$output_video_filename} = $renderer;
-    push @$group, $renderer;
+    $config->{ffmpeg}{$output_video_filename} = $runner;
+    push @$group, $runner;
 
-    return $renderer;
+    return $runner;
   } else {
     $log->timeLog($image_sequence_name, "$output_dirname/$output_video_filename already rendered", -1);
   }

@@ -1,4 +1,4 @@
-package Renderer;
+package RenderRunner;
 
 use strict;
 
@@ -48,7 +48,7 @@ sub start($) {
 
   $self->SUPER::start();
 
-  $self->{log}->timeLog($self->{output_video_filename}, MAGENTA."starting ".RESET."render of".BLUE." $self->{output_video_filename}".RESET, 10);
+  $self->{log}->timeLog($self->{output_video_filename}, MAGENTA."starting ".RESET."render of".BLUE." $self->{output_video_filename}".RESET, 1);
 }
 
 sub read_line($) {
