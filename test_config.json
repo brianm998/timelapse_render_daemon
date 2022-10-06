@@ -13,7 +13,7 @@
     [
 	"/qp/test_master_videos"
     ],
-    "max_pipes" : {
+    "max_processes" : {
 	"renderer_map": 8,
 	"exif_list" : 200
     },
