@@ -2,7 +2,8 @@ package ProcessPipe;
 
 use strict;
 
-# an object that can be used to render an image sequence into a video
+# this object runs the given shell command and reads the output
+# subclasses must overwrite read_line($) to do so.
 
 sub new {
   my ($class,
@@ -69,4 +70,5 @@ sub start($) {
   $self->{frame_num} = 0;
   $self->{is_running} = 1;
 }
+
 1;
