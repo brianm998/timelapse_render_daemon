@@ -113,10 +113,10 @@ while(1) {
   my $sleep = 1;		# assume we need to sleep
 
   foreach my $process_type (keys %{$config->{max_processes}}) {
-    # process one line for each pipe of this type
+    # process one line for each process of this type
     manage_processes($config, $process_type);
 
-    # don't sleep if we have active pipes
+    # don't sleep if we have active processes
     $sleep = 0 unless $config->{current_processes}{$process_type} == 0;
   }
 
