@@ -17,10 +17,8 @@ use lib "${script_dir}/inc";
 
 use Renderer;
 use UpdateableLog;
+use ExiftoolRunner;
 use DebugLog;
-
-use lib '/Users/brian/iCloud/scripts'; # XXX this sucks :(
-use TimelapseExiftool;		       # used by backup.pl too
 
 use lib '/Users/brian/git/timelapse_image_blender/inc'; # XXX fuck :(
 use Timelapse;
@@ -91,13 +89,13 @@ unless(defined $config_json_filename) {
   }
 }
 
-my $config = TimelapseExiftool::read_json_from($config_json_filename);
+my $config = read_json_from($config_json_filename);
 
 die unless ($config);
 # XXX validate it
 
 # an addressable list of what codecs we can encode to
-$config->{codecs} = TimelapseExiftool::read_json_from("$script_dir/video_codecs.json");
+$config->{codecs} = read_json_from("$script_dir/video_codecs.json");
 # XXX validate that this is there and in right format
 die unless ($config->{codecs});
 
@@ -108,6 +106,9 @@ my $max_cuncurrent_renders = $config->{max_cuncurrent_renders};
 $max_cuncurrent_renders = 1 unless defined $max_cuncurrent_renders;
 
 my $current_renders = 0;
+
+my $max_exiftools = 20;
+my $current_exiftools = 0;
 
 while(1) {
   # search again and populate the render map
@@ -130,6 +131,24 @@ while(1) {
       } else {
 	# not done and still running, read output to update display
 	$renderer->render_frame();
+      }
+    }
+  }
+
+  if(scalar(keys %{$config->{exif_list}}) > 0) {
+    # there is some exiftool action happening
+    foreach my $exiftool_filename (keys %{$config->{exif_list}}) {
+      my $exiftool = $config->{exif_list}{$exiftool_filename};
+      if($exiftool->{is_done}) {
+	delete $config->{exif_list}{$exiftool_filename};
+	$current_exiftools--;
+      } elsif(!$exiftool->{is_running}) {
+	if($current_exiftools < $max_exiftools) {
+	  $exiftool->start();
+	  $current_exiftools++;
+	}
+      } else {
+	$exiftool->read();
       }
     }
   }
@@ -236,7 +255,9 @@ sub process_image_sequence($$$$$$) {
 
     unless ($currently_rendering_sequence_name eq $image_sequence_dirname) {
       my $sequence_size = Renderer::sizeStringOf("$temp_path/$image_sequence_dirname");
-      $log->timeLog($image_sequence_dirname, "$sequence_size $raw_sequence_length frame image sequence $temp_path/$image_sequence_dirname is ready to render", 1);
+      if(-e "$temp_path/$image_sequence_dirname.json") {
+	$log->timeLog($image_sequence_dirname, "$sequence_size $raw_sequence_length frame image sequence $temp_path/$image_sequence_dirname is ready to render", 1);
+      }
     }
 
     return if($no_render);
@@ -314,19 +335,21 @@ sub render_all_videos_for_image_sequence() {
 					   $base_dirname,
 					   $raw_image_sequence_name);
 
+  return unless defined $image_sequence_exif;
+
   my $sequence_size = Renderer::sizeStringOf("$temp_path/$image_sequence_dirname");
 
   $log->timeLog($image_sequence_dirname, "rendering videos from $sequence_size image sequence $temp_path/$image_sequence_dirname", 10);
 
-  my $group = [];
+  my $group = [];		# these renderers all share a group
 
   foreach my $render_type (@{$config->{rendering}}) {
-    my $renderer = create_renderer($config, $temp_path,
-				   $image_sequence_dirname,
-				   $image_sequence_exif,
-				   $raw_sequence_length,
-				   $render_type,
-				   $group);
+    create_renderer($config, $temp_path,
+		    $image_sequence_dirname,
+		    $image_sequence_exif,
+		    $raw_sequence_length,
+		    $render_type,
+		    $group);
   }
 }
 
@@ -482,6 +505,8 @@ sub create_renderer() {
   }
 }
 
+my $exif_map = {};		# XXX move this
+
 sub read_exif_json($$$) {
   my ($image_sequence_dirname, $base_dirname, $raw_image_sequence_name) = @_;
 
@@ -489,16 +514,35 @@ sub read_exif_json($$$) {
   my $image_sequence_exif = {};
 
   unless (-e $exif_json_filename) {
+    return if $exif_map->{$exif_json_filename};
+
     $log->timeLog($image_sequence_dirname, "creating json exif file for $base_dirname/$raw_image_sequence_name", 10);
 
-    my $exiftool = TimelapseExiftool->new;
-    my $json_str = $exiftool->json_for_raw_dir("$base_dirname/$raw_image_sequence_name");
-    open my $filehandle, ">$exif_json_filename" or die "can't open $exif_json_filename: $!\n";
-    print $filehandle $json_str;
-    close $filehandle;
+    $exif_map->{$exif_json_filename} = 1;
+    my $dirname = "$base_dirname/$raw_image_sequence_name";
+
+    opendir my $dir, $dirname or die "cannot open dir: $!\n";
+
+    my $group = [];
+
+    my $raw_filetypes = ['ARW', 'DNG']; # XXX fix hardcode
+
+    foreach my $filename (readdir $dir) {
+      my $is_raw = 0;
+      foreach my $raw_filetype (@$raw_filetypes) {
+	$is_raw = 1 if($filename =~ /$raw_filetype$/i);
+      }
+      next unless $is_raw;
+      my $full_filename = "$dirname/$filename";
+      my $runner = ExiftoolRunner->new($full_filename, $group, $exif_json_filename);
+      $config->{exif_list}{$full_filename} = $runner;
+      push @$group, $runner;
+    }
+    closedir $dir;
+    return undef;
   }
   # hash ref
-  my $exif_json = TimelapseExiftool::read_json_from($exif_json_filename);
+  my $exif_json = read_json_from($exif_json_filename);
 
   # remove keys with more than one value
   foreach my $exif_key (keys %$exif_json) {
@@ -511,3 +555,27 @@ sub read_exif_json($$$) {
   }
   return $image_sequence_exif;
 }
+
+# XXX copied from TimelapseExitool
+sub read_json_from {
+  my ($filename) = @_;
+
+  my $json_text = do {
+    open(my $json_fh, "<:encoding(UTF-8)", $filename)
+      or warn ("Can't open \"$filename\": $!\n");
+    local $/;
+    <$json_fh>
+  };
+
+  my $ret = undef;
+  if (defined $json_text) {
+    eval {
+      $ret = JSON->new->decode($json_text);
+      1;
+    } or do {
+      warn "could not read json from $filename: $@";
+    }
+  }
+  return $ret;
+}
+
