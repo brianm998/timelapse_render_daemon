@@ -102,24 +102,28 @@ die unless ($config->{codecs});
 # run once without renders to fully flesh out the display
 search_and_discover($config, 1);
 
-my $currents = {};
-my $max_currents =
-  {
-   renderer_map  => $config->{max_cuncurrent_renders},
-   exif_list => 200
-  };
+$config->{max_pipes}{exif_list} = 10 unless defined $config->{max_pipes}{exif_list};
+$config->{max_pipes}{renderer_map} = 1 unless defined $config->{max_pipes}{renderer_map};
 
-$max_currents->{renderer_map} = 1 unless defined $max_currents->{renderer_map};
+$config->{current_pipes}{exif_list} = 0;
+$config->{current_pipes}{renderer_map} = 0;
+# XXX rename renderer
 
 while(1) {
-  # search again and populate the render map
+  # search again and populate the current pipes
   search_and_discover($config, 0);
 
-  process_pipe_map($config, 'renderer_map');
-  process_pipe_map($config, 'exif_list');
+  my $sleep = 1;		# assume we need to sleep
 
-  sleep($config->{sleep_time_seconds})
-    if($currents->{renders} == 0 && $currents->{exiftools} == 0);
+  foreach my $pipe_type (keys %{$config->{current_pipes}}) {
+    # process one line for each pipe of this type
+    process_pipe_map($config, $pipe_type);
+
+    # don't sleep if we have active pipes
+    $sleep = 0 unless $config->{current_pipes}{$pipe_type} == 0;
+  }
+
+  sleep($config->{sleep_time_seconds}) if($sleep);
 }
 
 ########
@@ -132,9 +136,9 @@ while(1) {
 #  - maybe start some new renderers
 #  - have all other renderers process one more line of ffmpeg output
 sub process_pipe_map($$$) {
-  my ($config, $current) = @_;
+  my ($config, $pipe_type) = @_;
 
-  my $map = $config->{$current};
+  my $map = $config->{$pipe_type};
   my $map_size = scalar(keys %$map);
   if($map_size > 0) {
     # we've got some active Renderer objects
@@ -143,12 +147,12 @@ sub process_pipe_map($$$) {
       if($pipe->{is_done}) {
 	# get rid of renderers that are done
 	delete $map->{$key};
-	$currents->{$current} = $currents->{$current} - 1;
+	$config->{current_pipes}{$pipe_type} = $config->{current_pipes}{$pipe_type} - 1;
       } elsif(!$pipe->{is_running}) {
 	# if not done and not running, maybe start it
-	if ($currents->{$current} < $max_currents->{$current}) {
+	if ($config->{current_pipes}{$pipe_type} < $config->{max_pipes}{$pipe_type}) {
 	  $pipe->start();
-	  $currents->{$current} = $currents->{$current} + 1;
+	  $config->{current_pipes}{$pipe_type} = $config->{current_pipes}{$pipe_type} + 1;
 	}
       } else {
 	# not done and still running, read output to update display
