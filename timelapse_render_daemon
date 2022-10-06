@@ -20,9 +20,6 @@ use Renderer;
 use UpdateableLog;
 use ExiftoolRunner;
 use DebugLog;
-
-use lib '/Users/brian/git/timelapse_image_blender/inc'; # XXX fuck :(
-use Timelapse;
 use Exiftool;
 
 # logic:
@@ -56,7 +53,6 @@ use Exiftool;
 
 # todo:
 
-# - detangle depenency inc mess
 # - support {year} in dirs?
 # - notice when existing master video is older than the new sequence, and still render to temp path, assuming no file at temp path exists yet
 # - allow rendering when base image sequence has been archived, based upon # of images from json
@@ -386,6 +382,8 @@ sub render_all_videos_for_image_sequence() {
 		    $finished_callback,
 		    $group_finished_callback);
   }
+
+  # call immediately because this callback just logs
   &$finished_callback();
 }
 
@@ -505,7 +503,7 @@ sub create_renderer() {
     }
 
     # calculate aspect ratio from width/height
-    my $aspect_ratio = Timelapse::get_aspect_ratio($image_width, $image_height);
+    my $aspect_ratio = get_aspect_ratio($image_width, $image_height);
 
     my $config_codec = $config->{codecs}{$render_type->{codec}};
 
@@ -639,3 +637,39 @@ sub read_json_from {
   return $ret;
 }
 
+# XXX copied from Timelapse.pm
+sub get_aspect_ratio($$) {
+  my ($width, $height) = @_;
+
+  my $ratio_width = $width/$height;
+  my $ratio_height = 1;
+
+  if (is_int($ratio_width)) {
+    return "$ratio_width/$ratio_height";
+  } else {
+    # not sure we need ints here
+    # need to multiply
+    my ($a, $b) = recurse_to_find_integers($ratio_width, $ratio_height, 2);
+    return "$a/$b" if(defined $a && defined $b);
+    return "$width/$height";	# unable to find integers, return original values
+  }
+}
+
+# XXX copied from Timelapse.pm
+sub recurse_to_find_integers($$$) {
+  my ($left, $right, $multiplier) = @_;
+
+  if(is_int($left*$multiplier) && is_int($right*$multiplier)) {
+    return ($left*$multiplier, $right*$multiplier);
+  } else {
+    return undef if($multiplier > 1000);
+    return recurse_to_find_integers($left, $right, $multiplier+1);
+  }
+}
+
+# XXX copied from Timelapse.pm
+sub is_int($) {
+  my ($value) = @_;
+
+  return $value == int $value;
+}
