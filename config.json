@@ -15,6 +15,7 @@
     [
 	"/Users/brian/Pictures/timelapses/2022/2022-video"
     ],
+    "max_cuncurrent_renders": 8,
     "image_name_prefix" : "LRT_",
     "image_sequence_dirname_prefix" : "LRT_",
     "raw_types" : ["ARW"],

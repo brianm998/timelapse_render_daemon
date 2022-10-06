@@ -16,12 +16,16 @@
     "raw_types" : ["ARW"],
     "rendering": [
 	{
+	    "codec": "ProResUHQ",
+	    "frame_rate": 30
+	},
+	{
 	    "codec": "ProResMQ",
-	    "resolution": [10,7],
+	    "resolution": [108,72],
 	    "frame_rate": 30
 	}
     ],
-    "sleep_time_seconds" : 15,
+    "sleep_time_seconds" : 2,
     "delete_sequence_after_render_regexes" : ["-merge$"]
 }
 

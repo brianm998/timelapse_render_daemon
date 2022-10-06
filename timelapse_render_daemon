@@ -104,25 +104,31 @@ die unless ($config->{codecs});
 # run once without renders to fully flesh out the display
 search_and_discover($config, 1);
 
-my $max_cuncurrent_renders = 3;	# XXX stick this in the config
+my $max_cuncurrent_renders = $config->{max_cuncurrent_renders};
+$max_cuncurrent_renders = 1 unless defined $max_cuncurrent_renders;
+
 my $current_renders = 0;
 
 while(1) {
-  # search again and render if any image sequences are ready
+  # search again and populate the render map
   search_and_discover($config, 0);
 
   if(scalar(keys %{$config->{renderer_map}}) > 0) {
-    foreach my $output_video (keys %{$config->{renderer_map}}) {
-      my $renderer = $config->{renderer_map}{$output_video};
+    # we've got some active Renderer objects
+    foreach my $output_video_filename (keys %{$config->{renderer_map}}) {
+      my $renderer = $config->{renderer_map}{$output_video_filename};
       if($renderer->{is_done}) {
-	delete $config->{renderer_map}{$output_video};
+	# get rid of renderers that are done
+	delete $config->{renderer_map}{$output_video_filename};
 	$current_renders--;
       } elsif(!$renderer->{is_running}) {
+	# if not done and not running, maybe start it
 	if ($current_renders < $max_cuncurrent_renders) {
 	  $renderer->start();	# XXX check max
 	  $current_renders++;
 	}
       } else {
+	# not done and still running, read output to update display
 	$renderer->render_frame();
       }
     }

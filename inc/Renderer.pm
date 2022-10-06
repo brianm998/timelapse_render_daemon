@@ -63,10 +63,8 @@ sub render_frame($) {
 
 # $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename}", 10);
 
- #print "self->{FFMPEG_OUT} $self->{FFMPEG_OUT}\n";
  my $ret = undef;
  if(eof($self->{FFMPEG_OUT})) {
-   #print "EOF $self->{output_video_filename}\n";
    $self->finish();
  } else {
    $/ = ""; # don't use newline for <> XXX explore 'local' for this more
@@ -103,7 +101,7 @@ sub log_finished_result($) {
 # $self->{log}->timeLog($self->{output_video_filename}, "LOG_FINISHED_RESULT for $self->{output_video_filename}", 10);
 
  $self->{is_running} = 0;
- # XXX move this out
+
  if ($self->{result}) {
    my $sequence_size = sizeStringOf("$self->{output_dirname}/$self->{image_sequence_name}");
    # maybe delete the image sequence after successful render
@@ -132,10 +130,8 @@ sub finish($) {
 
 # $self->{log}->timeLog($self->{output_video_filename}, "FINISH for $self->{output_video_filename}", 10);
 
- #print "self->{FFMPEG_OUT} $self->{FFMPEG_OUT}\n";
  close $self->{FFMPEG_OUT};
- #print "result '$result'\n";
-# return unless(defined $result && length $result > 0);
+
  $self->{is_done} = 1;
 
  my $full_filename = $self->full_output_video_filename();
