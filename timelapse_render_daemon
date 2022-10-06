@@ -150,7 +150,7 @@ sub process_render_map($) {
 	}
       } else {
 	# not done and still running, read output to update display
-	$renderer->render_frame();
+	$renderer->read_line();
       }
     }
   }
@@ -543,7 +543,7 @@ sub create_renderer() {
       $ffmpeg_cmd .= "-metadata '$exif_key=$exif_value' ";
     }
 
-    $ffmpeg_cmd .= "$output_dirname/$output_video_filename";
+    $ffmpeg_cmd .= "$output_dirname/$output_video_filename 2>&1";
 
     my $renderer = Renderer->new($log,
 				 $ffmpeg_cmd,

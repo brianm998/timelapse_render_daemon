@@ -2,6 +2,8 @@ package Renderer;
 
 use strict;
 
+use parent 'ProcessPipe';
+
 # an object that can be used to render an image sequence into a video
 
 sub new {
@@ -16,30 +18,13 @@ sub new {
      )
       = @_;
 
-  my $self =
-    {
-     log => $log,
-     ffmpeg_cmd => $ffmpeg_cmd,
-     image_sequence_length => $image_sequence_length,
-     output_dirname => $output_dirname,
-     output_video_filename => $output_video_filename,
-     frame_num =>  0,
-     is_done => 0,
-     is_running => 0,
-     group => $group,
-     finished_callback => $finished_callback,
-    };
+  my $self = $class->SUPER::new($log, $ffmpeg_cmd, $group, $finished_callback);
+  $self->{image_sequence_length} = $image_sequence_length;
+  $self->{output_dirname} = $output_dirname;
+  $self->{output_video_filename} = $output_video_filename;
+  $self->{frame_num} = 0;
 
   return bless $self, $class;
-}
-
-sub group_is_done() {
-  my ($self) = @_;
-
-  foreach my $renderer (@{$self->{group}}) {
-    return 0 unless $renderer->{is_done};
-  }
-  return $self->{is_done};
 }
 
 sub output_video_exists() {
@@ -57,29 +42,22 @@ sub full_output_video_filename() {
 sub start($) {
   my ($self) = @_;
 
-  return if($self->{is_running} || $self->{is_done});
-
-  my $FFMPEG_OUT;
-
-  open $FFMPEG_OUT, "$self->{ffmpeg_cmd} 2>&1 |" || die "cannot open FFMPEG: $!\n";
-  $self->{FFMPEG_OUT} = \*$FFMPEG_OUT;
-  $self->{frame_num} = 0;
-  $self->{is_running} = 1;
+  $self->SUPER::start();
 
   $self->{log}->timeLog($self->{output_video_filename}, "starting render of $self->{output_video_filename}", 10);
 }
 
-sub render_frame($) {
+sub read_line($) {
  my ($self) = @_;
 
 # $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename}", 10);
 
  my $ret = undef;
- if(eof($self->{FFMPEG_OUT})) {
+ if(eof($self->{shell_input})) {
    $self->finish();
  } else {
    $/ = ""; # don't use newline for <> XXX explore 'local' for this more
-   my $line = readline($self->{FFMPEG_OUT});
+   my $line = readline($self->{shell_input});
    $/ = "\n";
    if (defined $line) {
      #   $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} INSIDE", 10);
@@ -111,10 +89,6 @@ sub finish($) {
 
   # $self->{log}->timeLog($self->{output_video_filename}, "FINISH for $self->{output_video_filename}", 10);
 
-  close $self->{FFMPEG_OUT};
-
-  $self->{is_done} = 1;
-
   my $full_filename = $self->full_output_video_filename();
 
   if ($self->output_video_exists()) {
@@ -127,13 +101,7 @@ sub finish($) {
     $self->{result} = 'error';	# XXX expose errors somehow
   }
 
-  if ($self->group_is_done()) {
-    # only after all renders are done for this group
-    $self->{is_running} = 0;
-
-    my $finished_callback = $self->{finished_callback};
-    &$finished_callback($self);
-  }
+  $self->SUPER::finish();
 }
 
 
