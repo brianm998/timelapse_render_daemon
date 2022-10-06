@@ -16,8 +16,8 @@
 	"/Users/brian/Pictures/timelapses/2022/2022-video"
     ],
     "max_processes" : {
-	"renderer_map" : 8,
-	"exif_list" : 100
+	"ffmpeg" : 8,
+	"exiftool" : 100
     },
     "max_cuncurrent_renders": 8,
     "image_name_prefix" : "LRT_",

@@ -14,8 +14,8 @@
 	"/qp/test_master_videos"
     ],
     "max_processes" : {
-	"renderer_map": 8,
-	"exif_list" : 200
+	"ffmpeg": 8,
+	"exiftool" : 200
     },
     "image_name_prefix" : "LRT_",
     "image_sequence_dirname_prefix" : "LRT_",
