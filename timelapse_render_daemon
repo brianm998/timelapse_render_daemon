@@ -8,6 +8,7 @@ use strict;
 use File::Basename;
 use Cwd;
 use JSON;
+use Term::ANSIColor qw(:constants);
 
 my $script_dir;	# figure out where this running script exists on disk
 BEGIN { $script_dir = Cwd::realpath( File::Basename::dirname(__FILE__)) }
@@ -15,13 +16,10 @@ BEGIN { $script_dir = Cwd::realpath( File::Basename::dirname(__FILE__)) }
 # add this dir to the include path
 use lib "${script_dir}/inc";
 
+use RenderRunner;
 use UpdateableLog;
-
-use lib '/Users/brian/iCloud/scripts'; # XXX this sucks :(
-use TimelapseExiftool;		       # used by backup.pl too
-
-use lib '/Users/brian/git/timelapse_image_blender/inc'; # XXX fuck :(
-use Timelapse;
+use ExiftoolRunner;
+use DebugLog;
 use Exiftool;
 
 # logic:
@@ -55,7 +53,6 @@ use Exiftool;
 
 # todo:
 
-# - detangle depenency inc mess
 # - support {year} in dirs?
 # - notice when existing master video is older than the new sequence, and still render to temp path, assuming no file at temp path exists yet
 # - allow rendering when base image sequence has been archived, based upon # of images from json
@@ -68,13 +65,13 @@ use Exiftool;
 # - avoid printing lines longer than the console
 # - have timeLog not update time on log when message is the same
 # - check to see running on macos and run caffeinate to keep alive in background
-# - allow more than one concurrent render (fork, write ffmpeg to file, monitor from main proc)
 # - allow re-reading config every so often (add validation first)
 # - introduce a state system to track where image sequences are
 #   (would help with being able to not log about deleting sequences)
 
 # all user visible output goes through this log
 my $log = UpdateableLog->new();
+#my $log = DebugLog->new();
 
 # allow json config file to be referenced on the command line
 my $config_json_filename = shift;
@@ -89,33 +86,78 @@ unless(defined $config_json_filename) {
   }
 }
 
-my $config = TimelapseExiftool::read_json_from($config_json_filename);
+my $config = read_json_from($config_json_filename);
 
 die unless ($config);
 # XXX validate it
 
 # an addressable list of what codecs we can encode to
-$config->{codecs} = TimelapseExiftool::read_json_from("$script_dir/video_codecs.json");
+$config->{codecs} = read_json_from("$script_dir/video_codecs.json");
 # XXX validate that this is there and in right format
 die unless ($config->{codecs});
 
+# each possible process type needs to be listed here
+$config->{max_processes}{exiftool} = 10 unless defined $config->{max_processes}{exiftool};
+$config->{max_processes}{ffmpeg} = 1 unless defined $config->{max_processes}{ffmpeg};
+
 # run once without renders to fully flesh out the display
-search_and_render($config, 1);
+search_and_discover($config, 1);
 
 while(1) {
-  # search again and render if any image sequences are ready
-  search_and_render($config, 0);
+  # search again and populate the current processes we should run
+  search_and_discover($config);
 
-  # sleep and repeat
-  sleep($config->{sleep_time_seconds})
+  my $sleep = 1;		# assume we need to sleep
+
+  foreach my $process_type (keys %{$config->{max_processes}}) {
+    # process one line for each process of this type
+    manage_processes($config, $process_type);
+
+    # don't sleep if we have active processes
+    $sleep = 0 unless $config->{current_processes}{$process_type} == 0;
+  }
+
+  sleep($config->{sleep_time_seconds}) if($sleep);
 }
 
 ########
 # subs #
 ########
 
+# manage the running processes
+# if any keys are present, each iteration will then:
+#  - remove any done processes from the map
+#  - maybe start some new processes
+#  - have all other processes process one more line of ffmpeg output
+sub manage_processes($$$) {
+  my ($config, $process_type) = @_;
+
+  my $map = $config->{$process_type};
+  # we've got some active RenderRunner objects
+  foreach my $key (keys %$map) {
+    my $proc = $map->{$key};
+    if ($proc->{is_done}) {
+      # get rid of processes that are done
+      delete $map->{$key};
+      $config->{current_processes}{$process_type} =
+	$config->{current_processes}{$process_type} - 1;
+    } elsif (!$proc->{is_running}) {
+      # if not done and not running, maybe start it
+      if ($config->{current_processes}{$process_type} <
+	  $config->{max_processes}{$process_type}) {
+	$proc->start();
+	$config->{current_processes}{$process_type} =
+	  $config->{current_processes}{$process_type} + 1;
+      }
+    } else {
+      # not done and still running, read output, update display
+      $proc->read_line();
+    }
+  }
+}
+
 # look for image sequences that might be ready to render
-sub search_and_render($$$) {
+sub search_and_discover($$$) {
   my ($config, $no_render, $currently_rendering_sequence_name) = @_;
 
   # a hash of all raw image sequences to their number of raw images
@@ -125,7 +167,7 @@ sub search_and_render($$$) {
   foreach my $temp_path (@{$config->{temp_paths}}) {
     opendir my $temp_dir, $temp_path or die "cannot open $temp_path: $!\n";
 
-    search_and_render_from_temp_dir($config, $no_render,
+    search_and_discover_from_temp_dir($config, $no_render,
 				    $currently_rendering_sequence_name,
 				    $raw_image_sequence_counts,
 				    $temp_dir, $temp_path);
@@ -135,7 +177,7 @@ sub search_and_render($$$) {
 }
 
 # look into a specific temp dir for image sequences that might be ready to render
-sub search_and_render_from_temp_dir($$$$$$) {
+sub search_and_discover_from_temp_dir($$$$$$) {
   my ($config, $no_render, $currently_rendering_sequence_name,
       $raw_image_sequence_counts, $temp_dir, $temp_path) = @_;
 
@@ -208,8 +250,10 @@ sub process_image_sequence($$$$$$) {
     return unless($would_render);
 
     unless ($currently_rendering_sequence_name eq $image_sequence_dirname) {
-      my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname");
-      $log->timeLog($image_sequence_dirname, "$sequence_size $raw_sequence_length frame image sequence $temp_path/$image_sequence_dirname is ready to render", 1);
+      my $sequence_size = RenderRunner::sizeStringOf("$temp_path/$image_sequence_dirname");
+      if(-e "$temp_path/$image_sequence_dirname.json") {
+	$log->timeLog($image_sequence_dirname, "$sequence_size $raw_sequence_length frame image sequence $temp_path/$image_sequence_dirname is ready to render", 1);
+      }
     }
 
     return if($no_render);
@@ -226,17 +270,17 @@ sub process_image_sequence($$$$$$) {
     # log of how far along it is
 
     my $percentage = $number_of_generated_images / $raw_sequence_length;
-    my $progress_bar = progress_bar(30,  $percentage);
+    my $progress_bar = RenderRunner::progress_bar(30,  $percentage);
 
     my $frames_left = $raw_sequence_length - $number_of_generated_images;
-    my $msg = sprintf("(%04.d / %04.d) %04.d more",
-		      $number_of_generated_images, $raw_sequence_length,  $frames_left);
-    my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname");
+    my $msg = sprintf(YELLOW."waiting ".RESET."for %04.d more frames (%04.d / %04.d)",
+		      $number_of_generated_images, $frames_left, $raw_sequence_length);
+    my $sequence_size = RenderRunner::sizeStringOf("$temp_path/$image_sequence_dirname");
 
     # XXX this is a hack to align layers. usually 4 chars, add another when 3
     $sequence_size = " $sequence_size" if(length($sequence_size) == 3);
 
-    $log->log($image_sequence_dirname, "$progress_bar $msg - $sequence_size $temp_path/$image_sequence_dirname", $percentage);
+    $log->log($image_sequence_dirname, "$progress_bar $msg for ".CYAN."$sequence_size".BLUE." $temp_path/$image_sequence_dirname".RESET, $percentage);
   }
 }
 
@@ -287,49 +331,60 @@ sub render_all_videos_for_image_sequence() {
 					   $base_dirname,
 					   $raw_image_sequence_name);
 
-  my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname");
+  return unless defined $image_sequence_exif;
 
-  $log->timeLog($image_sequence_dirname, "rendering videos from $sequence_size image sequence $temp_path/$image_sequence_dirname", 10);
+  my $sequence_size = RenderRunner::sizeStringOf("$temp_path/$image_sequence_dirname");
 
-  # attempt to render at each resolution,
-  # existing output files will be skipped
-  my $success = undef;
+  my $group = [];		# these processes all share a group
 
-  foreach my $render_type (@{$config->{rendering}}) {
-    # 1 means rendered
-    # 'error' means there was an error
-    # 0 means it was skipped because of existing video file of same name
-    my $did_render = render($config, $temp_path, $image_sequence_dirname,
-			    $image_sequence_exif, $raw_sequence_length, $render_type);
-    if ($did_render ne 'error') {
-      unless (defined $success) {
-	$success = $did_render;
-      } else {
-	$success = $did_render || $success;
+  my $group_finished_callback = sub($) {
+    # called when this group is done rendering
+    my ($self) = @_;
+    my $group_size = scalar(@$group);
+    if ($self->{result}) {
+      # maybe delete the image sequence after successful render
+      my $removed = 0;
+      foreach my $delete_regex (@{$config->{delete_sequence_after_render_regexes}}) {
+	if ("$temp_path/$image_sequence_dirname" =~ /$delete_regex/) {
+	  my $rm_cmd = "rm -rf $temp_path/$image_sequence_dirname";
+	  $log->timeLog($image_sequence_dirname, MAGENTA."running".RED." $rm_cmd".RESET, 10);
+	  system($rm_cmd);
+	  $removed = 1;
+	  $log->timeLog($image_sequence_dirname, GREEN."rendered".RESET." $group_size videos from".CYAN." $sequence_size".RESET." image sequence".BLUE." $temp_path/$image_sequence_dirname".RESET.", image sequence".RED." removed".RESET, -1);
+	}
+      }
+      unless ($removed) {
+	# potential bug where this doesn't show up when only
+	# some videos needed to be rendered
+	$log->timeLog($image_sequence_dirname, GREEN."rendered ".RESET."$group_size videos from".CYAN." $sequence_size".RESET." image sequence".BLUE." $temp_path/$image_sequence_dirname".RESET, -1);
       }
     } else {
-      $success = 0;
+      $log->timeLog($image_sequence_dirname, RED."appears to have failed :(".RESET, -1);
     }
+  };
+
+  my $finished_callback = sub {
+    my $items_left = 0;
+    foreach my $item (@$group) {
+      $items_left++ unless($item->{is_done})
+    }
+    $log->timeLog($image_sequence_dirname, MAGENTA."rendering ".RESET."$items_left videos from".CYAN." $sequence_size".RESET." image sequence".BLUE." $temp_path/$image_sequence_dirname".RESET, 10);
+  };
+
+  foreach my $render_type (@{$config->{rendering}}) {
+    initiate_render($config,
+		    $temp_path,
+		    $image_sequence_dirname,
+		    $image_sequence_exif,
+		    $raw_sequence_length,
+		    $render_type,
+		    $group,
+		    $finished_callback,
+		    $group_finished_callback);
   }
-  if ($success) {
-    my $sequence_size = sizeStringOf("$temp_path/$image_sequence_dirname");
-    # maybe delete the image sequence after successful render
-    my $removed = 0;
-    foreach my $delete_regex (@{$config->{delete_sequence_after_render_regexes}}) {
-      if ("$temp_path/$image_sequence_dirname" =~ /$delete_regex/) {
-	my $rm_cmd = "rm -rf $temp_path/$image_sequence_dirname";
-	$log->timeLog($image_sequence_dirname, "running $rm_cmd", 10);
-	system($rm_cmd);
-	$removed = 1;
-	$log->timeLog($image_sequence_dirname, "done rendering videos from $sequence_size image sequence $temp_path/$image_sequence_dirname, image sequence removed", -1);
-      }
-    }
-    unless ($removed) {
-      # potential bug where this doesn't show up when only
-      # some videos needed to be rendered
-      $log->timeLog($image_sequence_dirname, "done rendering videos from $sequence_size image sequence $temp_path/$image_sequence_dirname", -1);
-    }
-  }
+
+  # call immediately because this callback just logs
+  &$finished_callback();
 }
 
 # returns the name of the video file that would be output
@@ -383,14 +438,28 @@ sub should_render($$) {
     }
   }
 
+  # make sure we've not already got a render setup for this video file
+  foreach my $render_filename (keys %{$config->{ffmpeg}}) {
+    if($render_filename eq $output_video_filename) {
+      $should_render = 0;
+    }
+  }
+
   return $should_render;
 }
 
 # render a video from the given image sequence for a render type (encoding, size, framerate)
 # empty width and height default to original image resolution
-sub render() {
-  my ($config, $output_dirname, $image_sequence_name,
-      $exif_data, $raw_sequence_length, $render_type) = @_;
+sub initiate_render() {
+  my ($config,
+      $output_dirname,
+      $image_sequence_name,
+      $exif_data,
+      $raw_sequence_length,
+      $render_type,
+      $group,
+      $finished_callback,
+      $group_finished_callback) = @_;
 
   my $output_video_filename = output_video_filename($config, $render_type, $image_sequence_name);
 
@@ -428,13 +497,13 @@ sub render() {
       $image_height = $exif->{ImageHeight};
       if ($image_width <= 0 || $image_height <= 0) {
 	$log->timeLog($image_sequence_name, "cannot read image size from $image_sequence_dirname/$test_image, cannot not render [$image_width, $image_height]", 10);
-	return 'error';
+	return undef;
       }
       $should_resize = 0;
     }
 
     # calculate aspect ratio from width/height
-    my $aspect_ratio = Timelapse::get_aspect_ratio($image_width, $image_height);
+    my $aspect_ratio = get_aspect_ratio($image_width, $image_height);
 
     my $config_codec = $config->{codecs}{$render_type->{codec}};
 
@@ -458,49 +527,27 @@ sub render() {
       $ffmpeg_cmd .= "-metadata '$exif_key=$exif_value' ";
     }
 
-    $ffmpeg_cmd .= "$output_dirname/$output_video_filename";
-    $log->timeLog($output_video_filename, "starting render of $output_video_filename", 10);
-    open FFMPEG, "$ffmpeg_cmd 2>&1 |";
-    my $frame_num = 0;
-    my $last_update = 0;
-    my $update_after_frames = 2;  # how many frames pass before we update the rest of the display
-    $/ = "";			  # don't use newline for <>
-    while(<FFMPEG>) {
-      # frame= 1569 fps=0.9 q=-0.0 Lsize=  286475kB time=00:00:52.26 bitrate=44900.6kbits/s speed=0.0292x 
-      if(/^frame=\s+(\d+)\s+fps=([\d.]+)/) {
-	$frame_num = $1;
-	my $fps = $2;
-	my $progress_percentage = $frame_num / $raw_sequence_length;
+    $ffmpeg_cmd .= "$output_dirname/$output_video_filename 2>&1";
 
-	my $progress_bar = progress_bar(30, $progress_percentage);
+    my $runner = RenderRunner->new($log,
+				   $ffmpeg_cmd,
+				   $raw_sequence_length,
+				   $output_dirname,
+				   $output_video_filename,
+				   $group,
+				   $finished_callback,
+				   $group_finished_callback);
 
-	$progress_bar .= " rendering frame $frame_num/$raw_sequence_length ($fps fps) for";
-	$log->log($output_video_filename, "$progress_bar $output_video_filename", 10);
-	if ($frame_num - $last_update > $update_after_frames) {
-	  $/ = "\n";		# just incase any method called here uses <> expecting \n
-	  # called to update image sequence progress, no extra render here
-	  search_and_render($config, 1, $image_sequence_name);
-	  $last_update = $frame_num;
-	  $/ = "";
-	}
-      }
-    }
-    $/ = "\n";
-    my $result = close FFMPEG;
-    if ($result == 1) {
-      my $video_size = sizeStringOf("$output_dirname/$output_video_filename");
-      $log->timeLog($output_video_filename, "rendered $video_size $frame_num frame $output_dirname/$output_video_filename", -1);
-      return 1;
-    } else {
-      # failed, why?
-      $log->timeLog($output_video_filename, "$output_dirname/$output_video_filename render FAILED", -1);
-      return 'error';
-    }
+    $config->{ffmpeg}{$output_video_filename} = $runner;
+    push @$group, $runner;
+
+    return $runner;
   } else {
     $log->timeLog($image_sequence_name, "$output_dirname/$output_video_filename already rendered", -1);
   }
-  return 0;
 }
+
+my $exif_map = {};		# XXX move this
 
 sub read_exif_json($$$) {
   my ($image_sequence_dirname, $base_dirname, $raw_image_sequence_name) = @_;
@@ -509,16 +556,51 @@ sub read_exif_json($$$) {
   my $image_sequence_exif = {};
 
   unless (-e $exif_json_filename) {
-    $log->timeLog($image_sequence_dirname, "creating json exif file for $base_dirname/$raw_image_sequence_name", 10);
+    return if $exif_map->{$exif_json_filename};
 
-    my $exiftool = TimelapseExiftool->new;
-    my $json_str = $exiftool->json_for_raw_dir("$base_dirname/$raw_image_sequence_name");
-    open my $filehandle, ">$exif_json_filename" or die "can't open $exif_json_filename: $!\n";
-    print $filehandle $json_str;
-    close $filehandle;
+    $log->timeLog($image_sequence_dirname, MAGENTA."creating".RESET." json exif file for".BLUE." $base_dirname/$raw_image_sequence_name".RESET, 10);
+
+    $exif_map->{$exif_json_filename} = 1;
+    my $dirname = "$base_dirname/$raw_image_sequence_name";
+
+    opendir my $dir, $dirname or die "cannot open dir: $!\n";
+
+    my $group = [];
+
+    my $completion_callback = sub {
+      my ($self) = @_;
+
+      my $total_exif_map = {};
+      foreach my $runner (@$group) {
+	$self->process_exif($total_exif_map, $runner->{exif_data});
+      }
+      my $json_str = JSON->new->pretty->encode($total_exif_map);
+      open my $filehandle, ">$exif_json_filename" or die "can't open $exif_json_filename: $!\n";
+      print $filehandle $json_str;
+      close $filehandle;
+    };
+
+    my $raw_filetypes = ['ARW', 'DNG']; # XXX fix hardcode
+
+    foreach my $filename (readdir $dir) {
+      my $is_raw = 0;
+      foreach my $raw_filetype (@$raw_filetypes) {
+	$is_raw = 1 if($filename =~ /$raw_filetype$/i);
+      }
+      next unless $is_raw;
+      my $full_filename = "$dirname/$filename";
+      my $runner = ExiftoolRunner->new($full_filename,
+				       $group,
+				       undef,
+				       $completion_callback);
+      $config->{exiftool}{$full_filename} = $runner;
+      push @$group, $runner;
+    }
+    closedir $dir;
+    return undef;
   }
   # hash ref
-  my $exif_json = TimelapseExiftool::read_json_from($exif_json_filename);
+  my $exif_json = read_json_from($exif_json_filename);
 
   # remove keys with more than one value
   foreach my $exif_key (keys %$exif_json) {
@@ -532,27 +614,62 @@ sub read_exif_json($$$) {
   return $image_sequence_exif;
 }
 
-sub progress_bar($$) {
-  my ($length, $percentage) = @_;
+# XXX copied from TimelapseExitool
+sub read_json_from {
+  my ($filename) = @_;
 
-  my $progress_bar = "[";
-  for (my $i = 0 ; $i < $length ; $i++) {
-    if ($i/$length < $percentage) {
-      $progress_bar .= '*';
-    } else {
-      $progress_bar .= '-';
+  my $json_text = do {
+    open(my $json_fh, "<:encoding(UTF-8)", $filename)
+      or warn ("Can't open \"$filename\": $!\n");
+    local $/;
+    <$json_fh>
+  };
+
+  my $ret = undef;
+  if (defined $json_text) {
+    eval {
+      $ret = JSON->new->decode($json_text);
+      1;
+    } or do {
+      warn "could not read json from $filename: $@";
     }
   }
-  $progress_bar .= "]";
-
-  return $progress_bar;
+  return $ret;
 }
 
-# a human readable string giving the size of a file (or total of a shell globbed list)
-# XXX copied from backup.pl :(
-sub sizeStringOf {
-  my ($item) = @_;
-  open DU, "du -ch $item |";
-  while (<DU>) { return $1 if $_ =~ /^\s*([\d\w.]+)\s+total/; }
-  close DU;
+# XXX copied from Timelapse.pm
+sub get_aspect_ratio($$) {
+  my ($width, $height) = @_;
+
+  my $ratio_width = $width/$height;
+  my $ratio_height = 1;
+
+  if (is_int($ratio_width)) {
+    return "$ratio_width/$ratio_height";
+  } else {
+    # not sure we need ints here
+    # need to multiply
+    my ($a, $b) = recurse_to_find_integers($ratio_width, $ratio_height, 2);
+    return "$a/$b" if(defined $a && defined $b);
+    return "$width/$height";	# unable to find integers, return original values
+  }
+}
+
+# XXX copied from Timelapse.pm
+sub recurse_to_find_integers($$$) {
+  my ($left, $right, $multiplier) = @_;
+
+  if(is_int($left*$multiplier) && is_int($right*$multiplier)) {
+    return ($left*$multiplier, $right*$multiplier);
+  } else {
+    return undef if($multiplier > 1000);
+    return recurse_to_find_integers($left, $right, $multiplier+1);
+  }
+}
+
+# XXX copied from Timelapse.pm
+sub is_int($) {
+  my ($value) = @_;
+
+  return $value == int $value;
 }

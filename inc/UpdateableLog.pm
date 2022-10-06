@@ -5,6 +5,7 @@ use Term::ReadKey;
 
 use strict;
 
+use Term::ANSIColor qw(:constants);
 
 # a log system that allows updates to log lines after logging
 
@@ -22,7 +23,13 @@ sub new {
 sub sort($) {
   my ($self) = @_;
   $self->clear();
-  my @sorted_logs = sort { $a->{value} <=> $b->{value} } @{$self->{list}};
+  my @sorted_logs = sort {
+    if($a->{value} == $b->{value}) {
+      return $a->{value2} <=> $b->{value2}
+    } else {
+      return $a->{value} <=> $b->{value}
+    }
+  } @{$self->{list}};
   $self->{list} = \@sorted_logs;
   $self->redraw();
 }
@@ -64,13 +71,13 @@ sub timeLog($$$) {
   my $d = `date "+%r"`;
   chomp $d;
 
-  $self->log($name, "$d - $message", $value);
+  $self->log($name, YELLOW.$d.RESET." - $message", $value, time);
 }
 
 sub log($$$) {
-  my ($self, $name, $message, $value) = @_;
+  my ($self, $name, $message, $value1, $value2) = @_;
 
-  my $logline = UpdateableLogLine->new($name, $message, $value);
+  my $logline = UpdateableLogLine->new($name, $message, $value1, $value2);
 
   my $found = 0;
 
@@ -83,7 +90,8 @@ sub log($$$) {
       my $previous_message_length = length($line->{message});
       my $new_message_length = length($message);
       $line->{message} = $message;
-      $line->{value} = $value;
+      $line->{value} = $value1;
+      $line->{value2} = $value2;
       print "\033[$index"."A";	# move cursor up $index lines
       print $message;
       if($previous_message_length > $new_message_length) {

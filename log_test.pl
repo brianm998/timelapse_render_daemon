@@ -16,8 +16,8 @@ use UpdateableLog;
 my $log = UpdateableLog->new();
 
 $log->log("crapp", "first");
-$log->log("crapp", "second");
-$log->log("crapp", "third");
+$log->log("crap", "second");
+$log->log("crp", "third");
 $log->log("foobar", "hello");
 $log->log("foobaz", "-----");
 
@@ -27,6 +27,7 @@ $log->log("foobar", "hello there");
 
 sleep 1;
 
+$log->log("crap", "WTF");
 $log->log("foobar", "hello there.");
 
 sleep 1;

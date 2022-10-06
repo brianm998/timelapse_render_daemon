@@ -1,36 +1,27 @@
 {
-    "temp_paths" :	
+    "temp_paths" :
     [
-	"/qp/tmp",
-	"/rp/tmp",
-	"/op/tmp",
-	"/pp/tmp",
-	"/sp/tmp"
+	"/qp/test_temp_path2"
     ],
     "source_paths" :
     [
-	"/Users/brian/Pictures/timelapses/2022/"
+	"/qp/test_source_path"
     ],
     "master_videos" :
     [
-	"/Users/brian/Pictures/timelapses/2022/2022-video"
+	"/qp/test_master_videos"
     ],
-    "max_processes" : {
-	"ffmpeg" : 8,
-	"exiftool" : 100
-    },
-    "max_cuncurrent_renders": 8,
     "image_name_prefix" : "LRT_",
     "image_sequence_dirname_prefix" : "LRT_",
     "raw_types" : ["ARW"],
     "rendering": [
 	{
-	    "resolution": [1080,720],
-	    "codec": "ProResMQ",
+	    "codec": "ProResUHQ",
 	    "frame_rate": 30
 	},
 	{
-	    "codec": "ProResUHQ",
+	    "codec": "ProResMQ",
+	    "resolution": [108,72],
 	    "frame_rate": 30
 	}
     ],
