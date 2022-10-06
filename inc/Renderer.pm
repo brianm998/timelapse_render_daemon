@@ -83,7 +83,7 @@ sub render_frame($) {
        my $progress_bar = progress_bar(30, $progress_percentage); # XXX move to inc
 
        $progress_bar .= " rendering frame $self->{frame_num}/$self->{raw_sequence_length} ($fps fps) for";
-       $self->{log}->log($self->{output_video_filename}, "$progress_bar $self->{output_video_filename}", 10);
+       $self->{log}->log($self->{output_video_filename}, "$progress_bar $self->{output_video_filename}", 10, $progress_percentage);
      } else {
 #       $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} MISS '$line'", 10);
      }
