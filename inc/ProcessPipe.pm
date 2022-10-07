@@ -46,11 +46,11 @@ sub finish($) {
   close $self->{shell_input};
 
   $self->{is_done} = 1;
+  $self->{is_running} = 0;
 
   my $finished_callback = $self->{finished_callback};
   &$finished_callback($self) if defined $finished_callback;
 
-  $self->{is_running} = 0;
   if ($self->group_is_done()) {
     # only after all renders are done for this group
 
