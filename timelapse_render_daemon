@@ -70,7 +70,6 @@ use Exiftool;
 #   (would help with being able to not log about deleting sequences)
 # - flesh out video_codecs.json
 # - make sure all exif is really making it to videos
-# - separate the config from the running state
 
 # all user visible output goes through this log
 my $log = UpdateableLog->new();
@@ -155,7 +154,7 @@ sub load_config($$) {
   }
 
   if(defined $previous_config) {
-    $log->timeLog($config_filename, GREEN."successfully ".RESET."re-read config from ".BLUE." $config_filename".RESET);
+    $log->timeLog($config_filename, GREEN."successfully ".RESET."re-read config from".BLUE." $config_filename".RESET);
   }
 
   return $new_config;
@@ -244,9 +243,15 @@ sub search_and_discover_from_export_dir($$$$$) {
     # we need to know the $raw_image_sequence_name for this generated image sequence
     next unless defined $raw_image_sequence_name;
 
-    process_image_sequence($config, $processes, $no_render,
-			   $export_dir, $export_path, $image_sequence_dirname,
-			   $raw_sequence_length, $base_dirname, $raw_image_sequence_name);
+    process_image_sequence($config,
+			   $processes,
+			   $no_render,
+			   $export_dir,
+			   $export_path,
+			   $image_sequence_dirname,
+			   $raw_sequence_length,
+			   $base_dirname,
+			   $raw_image_sequence_name);
   }
 }
 
@@ -254,9 +259,15 @@ sub search_and_discover_from_export_dir($$$$$) {
 # maybe render, or just log
 sub process_image_sequence($$$$$$$) {
 
-  my ($config, $processes, $no_render,
-      $export_dir, $export_path, $image_sequence_dirname,
-      $raw_sequence_length, $base_dirname, $raw_image_sequence_name) = @_;
+  my ($config,
+      $processes,
+      $no_render,
+      $export_dir,
+      $export_path,
+      $image_sequence_dirname,
+      $raw_sequence_length,
+      $base_dirname,
+      $raw_image_sequence_name) = @_;
 
   # check number of generated images present
   opendir my $export_dir, "$export_path/$image_sequence_dirname" or die "cannot open dfs dir: $!\n";
