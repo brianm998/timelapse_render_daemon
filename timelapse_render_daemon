@@ -89,33 +89,33 @@ unless(defined $config_json_filename) {
   }
 }
 
-my $config = load_config($config_json_filename, undef);
+my $top_level_config = load_config($config_json_filename, undef);
 
-die unless ($config);
+die unless ($top_level_config);
 
 my $running_processes =	{};	# track current spawned processes
 
 # run once without renders to fully flesh out the display
-search_and_discover($config, $running_processes, 1);
+search_and_discover($top_level_config, $running_processes, 1);
 
 while(1) {
   # search again and populate the current processes we should run
-  search_and_discover($config, $running_processes);
+  search_and_discover($top_level_config, $running_processes);
 
   my $sleep = 1;		# assume we need to sleep
 
-  foreach my $process_type (keys %{$config->{max_processes}}) {
+  foreach my $process_type (keys %{$top_level_config->{max_processes}}) {
     # process one line for each process of this type
-    manage_processes($config, $running_processes, $process_type);
+    manage_processes($top_level_config, $running_processes, $process_type);
 
     # don't sleep if we have active processes
     $sleep = 0 unless $running_processes->{current}{$process_type} == 0;
   }
 
-  my $new_config = load_config($config_json_filename, $config);
-  $config = $new_config if defined $new_config;
+  my $new_config = load_config($config_json_filename, $top_level_config);
+  $top_level_config = $new_config if defined $new_config;
 
-  sleep($config->{sleep_time_seconds}) if($sleep);
+  sleep($top_level_config->{sleep_time_seconds}) if($sleep);
 }
 
 ########
@@ -123,7 +123,7 @@ while(1) {
 ########
 
 sub load_config($$) {
-  my ($config_filename, $previous_config) = @_;
+ my ($config_filename, $previous_config) = @_;
 
   if(defined $previous_config) {
     my $modtime = (stat($config_filename))[9];
