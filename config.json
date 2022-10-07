@@ -34,6 +34,7 @@
 	    "frame_rate": 30
 	}
     ],
+    "log_in_color": true,
     "sleep_time_seconds" : 2,
     "delete_sequence_after_render_regexes" : ["-merge$"]
 }

@@ -60,25 +60,21 @@ use Exiftool;
 #   - specify archive locations in config
 # - fix problem where deleting dirs makes them show up (tmp_rm hack works for now, kindof)
 # - add validation for Timelapse and others (ffmpeg exists, etc)
-# - watch updates in config.json and update when running
 # - write a real log file as well as the refreshing  console output
 # - add config validation
 # - avoid printing lines longer than the console
 # - have timeLog not update time on log when message is the same
 # - check to see running on macos and run caffeinate to keep alive in background
-# - allow re-reading config every so often (add validation first)
+# - add config validation
 # - introduce a state system to track where image sequences are
 #   (would help with being able to not log about deleting sequences)
 # - flesh out video_codecs.json
-# - add ability to turn off colors
 # - make sure all exif is really making it to videos
+# - separate the config from the running state
 
 # all user visible output goes through this log
 my $log = UpdateableLog->new();
 #my $log = DebugLog->new();
-
-# this turns off the colors in logging
-#$ENV{ANSI_COLORS_DISABLED} = 1;
 
 # allow json config file to be referenced on the command line
 my $config_json_filename = shift;
@@ -149,6 +145,12 @@ sub load_config($$) {
     unless defined $new_config->{max_processes}{exiftool};
   $new_config->{max_processes}{ffmpeg} = 1
     unless defined $new_config->{max_processes}{ffmpeg};
+
+  if($new_config->{log_in_color}) {
+    $ENV{ANSI_COLORS_DISABLED} = 0;
+  } else {
+    $ENV{ANSI_COLORS_DISABLED} = 1;
+  }
 
   if(defined $previous_config) {
     $new_config->{current_processes} = $previous_config->{current_processes};
