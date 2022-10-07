@@ -158,7 +158,7 @@ sub manage_processes($$$) {
 
 # look for image sequences that might be ready to render
 sub search_and_discover($$$) {
-  my ($config, $no_render, $currently_rendering_sequence_name) = @_;
+  my ($config, $no_render) = @_;
 
   # a hash of all raw image sequences to their number of raw images
   my $raw_image_sequence_counts = count_raw_image_sequences($config);
@@ -168,18 +168,20 @@ sub search_and_discover($$$) {
     opendir my $temp_dir, $temp_path or die "cannot open $temp_path: $!\n";
 
     search_and_discover_from_temp_dir($config, $no_render,
-				    $currently_rendering_sequence_name,
-				    $raw_image_sequence_counts,
-				    $temp_dir, $temp_path);
+				      $raw_image_sequence_counts,
+				      $temp_dir, $temp_path);
 
     closedir $temp_dir;
   }
 }
 
 # look into a specific temp dir for image sequences that might be ready to render
-sub search_and_discover_from_temp_dir($$$$$$) {
-  my ($config, $no_render, $currently_rendering_sequence_name,
-      $raw_image_sequence_counts, $temp_dir, $temp_path) = @_;
+sub search_and_discover_from_temp_dir($$$$$) {
+  my ($config,
+      $no_render,
+      $raw_image_sequence_counts,
+      $temp_dir,
+      $temp_path) = @_;
 
   foreach my $image_sequence_dirname (readdir $temp_dir) {
     next unless(-d "$temp_path/$image_sequence_dirname");
@@ -202,7 +204,6 @@ sub search_and_discover_from_temp_dir($$$$$$) {
     next unless defined $raw_image_sequence_name;
 
     process_image_sequence($config, $no_render,
-			   $currently_rendering_sequence_name,
 			   $temp_dir, $temp_path, $image_sequence_dirname,
 			   $raw_sequence_length, $base_dirname, $raw_image_sequence_name);
   }
@@ -212,7 +213,7 @@ sub search_and_discover_from_temp_dir($$$$$$) {
 # maybe render, or just log
 sub process_image_sequence($$$$$$) {
 
-  my ($config, $no_render, $currently_rendering_sequence_name,
+  my ($config, $no_render,
       $temp_dir, $temp_path, $image_sequence_dirname,
       $raw_sequence_length, $base_dirname, $raw_image_sequence_name) = @_;
 
@@ -249,12 +250,10 @@ sub process_image_sequence($$$$$$) {
     }
     return unless($would_render);
 
-#    unless ($currently_rendering_sequence_name eq $image_sequence_dirname) {
-      my $sequence_size = RenderRunner::sizeStringOf("$temp_path/$image_sequence_dirname");
-      if(-e "$temp_path/$image_sequence_dirname.json") {
-	$log->timeLog($image_sequence_dirname, "$sequence_size $raw_sequence_length frame image sequence $temp_path/$image_sequence_dirname is ready to render", 1);
-      }
-#    }
+    my $sequence_size = RenderRunner::sizeStringOf("$temp_path/$image_sequence_dirname");
+    if (-e "$temp_path/$image_sequence_dirname.json") {
+      $log->timeLog($image_sequence_dirname, "$sequence_size $raw_sequence_length frame image sequence $temp_path/$image_sequence_dirname is ready to render", 1);
+    }
 
     return if($no_render);
 
