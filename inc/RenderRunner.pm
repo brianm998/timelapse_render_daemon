@@ -32,18 +32,6 @@ sub new {
   return bless $self, $class;
 }
 
-sub output_video_exists() {
-  my ($self) = @_;
-
-  return -e $self->full_output_video_filename();
-}
-
-sub full_output_video_filename() {
-  my ($self) = @_;
-
-  return "$self->{output_dirname}/$self->{output_video_filename}";
-}
-
 sub start($) {
   my ($self) = @_;
 
@@ -109,6 +97,18 @@ sub finish($) {
   $self->SUPER::finish();
 }
 
+sub output_video_exists() {
+  my ($self) = @_;
+
+  return -e $self->full_output_video_filename();
+}
+
+sub full_output_video_filename() {
+  my ($self) = @_;
+
+  return "$self->{output_dirname}/$self->{output_video_filename}";
+}
+
 
 # a human readable string giving the size of a file (or total of a shell globbed list)
 # XXX copied from backup.pl :(
@@ -121,6 +121,7 @@ sub sizeStringOf {
   close DU;
 }
 
+# XXX move this
 sub progress_bar($$) {
   my ($length, $percentage) = @_;
 

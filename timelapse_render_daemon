@@ -10,6 +10,7 @@ use Cwd;
 use JSON;
 use Term::ANSIColor qw(:constants);
 
+
 my $script_dir;	# figure out where this running script exists on disk
 BEGIN { $script_dir = Cwd::realpath( File::Basename::dirname(__FILE__)) }
 
@@ -69,10 +70,15 @@ use Exiftool;
 # - introduce a state system to track where image sequences are
 #   (would help with being able to not log about deleting sequences)
 # - flesh out video_codecs.json
+# - add ability to turn off colors
+# - make sure all exif is really making it to videos
 
 # all user visible output goes through this log
 my $log = UpdateableLog->new();
 #my $log = DebugLog->new();
+
+# this turns off the colors in logging
+#$ENV{ANSI_COLORS_DISABLED} = 1;
 
 # allow json config file to be referenced on the command line
 my $config_json_filename = shift;
@@ -165,26 +171,26 @@ sub search_and_discover($$$) {
 
   # search each path where processed frame images are written to
   foreach my $export_path (@{$config->{export_paths}}) {
-    opendir my $temp_dir, $export_path or die "cannot open $export_path: $!\n";
+    opendir my $export_dir, $export_path or die "cannot open $export_path: $!\n";
 
-    search_and_discover_from_temp_dir($config, $no_render,
+    search_and_discover_from_export_dir($config, $no_render,
 				      $raw_image_sequence_counts,
-				      $temp_dir,
+				      $export_dir,
 				      $export_path);
 
-    closedir $temp_dir;
+    closedir $export_dir;
   }
 }
 
 # look into a specific temp dir for image sequences that might be ready to render
-sub search_and_discover_from_temp_dir($$$$$) {
+sub search_and_discover_from_export_dir($$$$$) {
   my ($config,
       $no_render,
       $raw_image_sequence_counts,
-      $temp_dir,
+      $export_dir,
       $export_path) = @_;
 
-  foreach my $image_sequence_dirname (readdir $temp_dir) {
+  foreach my $image_sequence_dirname (readdir $export_dir) {
     next unless(-d "$export_path/$image_sequence_dirname");
     my $raw_image_sequence_name = undef;
 
@@ -205,7 +211,7 @@ sub search_and_discover_from_temp_dir($$$$$) {
     next unless defined $raw_image_sequence_name;
 
     process_image_sequence($config, $no_render,
-			   $temp_dir, $export_path, $image_sequence_dirname,
+			   $export_dir, $export_path, $image_sequence_dirname,
 			   $raw_sequence_length, $base_dirname, $raw_image_sequence_name);
   }
 }
@@ -215,13 +221,13 @@ sub search_and_discover_from_temp_dir($$$$$) {
 sub process_image_sequence($$$$$$) {
 
   my ($config, $no_render,
-      $temp_dir, $export_path, $image_sequence_dirname,
+      $export_dir, $export_path, $image_sequence_dirname,
       $raw_sequence_length, $base_dirname, $raw_image_sequence_name) = @_;
 
   # check number of generated images present
-  opendir my $temp_dir, "$export_path/$image_sequence_dirname" or die "cannot open dfs dir: $!\n";
+  opendir my $export_dir, "$export_path/$image_sequence_dirname" or die "cannot open dfs dir: $!\n";
   my $number_of_generated_images = 0;
-  foreach my $entry (readdir $temp_dir) {
+  foreach my $entry (readdir $export_dir) {
     next if($entry =~ /^[.]/);
     next unless (-f "$export_path/$image_sequence_dirname/$entry"); # only files
     # files with .tif or .tiff extensions only
@@ -231,7 +237,7 @@ sub process_image_sequence($$$$$$) {
     # what about jpeg?
     $number_of_generated_images++; # assume everything else is an image
   }
-  closedir $temp_dir;
+  closedir $export_dir;
 
   if ($number_of_generated_images == $raw_sequence_length) {
     # this image sequence has the same length as the raw sequence
@@ -439,8 +445,8 @@ sub should_render($$) {
     }
   }
   # check for this file on the temp render path
-  foreach my $temp_dirname (@{$config->{export_paths}}) {
-    if (-e "$temp_dirname/$output_video_filename") {
+  foreach my $export_dirname (@{$config->{export_paths}}) {
+    if (-e "$export_dirname/$output_video_filename") {
       $should_render = 0;
     }
   }
@@ -459,7 +465,7 @@ sub should_render($$) {
 # empty width and height default to original image resolution
 sub initiate_render() {
   my ($config,
-      $output_dirname,
+      $export_path,
       $image_sequence_name,
       $exif_data,
       $raw_sequence_length,
@@ -471,7 +477,7 @@ sub initiate_render() {
   my $output_video_filename = output_video_filename($config, $render_type, $image_sequence_name);
 
   if(should_render($config, $output_video_filename)) {
-    my $image_sequence_dirname = "$output_dirname/$image_sequence_name";
+    my $image_sequence_dirname = "$export_path/$image_sequence_name";
 
     my $image_width = $render_type->{resolution}[0];
     my $image_height = $render_type->{resolution}[1];
@@ -534,12 +540,12 @@ sub initiate_render() {
       $ffmpeg_cmd .= "-metadata '$exif_key=$exif_value' ";
     }
 
-    $ffmpeg_cmd .= "$output_dirname/$output_video_filename 2>&1";
+    $ffmpeg_cmd .= "$export_path/$output_video_filename 2>&1";
 
     my $runner = RenderRunner->new($log,
 				   $ffmpeg_cmd,
 				   $raw_sequence_length,
-				   $output_dirname,
+				   $export_path,
 				   $output_video_filename,
 				   $group,
 				   $finished_callback, # used only for logging
@@ -551,7 +557,7 @@ sub initiate_render() {
 
     return $runner;
   } else {
-    $log->timeLog($image_sequence_name, "$output_dirname/$output_video_filename already rendered", -1);
+    $log->timeLog($image_sequence_name, "$export_path/$output_video_filename already rendered", -1);
   }
 }
 
