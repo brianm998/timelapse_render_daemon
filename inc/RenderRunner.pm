@@ -12,19 +12,21 @@ sub new {
   my ($class,
       $log,
       $ffmpeg_cmd,
-      $image_sequence_length,
       $output_dirname,
       $output_video_filename,
       $group,
       $start_callback,
+      $successful_update_callback,
       $finished_callback,
       $group_finished_callback,
      )
       = @_;
 
-  my $self = $class->SUPER::new($log, $ffmpeg_cmd, $group, $start_callback,
-				$finished_callback, $group_finished_callback);
-  $self->{image_sequence_length} = $image_sequence_length;
+  my $self = $class->SUPER::new($log, $ffmpeg_cmd, $group,
+				$start_callback,
+				$successful_update_callback,
+				$finished_callback,
+				$group_finished_callback);
   $self->{output_dirname} = $output_dirname;
   $self->{output_video_filename} = $output_video_filename;
   $self->{frame_num} = 0;
@@ -58,14 +60,11 @@ sub read_line($) {
      # frame= 1569 fps=0.9 q=-0.0 Lsize=  286475kB time=00:00:52.26 bitrate=44900.6kbits/s speed=0.0292x 
      if ($line =~ /^frame\s*=\s*(\d+)\s+fps\s*=\s*([\d.]+)/) {
        $self->{frame_num} = $1;
-       my $fps = $2;
-#       $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} HIT $1 $2", 10);
-       my $progress_percentage = $self->{frame_num} / $self->{image_sequence_length};
+       $self->{fps} = $2;
 
-       my $progress_bar = progress_bar(30, $progress_percentage); # XXX move to inc
+       my $successful_update_callback = $self->{successful_update_callback};
+       &$successful_update_callback($self) if defined $successful_update_callback;
 
-       $progress_bar .= MAGENTA" rendering ".RESET."frame $self->{frame_num}/$self->{image_sequence_length} (".CYAN."$fps fps".RESET.") for";
-       $self->{log}->log($self->{output_video_filename}, $progress_bar.BLUE." $self->{output_video_filename}".RESET, 10, $progress_percentage);
      } else {
 #       $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} MISS '$line'", 10);
      }
@@ -121,20 +120,4 @@ sub sizeStringOf {
   close DU;
 }
 
-# XXX move this
-sub progress_bar($$) {
-  my ($length, $percentage) = @_;
-
-  my $progress_bar = BLUE."[";
-  for (my $i = 0 ; $i < $length ; $i++) {
-    if ($i/$length < $percentage) {
-      $progress_bar .= GREEN.'*';
-    } else {
-      $progress_bar .= YELLOW.'-';
-    }
-  }
-  $progress_bar .= BLUE"]".RESET;
-
-  return $progress_bar;
-}
 1;

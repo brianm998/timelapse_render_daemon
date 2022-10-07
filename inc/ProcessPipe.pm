@@ -11,6 +11,7 @@ sub new {
       $shell_command,
       $group,
       $start_callback,
+      $successful_update_callback, # never called by this class, subclasses should call it
       $finished_callback,
       $group_finished_callback,
      )
@@ -25,6 +26,7 @@ sub new {
      group => $group,
      group_finished_callback => $group_finished_callback,
      finished_callback => $finished_callback,
+     successful_update_callback => $successful_update_callback,
      start_callback => $start_callback,
     };
 

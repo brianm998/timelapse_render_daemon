@@ -8,13 +8,17 @@ sub new {
       $filename,
       $group,
       $start_callback,
+      $successful_update_callback,
       $finished_callback,
       $group_finished_callback
      )
     = @_;
 
   my $self = $class->SUPER::new(undef, "exiftool -csv $filename", $group,
-				$start_callback, $finished_callback, $group_finished_callback);
+				$start_callback,
+				$successful_update_callback,
+				$finished_callback,
+				$group_finished_callback);
 
   $self->{csv} = Text::CSV->new ({ binary => 1, auto_diag => 1 });
 
