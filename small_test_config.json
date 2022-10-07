@@ -1,7 +1,7 @@
 {
-    "temp_paths" :
+    "export_paths" :
     [
-	"/qp/test_temp_path2"
+	"/qp/test_export_path2"
     ],
     "source_paths" :
     [

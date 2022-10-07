@@ -25,7 +25,7 @@ use Exiftool;
 # logic:
 # read source path dirs and keep a record of name of dir and # of images
 
-# look into temp_paths and try to find paths that match the name from
+# look into export_paths and try to find paths that match the name from
 # source_dir, and have the right number of fully written output files,
 # and don't have videos rendered in the temp or master_videos dirs with
 # the same names as the config would end up producing
@@ -46,7 +46,7 @@ use Exiftool;
 # daemon loop:
 
 # - read source_dir, updating info on sequences and lengths
-# - traverse temp_paths, looking for non-rendered videos
+# - traverse export_paths, looking for non-rendered videos
 # - render non-existant videos
 # - make json exif file if non existant
 # - embed that into video
@@ -164,12 +164,13 @@ sub search_and_discover($$$) {
   my $raw_image_sequence_counts = count_raw_image_sequences($config);
 
   # search each path where processed frame images are written to
-  foreach my $temp_path (@{$config->{temp_paths}}) {
-    opendir my $temp_dir, $temp_path or die "cannot open $temp_path: $!\n";
+  foreach my $export_path (@{$config->{export_paths}}) {
+    opendir my $temp_dir, $export_path or die "cannot open $export_path: $!\n";
 
     search_and_discover_from_temp_dir($config, $no_render,
 				      $raw_image_sequence_counts,
-				      $temp_dir, $temp_path);
+				      $temp_dir,
+				      $export_path);
 
     closedir $temp_dir;
   }
@@ -181,10 +182,10 @@ sub search_and_discover_from_temp_dir($$$$$) {
       $no_render,
       $raw_image_sequence_counts,
       $temp_dir,
-      $temp_path) = @_;
+      $export_path) = @_;
 
   foreach my $image_sequence_dirname (readdir $temp_dir) {
-    next unless(-d "$temp_path/$image_sequence_dirname");
+    next unless(-d "$export_path/$image_sequence_dirname");
     my $raw_image_sequence_name = undef;
 
     my $raw_sequence_length = undef;
@@ -204,7 +205,7 @@ sub search_and_discover_from_temp_dir($$$$$) {
     next unless defined $raw_image_sequence_name;
 
     process_image_sequence($config, $no_render,
-			   $temp_dir, $temp_path, $image_sequence_dirname,
+			   $temp_dir, $export_path, $image_sequence_dirname,
 			   $raw_sequence_length, $base_dirname, $raw_image_sequence_name);
   }
 }
@@ -214,15 +215,15 @@ sub search_and_discover_from_temp_dir($$$$$) {
 sub process_image_sequence($$$$$$) {
 
   my ($config, $no_render,
-      $temp_dir, $temp_path, $image_sequence_dirname,
+      $temp_dir, $export_path, $image_sequence_dirname,
       $raw_sequence_length, $base_dirname, $raw_image_sequence_name) = @_;
 
   # check number of generated images present
-  opendir my $temp_dir, "$temp_path/$image_sequence_dirname" or die "cannot open dfs dir: $!\n";
+  opendir my $temp_dir, "$export_path/$image_sequence_dirname" or die "cannot open dfs dir: $!\n";
   my $number_of_generated_images = 0;
   foreach my $entry (readdir $temp_dir) {
     next if($entry =~ /^[.]/);
-    next unless (-f "$temp_path/$image_sequence_dirname/$entry"); # only files
+    next unless (-f "$export_path/$image_sequence_dirname/$entry"); # only files
     # files with .tif or .tiff extensions only
     if ($entry !~ /[.]tiff?$/) { # XXX expose this in config so jpeg works too
       next;
@@ -250,16 +251,16 @@ sub process_image_sequence($$$$$$) {
     }
     return unless($would_render);
 
-    my $sequence_size = RenderRunner::sizeStringOf("$temp_path/$image_sequence_dirname");
-    if (-e "$temp_path/$image_sequence_dirname.json") {
-      $log->timeLog($image_sequence_dirname, "$sequence_size $raw_sequence_length frame image sequence $temp_path/$image_sequence_dirname is ready to render", 1);
+    my $sequence_size = RenderRunner::sizeStringOf("$export_path/$image_sequence_dirname");
+    if (-e "$export_path/$image_sequence_dirname.json") {
+      $log->timeLog($image_sequence_dirname, "$sequence_size $raw_sequence_length frame image sequence $export_path/$image_sequence_dirname is ready to render", 1);
     }
 
     return if($no_render);
 
     # actually try to render
     render_all_videos_for_image_sequence($config,
-					 $temp_path,
+					 $export_path,
 					 $image_sequence_dirname,
 					 $base_dirname,
 					 $raw_image_sequence_name,
@@ -274,12 +275,12 @@ sub process_image_sequence($$$$$$) {
     my $frames_left = $raw_sequence_length - $number_of_generated_images;
     my $msg = sprintf(YELLOW."waiting ".RESET."for %04.d more frames (%04.d / %04.d)",
 		      $frames_left, $number_of_generated_images, $raw_sequence_length);
-    my $sequence_size = RenderRunner::sizeStringOf("$temp_path/$image_sequence_dirname");
+    my $sequence_size = RenderRunner::sizeStringOf("$export_path/$image_sequence_dirname");
 
     # XXX this is a hack to align layers. usually 4 chars, add another when 3
     $sequence_size = " $sequence_size" if(length($sequence_size) == 3);
 
-    $log->log($image_sequence_dirname, "$progress_bar $msg in ".CYAN."$sequence_size".BLUE." $temp_path/$image_sequence_dirname".RESET, $percentage);
+    $log->log($image_sequence_dirname, "$progress_bar $msg in ".CYAN."$sequence_size".BLUE." $export_path/$image_sequence_dirname".RESET, $percentage);
   }
 }
 
@@ -318,7 +319,7 @@ sub count_raw_image_sequences($) {
 
 sub render_all_videos_for_image_sequence() {
   my ($config,
-      $temp_path,
+      $export_path,
       $image_sequence_dirname,
       $base_dirname,
       $raw_image_sequence_name,
@@ -332,7 +333,7 @@ sub render_all_videos_for_image_sequence() {
 
   return unless defined $image_sequence_exif;
 
-  my $sequence_size = RenderRunner::sizeStringOf("$temp_path/$image_sequence_dirname");
+  my $sequence_size = RenderRunner::sizeStringOf("$export_path/$image_sequence_dirname");
 
   my $group = [];		# these processes all share a group
 
@@ -344,18 +345,18 @@ sub render_all_videos_for_image_sequence() {
       # maybe delete the image sequence after successful render
       my $removed = 0;
       foreach my $delete_regex (@{$config->{delete_sequence_after_render_regexes}}) {
-	if ("$temp_path/$image_sequence_dirname" =~ /$delete_regex/) {
-	  my $rm_cmd = "rm -rf $temp_path/$image_sequence_dirname";
+	if ("$export_path/$image_sequence_dirname" =~ /$delete_regex/) {
+	  my $rm_cmd = "rm -rf $export_path/$image_sequence_dirname";
 	  $log->timeLog($image_sequence_dirname, MAGENTA."running".RED." $rm_cmd".RESET, 10);
 	  system($rm_cmd);
 	  $removed = 1;
-	  $log->timeLog($image_sequence_dirname, GREEN."rendered".RESET." $group_size videos from".CYAN." $sequence_size".RESET." image sequence".BLUE." $temp_path/$image_sequence_dirname".RESET.", image sequence".RED." removed".RESET, -1);
+	  $log->timeLog($image_sequence_dirname, GREEN."rendered".RESET." $group_size videos from".CYAN." $sequence_size".RESET." image sequence".BLUE." $export_path/$image_sequence_dirname".RESET.", image sequence".RED." removed".RESET, -1);
 	}
       }
       unless ($removed) {
 	# potential bug where this doesn't show up when only
 	# some videos needed to be rendered
-	$log->timeLog($image_sequence_dirname, GREEN."rendered ".RESET."$group_size videos from".CYAN." $sequence_size".RESET." image sequence".BLUE." $temp_path/$image_sequence_dirname".RESET, -1);
+	$log->timeLog($image_sequence_dirname, GREEN."rendered ".RESET."$group_size videos from".CYAN." $sequence_size".RESET." image sequence".BLUE." $export_path/$image_sequence_dirname".RESET, -1);
       }
     } else {
       $log->timeLog($image_sequence_dirname, RED."appears to have failed :(".RESET, -1);
@@ -374,12 +375,12 @@ sub render_all_videos_for_image_sequence() {
     }
     my $waiting = "";
     $waiting = " ($items_waiting more queued)" if $items_waiting > 0;
-    $log->timeLog($image_sequence_dirname, MAGENTA."rendering ".RESET."$items_running videos$waiting from".CYAN." $sequence_size".RESET." image sequence".BLUE." $temp_path/$image_sequence_dirname".RESET, 10);
+    $log->timeLog($image_sequence_dirname, MAGENTA."rendering ".RESET."$items_running videos$waiting from".CYAN." $sequence_size".RESET." image sequence".BLUE." $export_path/$image_sequence_dirname".RESET, 10);
   };
 
   foreach my $render_type (@{$config->{rendering}}) {
     initiate_render($config,
-		    $temp_path,
+		    $export_path,
 		    $image_sequence_dirname,
 		    $image_sequence_exif,
 		    $raw_sequence_length,
@@ -438,7 +439,7 @@ sub should_render($$) {
     }
   }
   # check for this file on the temp render path
-  foreach my $temp_dirname (@{$config->{temp_paths}}) {
+  foreach my $temp_dirname (@{$config->{export_paths}}) {
     if (-e "$temp_dirname/$output_video_filename") {
       $should_render = 0;
     }

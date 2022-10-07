@@ -1,5 +1,5 @@
 {
-    "temp_paths" :
+    "export_paths" :
     [
 	"/qp/test_temp_path",
 	"/qp/test_temp_path_multi",
@@ -14,7 +14,7 @@
 	"/qp/test_master_videos"
     ],
     "max_processes" : {
-	"ffmpeg": 8,
+	"ffmpeg": 14,
 	"exiftool" : 200
     },
     "image_name_prefix" : "LRT_",
@@ -32,7 +32,22 @@
 	},
 	{
 	    "codec": "ProResMQ",
+	    "resolution": [54,36],
+	    "frame_rate": 30
+	},
+	{
+	    "codec": "ProResMQ",
 	    "resolution": [1080,720],
+	    "frame_rate": 30
+	},
+	{
+	    "codec": "ProResMQ",
+	    "resolution": [2160,1420],
+	    "frame_rate": 30
+	},
+	{
+	    "codec": "ProResMQ",
+	    "resolution": [27,17],
 	    "frame_rate": 30
 	}
     ],
