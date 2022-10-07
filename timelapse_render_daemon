@@ -249,12 +249,12 @@ sub process_image_sequence($$$$$$) {
     }
     return unless($would_render);
 
-    unless ($currently_rendering_sequence_name eq $image_sequence_dirname) {
+#    unless ($currently_rendering_sequence_name eq $image_sequence_dirname) {
       my $sequence_size = RenderRunner::sizeStringOf("$temp_path/$image_sequence_dirname");
       if(-e "$temp_path/$image_sequence_dirname.json") {
 	$log->timeLog($image_sequence_dirname, "$sequence_size $raw_sequence_length frame image sequence $temp_path/$image_sequence_dirname is ready to render", 1);
       }
-    }
+#    }
 
     return if($no_render);
 
@@ -274,13 +274,13 @@ sub process_image_sequence($$$$$$) {
 
     my $frames_left = $raw_sequence_length - $number_of_generated_images;
     my $msg = sprintf(YELLOW."waiting ".RESET."for %04.d more frames (%04.d / %04.d)",
-		      $number_of_generated_images, $frames_left, $raw_sequence_length);
+		      $frames_left, $number_of_generated_images, $raw_sequence_length);
     my $sequence_size = RenderRunner::sizeStringOf("$temp_path/$image_sequence_dirname");
 
     # XXX this is a hack to align layers. usually 4 chars, add another when 3
     $sequence_size = " $sequence_size" if(length($sequence_size) == 3);
 
-    $log->log($image_sequence_dirname, "$progress_bar $msg for ".CYAN."$sequence_size".BLUE." $temp_path/$image_sequence_dirname".RESET, $percentage);
+    $log->log($image_sequence_dirname, "$progress_bar $msg in ".CYAN."$sequence_size".BLUE." $temp_path/$image_sequence_dirname".RESET, $percentage);
   }
 }
 
@@ -364,11 +364,18 @@ sub render_all_videos_for_image_sequence() {
   };
 
   my $finished_callback = sub {
-    my $items_left = 0;
+    my $items_waiting = 0;
+    my $items_running = 0;
     foreach my $item (@$group) {
-      $items_left++ unless($item->{is_done})
+      if($item->{is_running}) {
+	$items_running++;
+      } else {
+	$items_waiting++ unless($item->{is_done})
+      }
     }
-    $log->timeLog($image_sequence_dirname, MAGENTA."rendering ".RESET."$items_left videos from".CYAN." $sequence_size".RESET." image sequence".BLUE." $temp_path/$image_sequence_dirname".RESET, 10);
+    my $waiting = "";
+    $waiting = " ($items_waiting more queued)" if $items_waiting > 0;
+    $log->timeLog($image_sequence_dirname, MAGENTA."rendering ".RESET."$items_running videos$waiting from".CYAN." $sequence_size".RESET." image sequence".BLUE." $temp_path/$image_sequence_dirname".RESET, 10);
   };
 
   foreach my $render_type (@{$config->{rendering}}) {
@@ -535,6 +542,7 @@ sub initiate_render() {
 				   $output_dirname,
 				   $output_video_filename,
 				   $group,
+				   $finished_callback, # used only for logging
 				   $finished_callback,
 				   $group_finished_callback);
 
@@ -591,6 +599,7 @@ sub read_exif_json($$$) {
       my $full_filename = "$dirname/$filename";
       my $runner = ExiftoolRunner->new($full_filename,
 				       $group,
+				       undef,
 				       undef,
 				       $completion_callback);
       $config->{exiftool}{$full_filename} = $runner;

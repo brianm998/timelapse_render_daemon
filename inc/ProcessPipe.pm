@@ -10,6 +10,7 @@ sub new {
       $log,
       $shell_command,
       $group,
+      $start_callback,
       $finished_callback,
       $group_finished_callback,
      )
@@ -24,6 +25,7 @@ sub new {
      group => $group,
      group_finished_callback => $group_finished_callback,
      finished_callback => $finished_callback,
+     start_callback => $start_callback,
     };
 
   return bless $self, $class;
@@ -74,6 +76,9 @@ sub start($) {
   $self->{shell_input} = \*$input_fs;
   $self->{frame_num} = 0;
   $self->{is_running} = 1;
+
+  my $start_callback = $self->{start_callback};
+  &$start_callback($self) if defined $start_callback;
 }
 
 1;

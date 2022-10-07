@@ -16,12 +16,13 @@ sub new {
       $output_dirname,
       $output_video_filename,
       $group,
+      $start_callback,
       $finished_callback,
       $group_finished_callback,
      )
       = @_;
 
-  my $self = $class->SUPER::new($log, $ffmpeg_cmd, $group,
+  my $self = $class->SUPER::new($log, $ffmpeg_cmd, $group, $start_callback,
 				$finished_callback, $group_finished_callback);
   $self->{image_sequence_length} = $image_sequence_length;
   $self->{output_dirname} = $output_dirname;
