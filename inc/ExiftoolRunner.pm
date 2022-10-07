@@ -5,7 +5,6 @@ use parent 'ProcessPipe';
 
 sub new {
   my ($class,
-      $log,
       $filename,
       $group,
       $start_callback,
@@ -15,7 +14,7 @@ sub new {
      )
     = @_;
 
-  my $self = $class->SUPER::new($log, "exiftool -csv $filename", $group,
+  my $self = $class->SUPER::new("exiftool -csv $filename", $group,
 				$start_callback,
 				$successful_update_callback,
 				$finished_callback,

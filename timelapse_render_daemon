@@ -290,7 +290,7 @@ sub process_image_sequence($$$$$$) {
     }
     return unless($would_render);
 
-    my $sequence_size = RenderRunner::sizeStringOf("$export_path/$image_sequence_dirname");
+    my $sequence_size = sizeStringOf("$export_path/$image_sequence_dirname");
     if (-e "$export_path/$image_sequence_dirname.json") {
       $log->timeLog($image_sequence_dirname, "$sequence_size $raw_sequence_length frame image sequence $export_path/$image_sequence_dirname is ready to render", 1);
     }
@@ -314,7 +314,7 @@ sub process_image_sequence($$$$$$) {
     my $frames_left = $raw_sequence_length - $number_of_generated_images;
     my $msg = sprintf(YELLOW."waiting ".RESET."for %04.d more frames (%04.d / %04.d)",
 		      $frames_left, $number_of_generated_images, $raw_sequence_length);
-    my $sequence_size = RenderRunner::sizeStringOf("$export_path/$image_sequence_dirname");
+    my $sequence_size = sizeStringOf("$export_path/$image_sequence_dirname");
 
     # XXX this is a hack to align layers. usually 4 chars, add another when 3
     $sequence_size = " $sequence_size" if(length($sequence_size) == 3);
@@ -372,7 +372,7 @@ sub render_all_videos_for_image_sequence() {
 
   return unless defined $image_sequence_exif;
 
-  my $sequence_size = RenderRunner::sizeStringOf("$export_path/$image_sequence_dirname");
+  my $sequence_size = sizeStringOf("$export_path/$image_sequence_dirname");
 
   my $group = [];		# these processes all share a group
 
@@ -583,17 +583,31 @@ sub initiate_render() {
       my $progress_bar = progress_bar(30, $progress_percentage); # XXX move to config
 
       $progress_bar .= MAGENTA" rendering ".RESET."frame $self->{frame_num}/$raw_sequence_length (".CYAN."$self->{fps} fps".RESET.") for";
-      $self->{log}->log($self->{output_video_filename}, $progress_bar.BLUE." $self->{output_video_filename}".RESET, 10, $progress_percentage);
+      $log->log($self->{output_video_filename}, $progress_bar.BLUE." $self->{output_video_filename}".RESET, 10, $progress_percentage);
     };
 
-    my $runner = RenderRunner->new($log,
-				   $ffmpeg_cmd,
+    my $really_finished_callback = sub {
+      my ($self) = @_;
+
+      &$finished_callback($self);
+
+      my $full_filename = $self->full_output_video_filename();
+      if ($self->output_video_exists()) {
+	my $video_size = sizeStringOf($full_filename);
+	$log->timeLog($self->{output_video_filename}, GREEN."rendered".CYAN." $video_size".RESET." $self->{frame_num} frame".BLUE." $full_filename".RESET, -1);
+      } else {
+	# failed, why?
+	$log->timeLog($self->{output_video_filename}, "$full_filename render FAILED", -1);
+      }
+    };
+
+    my $runner = RenderRunner->new($ffmpeg_cmd,
 				   $export_path,
 				   $output_video_filename,
 				   $group,
 				   $finished_callback, # used only for logging
 				   $update_successful_callback,
-				   $finished_callback,
+				   $really_finished_callback,
 				   $group_finished_callback);
 
     $config->{ffmpeg}{$output_video_filename} = $runner;
@@ -638,7 +652,6 @@ sub read_exif_json($$$) {
       close $filehandle;
     };
 
-
     my $update_successful_callback = sub {
       my ($self) = @_;
 
@@ -647,7 +660,7 @@ sub read_exif_json($$$) {
       my $progress_bar = progress_bar(30, $progress_percentage); # XXX move to config
 
       $progress_bar .= MAGENTA" creating ".RESET." json exif file for ".BLUE."$image_sequence_dirname".RESET;
-      $self->{log}->log($image_sequence_dirname, $progress_bar.BLUE." $self->{output_video_filename}".RESET, 10, $progress_percentage);
+      $log->log($image_sequence_dirname, $progress_bar.BLUE." $self->{output_video_filename}".RESET, 10, $progress_percentage);
     };
     my $raw_filetypes = ['ARW', 'DNG']; # XXX fix hardcode
 
@@ -658,8 +671,7 @@ sub read_exif_json($$$) {
       }
       next unless $is_raw;
       my $full_filename = "$dirname/$filename";
-      my $runner = ExiftoolRunner->new($log,
-				       $full_filename,
+      my $runner = ExiftoolRunner->new($full_filename,
 				       $group,
 				       undef,
 				       $update_successful_callback,
@@ -762,3 +774,15 @@ sub progress_bar($$) {
 
   return $progress_bar;
 }
+
+# a human readable string giving the size of a file (or total of a shell globbed list)
+# XXX copied from backup.pl :(
+# XXX fix this
+sub sizeStringOf {
+  my ($item) = @_;
+  open DU, "du -ch $item |";
+  $/ = "\n";
+  while (<DU>) { return $1 if $_ =~ /^\s*([\d\w.]+)\s+total/; }
+  close DU;
+}
+

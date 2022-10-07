@@ -7,7 +7,6 @@ use strict;
 
 sub new {
   my ($class,
-      $log,
       $shell_command,
       $group,
       $start_callback,
@@ -19,7 +18,6 @@ sub new {
 
   my $self =
     {
-     log => $log,
      shell_command => $shell_command,
      is_done => 0,
      is_running => 0,
