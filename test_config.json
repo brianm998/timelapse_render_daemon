@@ -14,8 +14,8 @@
 	"/qp/test_master_videos"
     ],
     "max_processes" : {
-	"ffmpeg": 10,
-	"exiftool" : 10
+	"ffmpeg": 8,
+	"exiftool" : 20
     },
     "image_name_prefix" : "LRT_",
     "image_sequence_dirname_prefix" : "LRT_",
@@ -63,6 +63,7 @@
     ],
     "sleep_time_seconds" : 2,
     "log_in_color": true,
+    "progress_bar_width" : 40,
     "delete_sequence_after_render_regexes" : ["-merge$"]
 }
 
