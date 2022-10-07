@@ -93,19 +93,9 @@ unless(defined $config_json_filename) {
   }
 }
 
-my $config = read_json_from($config_json_filename);
+my $config = load_config($config_json_filename, undef);
 
 die unless ($config);
-# XXX validate it
-
-# an addressable list of what codecs we can encode to
-$config->{codecs} = read_json_from("$script_dir/video_codecs.json");
-# XXX validate that this is there and in right format
-die unless ($config->{codecs});
-
-# each possible process type needs to be listed here
-$config->{max_processes}{exiftool} = 10 unless defined $config->{max_processes}{exiftool};
-$config->{max_processes}{ffmpeg} = 1 unless defined $config->{max_processes}{ffmpeg};
 
 # run once without renders to fully flesh out the display
 search_and_discover($config, 1);
@@ -124,12 +114,53 @@ while(1) {
     $sleep = 0 unless $config->{current_processes}{$process_type} == 0;
   }
 
+  my $new_config = load_config($config_json_filename, $config);
+  $config = $new_config if defined $new_config;
+
   sleep($config->{sleep_time_seconds}) if($sleep);
 }
 
 ########
 # subs #
 ########
+
+sub load_config($$) {
+  my ($config_filename, $previous_config) = @_;
+
+  if(defined $previous_config) {
+    my $modtime = (stat($config_filename))[9];
+    return if($modtime <= $previous_config->{modtime});
+  }
+
+  my $new_config = read_json_from($config_json_filename);
+  #un
+  return unless defined $new_config;
+  # XXX validate it
+  my $modtime = (stat($config_json_filename))[9];
+  $new_config->{modtime} = $modtime;
+
+  # an addressable list of what codecs we can encode to
+  $new_config->{codecs} = read_json_from("$script_dir/video_codecs.json");
+  # XXX validate that this is there and in right format
+  die unless ($new_config->{codecs});
+
+  # each possible process type needs to be listed here
+  $new_config->{max_processes}{exiftool} = 10
+    unless defined $new_config->{max_processes}{exiftool};
+  $new_config->{max_processes}{ffmpeg} = 1
+    unless defined $new_config->{max_processes}{ffmpeg};
+
+  if(defined $previous_config) {
+    $new_config->{current_processes} = $previous_config->{current_processes};
+    $new_config->{ffmpeg} = $previous_config->{ffmpeg};
+    $new_config->{exiftool} = $previous_config->{exiftool};
+
+    $log->timeLog($config_filename, GREEN."successfully ".RESET."re-read config from ".BLUE." $config_filename".RESET);
+  }
+
+  return $new_config;
+}
+
 
 # manage the running processes
 # if any keys are present, each iteration will then:
@@ -646,7 +677,7 @@ sub read_json_from {
       $ret = JSON->new->decode($json_text);
       1;
     } or do {
-      warn "could not read json from $filename: $@";
+      $log->timeLog($filename, RED." could not read json from $filename".RESET.": $@");
     }
   }
   return $ret;
