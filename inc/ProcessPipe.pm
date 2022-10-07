@@ -83,4 +83,23 @@ sub start($) {
   &$start_callback($self) if defined $start_callback;
 }
 
+# value between 0 and 1 of how close to completion this group is
+sub group_done_percentage($) {
+  my ($self) = @_;
+
+  my $count = 0;
+  my $done = 0;
+
+  if(defined $self->{group}) {
+    foreach my $pipe (@{$self->{group}}) {
+      $done++ if($pipe->{is_done});
+      $count++;
+    }
+  } else {
+    $count = 1;
+    $done = $self->{is_done};
+  }
+  return $done/$count;
+}
+
 1;

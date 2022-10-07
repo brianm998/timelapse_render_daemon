@@ -5,6 +5,7 @@ use parent 'ProcessPipe';
 
 sub new {
   my ($class,
+      $log,
       $filename,
       $group,
       $start_callback,
@@ -14,7 +15,7 @@ sub new {
      )
     = @_;
 
-  my $self = $class->SUPER::new(undef, "exiftool -csv $filename", $group,
+  my $self = $class->SUPER::new($log, "exiftool -csv $filename", $group,
 				$start_callback,
 				$successful_update_callback,
 				$finished_callback,
@@ -30,11 +31,15 @@ sub read_line($) {
 
  unless(exists $self->{row1}) {
    $self->{row1} = $self->{csv}->getline($self->{shell_input});
+       my $successful_update_callback = $self->{successful_update_callback};
+       &$successful_update_callback($self) if defined $successful_update_callback;
    return;
  }
  unless(exists $self->{row2}) {
    $self->{row2} = $self->{csv}->getline($self->{shell_input});
    $self->finish();
+       my $successful_update_callback = $self->{successful_update_callback};
+       &$successful_update_callback($self) if defined $successful_update_callback;
    return;
  }
 }

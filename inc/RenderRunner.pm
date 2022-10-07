@@ -70,7 +70,7 @@ sub read_line($) {
      }
      $ret = 0;
    } else {
-     $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} OUTSIDE", 10);
+#     $self->{log}->timeLog($self->{output_video_filename}, "RENDER_FRAME for $self->{output_video_filename} OUTSIDE", 10);
    }
  }
  return $ret;

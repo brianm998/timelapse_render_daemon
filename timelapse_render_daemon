@@ -309,7 +309,7 @@ sub process_image_sequence($$$$$$) {
     # log of how far along it is
 
     my $percentage = $number_of_generated_images / $raw_sequence_length;
-    my $progress_bar = RenderRunner::progress_bar(30,  $percentage);
+    my $progress_bar = progress_bar(30,  $percentage);
 
     my $frames_left = $raw_sequence_length - $number_of_generated_images;
     my $msg = sprintf(YELLOW."waiting ".RESET."for %04.d more frames (%04.d / %04.d)",
@@ -575,13 +575,24 @@ sub initiate_render() {
 
     $ffmpeg_cmd .= "$export_path/$output_video_filename 2>&1";
 
+    my $update_successful_callback = sub {
+      my ($self) = @_;
+
+      my $progress_percentage = $self->{frame_num} / $raw_sequence_length;
+
+      my $progress_bar = progress_bar(30, $progress_percentage); # XXX move to config
+
+      $progress_bar .= MAGENTA" rendering ".RESET."frame $self->{frame_num}/$raw_sequence_length (".CYAN."$self->{fps} fps".RESET.") for";
+      $self->{log}->log($self->{output_video_filename}, $progress_bar.BLUE." $self->{output_video_filename}".RESET, 10, $progress_percentage);
+    };
+
     my $runner = RenderRunner->new($log,
 				   $ffmpeg_cmd,
-				   $raw_sequence_length,
 				   $export_path,
 				   $output_video_filename,
 				   $group,
 				   $finished_callback, # used only for logging
+				   $update_successful_callback,
 				   $finished_callback,
 				   $group_finished_callback);
 
@@ -627,6 +638,17 @@ sub read_exif_json($$$) {
       close $filehandle;
     };
 
+
+    my $update_successful_callback = sub {
+      my ($self) = @_;
+
+      my $progress_percentage = $self->group_done_percentage();
+
+      my $progress_bar = progress_bar(30, $progress_percentage); # XXX move to config
+
+      $progress_bar .= MAGENTA" creating ".RESET." json exif file for ".BLUE."$image_sequence_dirname".RESET;
+      $self->{log}->log($image_sequence_dirname, $progress_bar.BLUE." $self->{output_video_filename}".RESET, 10, $progress_percentage);
+    };
     my $raw_filetypes = ['ARW', 'DNG']; # XXX fix hardcode
 
     foreach my $filename (readdir $dir) {
@@ -636,9 +658,11 @@ sub read_exif_json($$$) {
       }
       next unless $is_raw;
       my $full_filename = "$dirname/$filename";
-      my $runner = ExiftoolRunner->new($full_filename,
+      my $runner = ExiftoolRunner->new($log,
+				       $full_filename,
 				       $group,
 				       undef,
+				       $update_successful_callback,
 				       undef,
 				       $completion_callback);
       $config->{exiftool}{$full_filename} = $runner;
@@ -720,4 +744,21 @@ sub is_int($) {
   my ($value) = @_;
 
   return $value == int $value;
+}
+
+# XXX move this
+sub progress_bar($$) {
+  my ($length, $percentage) = @_;
+
+  my $progress_bar = BLUE."[";
+  for (my $i = 0 ; $i < $length ; $i++) {
+    if ($i/$length < $percentage) {
+      $progress_bar .= GREEN.'*';
+    } else {
+      $progress_bar .= YELLOW.'-';
+    }
+  }
+  $progress_bar .= BLUE"]".RESET;
+
+  return $progress_bar;
 }
