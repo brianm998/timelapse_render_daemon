@@ -68,6 +68,7 @@ use Exiftool;
 # - allow re-reading config every so often (add validation first)
 # - introduce a state system to track where image sequences are
 #   (would help with being able to not log about deleting sequences)
+# - flesh out video_codecs.json
 
 # all user visible output goes through this log
 my $log = UpdateableLog->new();
@@ -133,9 +134,8 @@ sub manage_processes($$$) {
   my ($config, $process_type) = @_;
 
   my $map = $config->{$process_type};
-  # we've got some active RenderRunner objects
   foreach my $key (keys %$map) {
-    my $proc = $map->{$key};
+    my $proc = $map->{$key};	# A ProcessPipe object
     if ($proc->{is_done}) {
       # get rid of processes that are done
       delete $map->{$key};
