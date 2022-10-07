@@ -93,21 +93,23 @@ my $config = load_config($config_json_filename, undef);
 
 die unless ($config);
 
+my $running_processes =	{};	# track current spawned processes
+
 # run once without renders to fully flesh out the display
-search_and_discover($config, 1);
+search_and_discover($config, $running_processes, 1);
 
 while(1) {
   # search again and populate the current processes we should run
-  search_and_discover($config);
+  search_and_discover($config, $running_processes);
 
   my $sleep = 1;		# assume we need to sleep
 
   foreach my $process_type (keys %{$config->{max_processes}}) {
     # process one line for each process of this type
-    manage_processes($config, $process_type);
+    manage_processes($config, $running_processes, $process_type);
 
     # don't sleep if we have active processes
-    $sleep = 0 unless $config->{current_processes}{$process_type} == 0;
+    $sleep = 0 unless $running_processes->{current}{$process_type} == 0;
   }
 
   my $new_config = load_config($config_json_filename, $config);
@@ -129,7 +131,7 @@ sub load_config($$) {
   }
 
   my $new_config = read_json_from($config_json_filename);
-  #un
+
   return unless defined $new_config;
   # XXX validate it
   my $modtime = (stat($config_json_filename))[9];
@@ -153,10 +155,6 @@ sub load_config($$) {
   }
 
   if(defined $previous_config) {
-    $new_config->{current_processes} = $previous_config->{current_processes};
-    $new_config->{ffmpeg} = $previous_config->{ffmpeg};
-    $new_config->{exiftool} = $previous_config->{exiftool};
-
     $log->timeLog($config_filename, GREEN."successfully ".RESET."re-read config from ".BLUE." $config_filename".RESET);
   }
 
@@ -170,23 +168,23 @@ sub load_config($$) {
 #  - maybe start some new processes
 #  - have all other processes process one more line of ffmpeg output
 sub manage_processes($$$) {
-  my ($config, $process_type) = @_;
+  my ($config, $processes, $process_type) = @_;
 
-  my $map = $config->{$process_type};
+  my $map = $processes->{$process_type};
   foreach my $key (keys %$map) {
     my $proc = $map->{$key};	# A ProcessPipe object
     if ($proc->{is_done}) {
       # get rid of processes that are done
       delete $map->{$key};
-      $config->{current_processes}{$process_type} =
-	$config->{current_processes}{$process_type} - 1;
+      $processes->{current}{$process_type} =
+	$processes->{current}{$process_type} - 1;
     } elsif (!$proc->{is_running}) {
       # if not done and not running, maybe start it
-      if ($config->{current_processes}{$process_type} <
+      if ($processes->{current}{$process_type} <
 	  $config->{max_processes}{$process_type}) {
 	$proc->start();
-	$config->{current_processes}{$process_type} =
-	  $config->{current_processes}{$process_type} + 1;
+	$processes->{current}{$process_type} =
+	  $processes->{current}{$process_type} + 1;
       }
     } else {
       # not done and still running, read output, update display
@@ -197,7 +195,7 @@ sub manage_processes($$$) {
 
 # look for image sequences that might be ready to render
 sub search_and_discover($$$) {
-  my ($config, $no_render) = @_;
+  my ($config, $processes, $no_render) = @_;
 
   # a hash of all raw image sequences to their number of raw images
   my $raw_image_sequence_counts = count_raw_image_sequences($config);
@@ -206,10 +204,12 @@ sub search_and_discover($$$) {
   foreach my $export_path (@{$config->{export_paths}}) {
     opendir my $export_dir, $export_path or die "cannot open $export_path: $!\n";
 
-    search_and_discover_from_export_dir($config, $no_render,
-				      $raw_image_sequence_counts,
-				      $export_dir,
-				      $export_path);
+    search_and_discover_from_export_dir($config,
+					$processes,
+					$no_render,
+					$raw_image_sequence_counts,
+					$export_dir,
+					$export_path);
 
     closedir $export_dir;
   }
@@ -218,6 +218,7 @@ sub search_and_discover($$$) {
 # look into a specific temp dir for image sequences that might be ready to render
 sub search_and_discover_from_export_dir($$$$$) {
   my ($config,
+      $processes,
       $no_render,
       $raw_image_sequence_counts,
       $export_dir,
@@ -243,7 +244,7 @@ sub search_and_discover_from_export_dir($$$$$) {
     # we need to know the $raw_image_sequence_name for this generated image sequence
     next unless defined $raw_image_sequence_name;
 
-    process_image_sequence($config, $no_render,
+    process_image_sequence($config, $processes, $no_render,
 			   $export_dir, $export_path, $image_sequence_dirname,
 			   $raw_sequence_length, $base_dirname, $raw_image_sequence_name);
   }
@@ -251,9 +252,9 @@ sub search_and_discover_from_export_dir($$$$$) {
 
 # check the status of an identified image sequence
 # maybe render, or just log
-sub process_image_sequence($$$$$$) {
+sub process_image_sequence($$$$$$$) {
 
-  my ($config, $no_render,
+  my ($config, $processes, $no_render,
       $export_dir, $export_path, $image_sequence_dirname,
       $raw_sequence_length, $base_dirname, $raw_image_sequence_name) = @_;
 
@@ -280,7 +281,7 @@ sub process_image_sequence($$$$$$) {
       my $output_video_filename = output_video_filename($config,
 							$render_type,
 							$image_sequence_dirname);
-      my $should_render = should_render($config, $output_video_filename);
+      my $should_render = should_render($config, $processes, $output_video_filename);
 
       if (defined $would_render) {
 	$would_render = $should_render || $would_render;
@@ -299,6 +300,7 @@ sub process_image_sequence($$$$$$) {
 
     # actually try to render
     render_all_videos_for_image_sequence($config,
+					 $processes,
 					 $export_path,
 					 $image_sequence_dirname,
 					 $base_dirname,
@@ -358,6 +360,7 @@ sub count_raw_image_sequences($) {
 
 sub render_all_videos_for_image_sequence() {
   my ($config,
+      $processes,
       $export_path,
       $image_sequence_dirname,
       $base_dirname,
@@ -368,7 +371,8 @@ sub render_all_videos_for_image_sequence() {
   # if not, create it, and return the collected exif values to to pass to ffmpeg
   my $image_sequence_exif = read_exif_json($image_sequence_dirname,
 					   $base_dirname,
-					   $raw_image_sequence_name);
+					   $raw_image_sequence_name,
+					   $processes);
 
   return unless defined $image_sequence_exif;
 
@@ -419,6 +423,7 @@ sub render_all_videos_for_image_sequence() {
 
   foreach my $render_type (@{$config->{rendering}}) {
     initiate_render($config,
+		    $processes,
 		    $export_path,
 		    $image_sequence_dirname,
 		    $image_sequence_exif,
@@ -466,8 +471,8 @@ sub output_video_filename($$$) {
 }
 
 # does this video file exist already or not?
-sub should_render($$) {
-  my ($config, $output_video_filename) = @_;
+sub should_render($$$) {
+  my ($config, $processes, $output_video_filename) = @_;
 
   # check for this file on the master render path
   my $should_render = 1;
@@ -485,7 +490,7 @@ sub should_render($$) {
   }
 
   # make sure we've not already got a render setup for this video file
-  foreach my $render_filename (keys %{$config->{ffmpeg}}) {
+  foreach my $render_filename (keys %{$processes->{ffmpeg}}) { # XXX processes
     if($render_filename eq $output_video_filename) {
       $should_render = 0;
     }
@@ -498,6 +503,7 @@ sub should_render($$) {
 # empty width and height default to original image resolution
 sub initiate_render() {
   my ($config,
+      $processes,
       $export_path,
       $image_sequence_name,
       $exif_data,
@@ -509,7 +515,7 @@ sub initiate_render() {
 
   my $output_video_filename = output_video_filename($config, $render_type, $image_sequence_name);
 
-  if(should_render($config, $output_video_filename)) {
+  if(should_render($config, $processes, $output_video_filename)) {
     my $image_sequence_dirname = "$export_path/$image_sequence_name";
 
     my $image_width = $render_type->{resolution}[0];
@@ -610,7 +616,7 @@ sub initiate_render() {
 				   $really_finished_callback,
 				   $group_finished_callback);
 
-    $config->{ffmpeg}{$output_video_filename} = $runner;
+    $processes->{ffmpeg}{$output_video_filename} = $runner; # XXX processes
     push @$group, $runner;
 
     return $runner;
@@ -622,7 +628,7 @@ sub initiate_render() {
 my $exif_map = {};		# XXX move this
 
 sub read_exif_json($$$) {
-  my ($image_sequence_dirname, $base_dirname, $raw_image_sequence_name) = @_;
+  my ($image_sequence_dirname, $base_dirname, $raw_image_sequence_name, $processes) = @_;
 
   my $exif_json_filename = "$base_dirname/$raw_image_sequence_name.json";
   my $image_sequence_exif = {};
@@ -677,7 +683,7 @@ sub read_exif_json($$$) {
 				       $update_successful_callback,
 				       undef,
 				       $completion_callback);
-      $config->{exiftool}{$full_filename} = $runner;
+      $processes->{exiftool}{$full_filename} = $runner; # XXX processes
       push @$group, $runner;
     }
     closedir $dir;
