@@ -96,6 +96,8 @@ die unless ($config);
 # file global variable
 my $processes =	{};	# track current spawned processes
 
+my $finished_export_render_paths = {};
+
 while(1) {
   # search again and populate the current processes we should run
   search_and_discover();
@@ -295,19 +297,20 @@ sub process_image_sequence($$$$$) {
   } else {
     # cannot process this one yet, not enough images
     # log of how far along it is
+    unless (exists $finished_export_render_paths->{"$export_path/$image_sequence_export_dirname"}) {
+      my $percentage = $number_of_generated_images / $raw_sequence_length;
+      my $progress_bar = progress_bar($config->{progress_bar_width},  $percentage);
 
-    my $percentage = $number_of_generated_images / $raw_sequence_length;
-    my $progress_bar = progress_bar($config->{progress_bar_width},  $percentage);
+      my $frames_left = $raw_sequence_length - $number_of_generated_images;
+      my $msg = sprintf(YELLOW."waiting ".RESET."for %04.d more frames (%04.d / %04.d)",
+			$frames_left, $number_of_generated_images, $raw_sequence_length);
+      my $sequence_size = sizeStringOf("$export_path/$image_sequence_export_dirname");
 
-    my $frames_left = $raw_sequence_length - $number_of_generated_images;
-    my $msg = sprintf(YELLOW."waiting ".RESET."for %04.d more frames (%04.d / %04.d)",
-		      $frames_left, $number_of_generated_images, $raw_sequence_length);
-    my $sequence_size = sizeStringOf("$export_path/$image_sequence_export_dirname");
+      # XXX this is a hack to align layers. usually 4 chars, add another when 3
+      $sequence_size = " $sequence_size" if(length($sequence_size) == 3);
 
-    # XXX this is a hack to align layers. usually 4 chars, add another when 3
-    $sequence_size = " $sequence_size" if(length($sequence_size) == 3);
-
-    $log->log($image_sequence_export_dirname, "$progress_bar $msg in ".CYAN."$sequence_size".BLUE." $export_path/$image_sequence_export_dirname".RESET, $percentage);
+      $log->log($image_sequence_export_dirname, "$progress_bar $msg in ".CYAN."$sequence_size".BLUE." $export_path/$image_sequence_export_dirname".RESET, $percentage);
+    }
   }
 }
 
@@ -368,6 +371,9 @@ sub render_all_videos_for_image_sequence() {
     my ($self) = @_;
     my $group_size = scalar(@$group);
     if ($self->{result}) {
+      # register here so we can ignore it
+      $finished_export_render_paths->{"$export_path/$image_sequence_export_dirname"} = 1;
+
       # maybe delete the image sequence after successful render
       my $removed = 0;
       foreach my $delete_regex (@{$config->{delete_sequence_after_render_regexes}}) {
@@ -380,10 +386,9 @@ sub render_all_videos_for_image_sequence() {
 	}
       }
       unless ($removed) {
-	# potential bug where this doesn't show up when only
-	# some videos needed to be rendered
 	$log->timeLog($image_sequence_export_dirname, GREEN."rendered ".RESET."$group_size videos from".CYAN." $sequence_size".RESET." image sequence".BLUE." $export_path/$image_sequence_export_dirname".RESET, -1);
       }
+
     } else {
       $log->timeLog($image_sequence_export_dirname, RED."appears to have failed :(".RESET, -1);
     }
