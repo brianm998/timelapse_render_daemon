@@ -32,7 +32,7 @@ Exiftool::validate();
 
 # look into export_paths and try to find paths that match the name from
 # source_dir, and have the right number of fully written output files,
-# and don't have videos rendered in the temp or master_videos dirs with
+# and don't have videos rendered in the export or master_videos dirs with
 # the same names as the config would end up producing
 
 # once identified, render one or more videos based upon the config
@@ -57,6 +57,8 @@ Exiftool::validate();
 # - flesh out video_codecs.json
 # - make sure all exif is really making it to videos
 # - support jpeg
+# - only refresh changed lines in log (avoid flickering)
+# - allow comments in config file
 
 # all user visible output goes through this log
 my $log = UpdateableLog->new();
@@ -142,8 +144,8 @@ sub load_config($$) {
   if(defined $codecs) {
     $new_config->{codecs} = $codecs;
   } else {
-    if(defined $previous_config) {
-      $new_config->{codecs} = $codecs;
+    if(defined $previous_config->{codecs}) {
+      $new_config->{codecs} = $previous_config->{codecs};
     } else {
       die "cannot load $script_dir/video_codecs.json\n";
     }
@@ -162,10 +164,6 @@ sub load_config($$) {
     $ENV{ANSI_COLORS_DISABLED} = 0;
   } else {
     $ENV{ANSI_COLORS_DISABLED} = 1;
-  }
-
-  if(defined $previous_config) {
-    $log->timeLog($config_filename, GREEN."successfully ".RESET."re-read config from".BLUE." $config_filename".RESET);
   }
 
   return $new_config;
@@ -215,7 +213,7 @@ sub search_and_discover() {
   }
 }
 
-# look into a specific temp dir for image sequences that might be ready to render
+# look into a specific export dir for image sequences that might be ready to render
 sub search_and_discover_from_export_dir($$) {
   my ($raw_image_sequence_counts, $export_path) = @_;
 
@@ -357,6 +355,7 @@ sub count_raw_image_sequences() {
   return $raw_image_sequence_counts;
 }
 
+# called when we've identified an exported image sequence which is ready to be rendered
 sub render_all_videos_for_image_sequence() {
   my ($export_path,
       $image_sequence_export_dirname,
@@ -419,6 +418,7 @@ sub render_all_videos_for_image_sequence() {
     $log->timeLog($image_sequence_export_dirname, MAGENTA."rendering ".RESET."$items_running videos$waiting from".CYAN." $sequence_size".RESET." image sequence".BLUE." $export_path/$image_sequence_export_dirname".RESET, 10);
   };
 
+  # start the render for each type
   foreach my $render_type (@{$config->{rendering}}) {
     initiate_render($export_path,
 		    $image_sequence_export_dirname,
@@ -478,7 +478,7 @@ sub should_render($) {
       $should_render = 0;
     }
   }
-  # check for this file on the temp render path
+  # check for this file on the export render path
   foreach my $export_dirname (@{$config->{export_paths}}) {
     if (-e "$export_dirname/$output_video_filename") {
       $should_render = 0;
@@ -696,6 +696,7 @@ sub read_exif_json($$$) {
   return $image_sequence_exif;
 }
 
+my $json_read_errors = {};
 
 sub read_json_from {
   my ($filename) = @_;
@@ -711,9 +712,13 @@ sub read_json_from {
   if (defined $json_text) {
     eval {
       $ret = JSON->new->decode($json_text);
+      if($json_read_errors->{$filename}) {
+	$log->timeLog($filename, GREEN."successfully ".RESET."re-read json from".BLUE." $filename".RESET);
+      }
       1;
     } or do {
-      $log->timeLog($filename, RED." could not read json from $filename".RESET.": $@");
+      $log->timeLog($filename, RED."could not read json from".BLUE." $filename".RESET.": $@");
+      $json_read_errors->{$filename} = 1;
     }
   }
   return $ret;
