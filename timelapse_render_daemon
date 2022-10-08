@@ -199,21 +199,15 @@ sub search_and_discover() {
 
   # search each path where processed frame images are written to
   foreach my $export_path (@{$config->{export_paths}}) {
-    opendir my $export_dir, $export_path or die "cannot open $export_path: $!\n";
-
-    search_and_discover_from_export_dir($raw_image_sequence_counts,
-					$export_dir,
-					$export_path);
-
-    closedir $export_dir;
+    search_and_discover_from_export_dir($raw_image_sequence_counts, $export_path);
   }
 }
 
 # look into a specific temp dir for image sequences that might be ready to render
-sub search_and_discover_from_export_dir($$$$) {
-  my ($raw_image_sequence_counts,
-      $export_dir,
-      $export_path) = @_;
+sub search_and_discover_from_export_dir($$) {
+  my ($raw_image_sequence_counts, $export_path) = @_;
+
+  opendir my $export_dir, $export_path or die "cannot open $export_path: $!\n";
 
   foreach my $image_sequence_dirname (readdir $export_dir) {
     next unless(-d "$export_path/$image_sequence_dirname");
@@ -242,6 +236,7 @@ sub search_and_discover_from_export_dir($$$$) {
 			   $base_dirname,
 			   $raw_image_sequence_name);
   }
+  closedir $export_dir;
 }
 
 # check the status of an identified image sequence
