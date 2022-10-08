@@ -8,6 +8,22 @@ use Term::ANSIColor qw(:constants);
 
 # an object that can be used to render an image sequence into a video
 
+sub validate() {
+  # we need ffmpeg
+
+  die <<END
+ERROR
+
+ffmpeg is not installed
+
+visit https://ffmpeg.org
+
+and install it to use this tool
+END
+    unless(system("which ffmpeg >/dev/null") == 0);
+}
+
+
 sub new {
   my ($class,
       $ffmpeg_cmd,

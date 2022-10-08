@@ -23,6 +23,10 @@ use ExiftoolRunner;
 use DebugLog;
 use Exiftool;
 
+# make sure ffmpeg and exiftool are installed
+RenderRunner::validate();
+Exiftool::validate();
+
 # logic:
 # read source path dirs and keep a record of name of dir and # of images
 
@@ -39,37 +43,20 @@ use Exiftool;
 # keep running in daemon mode forever
 
 
-# startup:
-
-# - read source_dir, get initial list of image sequences and lengths
-
-
-# daemon loop:
-
-# - read source_dir, updating info on sequences and lengths
-# - traverse export_paths, looking for non-rendered videos
-# - render non-existant videos
-# - make json exif file if non existant
-# - embed that into video
-
 # todo:
 
 # - support {year} in dirs?
 # - notice when existing master video is older than the new sequence, and still render to temp path, assuming no file at temp path exists yet
 # - allow rendering when base image sequence has been archived, based upon # of images from json
 #   - specify archive locations in config
-# - fix problem where deleting dirs makes them show up (tmp_rm hack works for now, kindof)
-# - add validation for Timelapse and others (ffmpeg exists, etc)
 # - write a real log file as well as the refreshing  console output
-# - add config validation
 # - avoid printing lines longer than the console
 # - have timeLog not update time on log when message is the same
 # - check to see running on macos and run caffeinate to keep alive in background
 # - add config validation
-# - introduce a state system to track where image sequences are
-#   (would help with being able to not log about deleting sequences)
 # - flesh out video_codecs.json
 # - make sure all exif is really making it to videos
+# - support jpeg
 
 # all user visible output goes through this log
 my $log = UpdateableLog->new();
@@ -89,17 +76,22 @@ unless(defined $config_json_filename) {
 }
 
 # file global variable
+# hold config values loaded from json
 my $config = load_config($config_json_filename, undef);
 
 die unless ($config);
 
 # file global variable
+# hold information about running processes we've started
 my $processes =	{};	# track current spawned processes
 
+# file global variable
+# keeps track of export paths that have been rendered fully,
+# to avoid logging about them on external rm
 my $finished_export_render_paths = {};
 
 while(1) {
-  # search again and populate the current processes we should run
+  # search and populate the current processes we should run
   search_and_discover();
 
   my $sleep = 1;		# assume we need to sleep
@@ -112,9 +104,11 @@ while(1) {
     $sleep = 0 unless $processes->{current}{$process_type} == 0;
   }
 
+  # see if we should reload the config
   my $new_config = load_config($config_json_filename, $config);
   $config = $new_config if defined $new_config;
 
+  # sleep only if we have no running processes
   sleep($config->{sleep_time_seconds}) if($sleep);
 }
 
@@ -122,29 +116,45 @@ while(1) {
 # subs #
 ########
 
+# load the config, perhaps reloading it
 sub load_config($$) {
- my ($config_filename, $previous_config) = @_;
+  my ($config_filename, $previous_config) = @_;
 
   if(defined $previous_config) {
+    # if we already have a config, use the modtime to see if anything has changed
     my $modtime = (stat($config_filename))[9];
+    # don't reload if no change since last load
     return if($modtime <= $previous_config->{modtime});
   }
 
   my $new_config = read_json_from($config_json_filename);
 
-  return unless defined $new_config;
+  return unless defined $new_config; # json errors end up as undef here
+
   # XXX validate it
+
+  # record the modification time upon load
   my $modtime = (stat($config_json_filename))[9];
   $new_config->{modtime} = $modtime;
 
   # an addressable list of what codecs we can encode to
-  $new_config->{codecs} = read_json_from("$script_dir/video_codecs.json");
+  my $codecs = read_json_from("$script_dir/video_codecs.json");
+  if(defined $codecs) {
+    $new_config->{codecs} = $codecs;
+  } else {
+    if(defined $previous_config) {
+      $new_config->{codecs} = $codecs;
+    } else {
+      die "cannot load $script_dir/video_codecs.json\n";
+    }
+  }
   # XXX validate that this is there and in right format
   die unless ($new_config->{codecs});
 
   # each possible process type needs to be listed here
   $new_config->{max_processes}{exiftool} = 10
     unless defined $new_config->{max_processes}{exiftool};
+
   $new_config->{max_processes}{ffmpeg} = 1
     unless defined $new_config->{max_processes}{ffmpeg};
 
@@ -162,11 +172,11 @@ sub load_config($$) {
 }
 
 
-# manage the running processes
+# manage the running processes of some executable type
 # if any keys are present, each iteration will then:
 #  - remove any done processes from the map
 #  - maybe start some new processes
-#  - have all other processes process one more line of ffmpeg output
+#  - have all other processes process one more line of output
 sub manage_processes($) {
   my ($process_type) = @_;
 
