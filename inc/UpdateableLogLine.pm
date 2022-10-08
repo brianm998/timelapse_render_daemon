@@ -24,4 +24,13 @@ sub new {
   return bless $self, $class;
 }
 
+sub copyFrom($$) {
+  my ($self, $other) = @_;
+
+  $self->{name} = $other->{name};
+  $self->{message} = $other->{message};
+  $self->{value} = $other->{value};
+  $self->{value2} = $other->{value2};
+}
+
 1;

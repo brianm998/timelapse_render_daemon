@@ -53,7 +53,7 @@ sub clear($) {
   my ($screen_char_width) = GetTerminalSize();
 
   my $index = scalar(@{$self->{list}});
-  foreach my $line (@{$self->{list}}) {
+  foreach my $line (@{$self->{list}}) {  
     print "\033[$index"."A";	# move cursor up $index lines
     for(my $i = 0 ; $i < $screen_char_width ; $i++) {
       print " ";
@@ -63,7 +63,6 @@ sub clear($) {
     $index--;
   }
 }
-
 
 sub timeLog($$$) {
   my ($self, $name, $message, $value) = @_;
@@ -77,41 +76,28 @@ sub timeLog($$$) {
 sub log($$$) {
   my ($self, $name, $message, $value1, $value2) = @_;
 
-  my $logline = UpdateableLogLine->new($name, $message, $value1, $value2);
+  $message =~ s/\n//g;
 
   my $found = 0;
+  my $new_logline = UpdateableLogLine->new($name, $message, $value1, $value2);
 
   my $index = scalar(@{$self->{list}});
   # first look at is it in the list
   foreach my $line (@{$self->{list}}) {
     if($line->{name} eq $name) {
-      # update previous log line with new message
       $found = 1;
-      my $previous_message_length = length($line->{message});
-      my $new_message_length = length($message);
-      $line->{message} = $message;
-      $line->{value} = $value1;
-      $line->{value2} = $value2;
-      print "\033[$index"."A";	# move cursor up $index lines
-      print $message;
-      if($previous_message_length > $new_message_length) {
-	my $leftover = $previous_message_length - $new_message_length;
-	for(my $i = 0 ; $i < $leftover ; $i++) {
-	  print " ";
-	}
-      }
-      print "\n";
-      print "\033[$index"."B";  # move cursor down $index lines
+      $line->copyFrom($new_logline);
     }
     $index--;
   }
 
   if(!$found) {
-    # add to end of list and print it
-    push @{$self->{list}}, $logline;
-
-    print "$message\n";
+    # add to end of list by printing a blank line here
+    push @{$self->{list}}, $new_logline;
+    print "\n";
   }
+
+  # lastly sort and redisplay
   $self->sort();
 }
 
