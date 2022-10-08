@@ -209,31 +209,31 @@ sub search_and_discover_from_export_dir($$) {
 
   opendir my $export_dir, $export_path or die "cannot open $export_path: $!\n";
 
-  foreach my $image_sequence_dirname (readdir $export_dir) {
-    next unless(-d "$export_path/$image_sequence_dirname");
-    my $raw_image_sequence_name = undef;
+  # iterate over each exported image sequence
+  foreach my $image_sequence_export_dirname (readdir $export_dir) {
+    next unless(-d "$export_path/$image_sequence_export_dirname");
 
+    my $raw_image_sequence_name = undef;
     my $raw_sequence_length = undef;
-    my $base_dirname = undef;  # the dirname of the raw image sequence
+    my $raw_sequence_dirname = undef;  # the dirname of the raw image sequence
 
     # look for a raw image sequence that may have been used to generate this image sequence
     foreach my $dirname (keys %$raw_image_sequence_counts) {
       foreach my $raw_image_sequence (keys %{$raw_image_sequence_counts->{$dirname}}) {
-	if ($image_sequence_dirname =~ /$config->{image_sequence_dirname_prefix}$raw_image_sequence/) {
+	if ($image_sequence_export_dirname =~ /$config->{image_sequence_dirname_prefix}$raw_image_sequence/) {
 	  $raw_image_sequence_name = $raw_image_sequence;
 	  $raw_sequence_length = $raw_image_sequence_counts->{$dirname}{$raw_image_sequence_name};
-	  $base_dirname = $dirname;
+	  $raw_sequence_dirname = $dirname;
 	}
       }
     }
     # we need to know the $raw_image_sequence_name for this generated image sequence
     next unless defined $raw_image_sequence_name;
 
-    process_image_sequence($export_dir,
-			   $export_path,
-			   $image_sequence_dirname,
+    process_image_sequence($export_path,
+			   $image_sequence_export_dirname,
 			   $raw_sequence_length,
-			   $base_dirname,
+			   $raw_sequence_dirname,
 			   $raw_image_sequence_name);
   }
   closedir $export_dir;
@@ -241,21 +241,20 @@ sub search_and_discover_from_export_dir($$) {
 
 # check the status of an identified image sequence
 # maybe render, or just log
-sub process_image_sequence($$$$$$$) {
+sub process_image_sequence($$$$$) {
 
-  my ($export_dir,
-      $export_path,
-      $image_sequence_dirname,
+  my ($export_path,
+      $image_sequence_export_dirname,
       $raw_sequence_length,
-      $base_dirname,
+      $raw_sequence_dirname,
       $raw_image_sequence_name) = @_;
 
   # check number of generated images present
-  opendir my $export_dir, "$export_path/$image_sequence_dirname" or die "cannot open dfs dir: $!\n";
+  opendir my $export_dir, "$export_path/$image_sequence_export_dirname" or die "cannot open dfs dir: $!\n";
   my $number_of_generated_images = 0;
   foreach my $entry (readdir $export_dir) {
     next if($entry =~ /^[.]/);
-    next unless (-f "$export_path/$image_sequence_dirname/$entry"); # only files
+    next unless (-f "$export_path/$image_sequence_export_dirname/$entry"); # only files
     # files with .tif or .tiff extensions only
     if ($entry !~ /[.]tiff?$/) { # XXX expose this in config so jpeg works too
       next;
@@ -271,7 +270,7 @@ sub process_image_sequence($$$$$$$) {
 
     foreach my $render_type (@{$config->{rendering}}) {
       my $output_video_filename = output_video_filename($render_type,
-							$image_sequence_dirname);
+							$image_sequence_export_dirname);
       my $should_render = should_render($output_video_filename);
 
       if (defined $would_render) {
@@ -282,15 +281,15 @@ sub process_image_sequence($$$$$$$) {
     }
     return unless($would_render);
 
-    my $sequence_size = sizeStringOf("$export_path/$image_sequence_dirname");
-    if (-e "$export_path/$image_sequence_dirname.json") {
-      $log->timeLog($image_sequence_dirname, "$sequence_size $raw_sequence_length frame image sequence $export_path/$image_sequence_dirname is ready to render", 1);
+    my $sequence_size = sizeStringOf("$export_path/$image_sequence_export_dirname");
+    if (-e "$export_path/$image_sequence_export_dirname.json") {
+      $log->timeLog($image_sequence_export_dirname, "$sequence_size $raw_sequence_length frame image sequence $export_path/$image_sequence_export_dirname is ready to render", 1);
     }
 
     # actually try to render
     render_all_videos_for_image_sequence($export_path,
-					 $image_sequence_dirname,
-					 $base_dirname,
+					 $image_sequence_export_dirname,
+					 $raw_sequence_dirname,
 					 $raw_image_sequence_name,
 					 $raw_sequence_length)
   } else {
@@ -303,12 +302,12 @@ sub process_image_sequence($$$$$$$) {
     my $frames_left = $raw_sequence_length - $number_of_generated_images;
     my $msg = sprintf(YELLOW."waiting ".RESET."for %04.d more frames (%04.d / %04.d)",
 		      $frames_left, $number_of_generated_images, $raw_sequence_length);
-    my $sequence_size = sizeStringOf("$export_path/$image_sequence_dirname");
+    my $sequence_size = sizeStringOf("$export_path/$image_sequence_export_dirname");
 
     # XXX this is a hack to align layers. usually 4 chars, add another when 3
     $sequence_size = " $sequence_size" if(length($sequence_size) == 3);
 
-    $log->log($image_sequence_dirname, "$progress_bar $msg in ".CYAN."$sequence_size".BLUE." $export_path/$image_sequence_dirname".RESET, $percentage);
+    $log->log($image_sequence_export_dirname, "$progress_bar $msg in ".CYAN."$sequence_size".BLUE." $export_path/$image_sequence_export_dirname".RESET, $percentage);
   }
 }
 
@@ -347,20 +346,20 @@ sub count_raw_image_sequences() {
 
 sub render_all_videos_for_image_sequence() {
   my ($export_path,
-      $image_sequence_dirname,
-      $base_dirname,
+      $image_sequence_export_dirname,
+      $raw_sequence_dirname,
       $raw_image_sequence_name,
       $raw_sequence_length) = @_;
 
   # check here to see if we have an exif json file for this image sequence,
   # if not, create it, and return the collected exif values to to pass to ffmpeg
-  my $image_sequence_exif = read_exif_json($image_sequence_dirname,
-					   $base_dirname,
+  my $image_sequence_exif = read_exif_json($image_sequence_export_dirname,
+					   $raw_sequence_dirname,
 					   $raw_image_sequence_name);
 
   return unless defined $image_sequence_exif;
 
-  my $sequence_size = sizeStringOf("$export_path/$image_sequence_dirname");
+  my $sequence_size = sizeStringOf("$export_path/$image_sequence_export_dirname");
 
   my $group = [];		# these processes all share a group
 
@@ -372,21 +371,21 @@ sub render_all_videos_for_image_sequence() {
       # maybe delete the image sequence after successful render
       my $removed = 0;
       foreach my $delete_regex (@{$config->{delete_sequence_after_render_regexes}}) {
-	if ("$export_path/$image_sequence_dirname" =~ /$delete_regex/) {
-	  my $rm_cmd = "rm -rf $export_path/$image_sequence_dirname 2>&1";
-	  $log->timeLog($image_sequence_dirname, MAGENTA."running".RED." $rm_cmd".RESET, 10);
+	if ("$export_path/$image_sequence_export_dirname" =~ /$delete_regex/) {
+	  my $rm_cmd = "rm -rf $export_path/$image_sequence_export_dirname 2>&1";
+	  $log->timeLog($image_sequence_export_dirname, MAGENTA."running".RED." $rm_cmd".RESET, 10);
 	  system($rm_cmd);
 	  $removed = 1;
-	  $log->timeLog($image_sequence_dirname, GREEN."rendered".RESET." $group_size videos from".CYAN." $sequence_size".RESET." image sequence".BLUE." $export_path/$image_sequence_dirname".RESET.", image sequence".RED." removed".RESET, -1);
+	  $log->timeLog($image_sequence_export_dirname, GREEN."rendered".RESET." $group_size videos from".CYAN." $sequence_size".RESET." image sequence".BLUE." $export_path/$image_sequence_export_dirname".RESET.", image sequence".RED." removed".RESET, -1);
 	}
       }
       unless ($removed) {
 	# potential bug where this doesn't show up when only
 	# some videos needed to be rendered
-	$log->timeLog($image_sequence_dirname, GREEN."rendered ".RESET."$group_size videos from".CYAN." $sequence_size".RESET." image sequence".BLUE." $export_path/$image_sequence_dirname".RESET, -1);
+	$log->timeLog($image_sequence_export_dirname, GREEN."rendered ".RESET."$group_size videos from".CYAN." $sequence_size".RESET." image sequence".BLUE." $export_path/$image_sequence_export_dirname".RESET, -1);
       }
     } else {
-      $log->timeLog($image_sequence_dirname, RED."appears to have failed :(".RESET, -1);
+      $log->timeLog($image_sequence_export_dirname, RED."appears to have failed :(".RESET, -1);
     }
   };
 
@@ -402,12 +401,12 @@ sub render_all_videos_for_image_sequence() {
     }
     my $waiting = "";
     $waiting = " ($items_waiting more queued)" if $items_waiting > 0;
-    $log->timeLog($image_sequence_dirname, MAGENTA."rendering ".RESET."$items_running videos$waiting from".CYAN." $sequence_size".RESET." image sequence".BLUE." $export_path/$image_sequence_dirname".RESET, 10);
+    $log->timeLog($image_sequence_export_dirname, MAGENTA."rendering ".RESET."$items_running videos$waiting from".CYAN." $sequence_size".RESET." image sequence".BLUE." $export_path/$image_sequence_export_dirname".RESET, 10);
   };
 
   foreach my $render_type (@{$config->{rendering}}) {
     initiate_render($export_path,
-		    $image_sequence_dirname,
+		    $image_sequence_export_dirname,
 		    $image_sequence_exif,
 		    $raw_sequence_length,
 		    $render_type,
@@ -496,12 +495,12 @@ sub initiate_render() {
   my $output_video_filename = output_video_filename($render_type, $image_sequence_name);
 
   if(should_render($output_video_filename)) {
-    my $image_sequence_dirname = "$export_path/$image_sequence_name";
+    my $image_sequence_full_dirname = "$export_path/$image_sequence_name";
 
     my $image_width = $render_type->{resolution}[0];
     my $image_height = $render_type->{resolution}[1];
 
-    opendir my $source_dir, $image_sequence_dirname or die "cannot open source dir $image_sequence_dirname: $!\n";
+    opendir my $source_dir, $image_sequence_full_dirname or die "cannot open source dir $image_sequence_full_dirname: $!\n";
 
     my $test_image;
 
@@ -523,12 +522,12 @@ sub initiate_render() {
     # figure out if we're resizing when rendering or not
     unless (defined $image_width && defined $image_height) {
       # use original resolution unless given specific values
-      my $exif = Exiftool::run("$image_sequence_dirname/$test_image");
+      my $exif = Exiftool::run("$image_sequence_full_dirname/$test_image");
 
       $image_width = $exif->{ImageWidth};
       $image_height = $exif->{ImageHeight};
       if ($image_width <= 0 || $image_height <= 0) {
-	$log->timeLog($image_sequence_name, "cannot read image size from $image_sequence_dirname/$test_image, cannot not render [$image_width, $image_height]", 10);
+	$log->timeLog($image_sequence_name, "cannot read image size from $image_sequence_full_dirname/$test_image, cannot not render [$image_width, $image_height]", 10);
 	return undef;
       }
       $should_resize = 0;
@@ -551,7 +550,7 @@ sub initiate_render() {
 
     # assemble render command
     # XXX hardcoded five digit sequence number index
-    my $ffmpeg_cmd = "ffmpeg -y -r $frame_rate -i $image_sequence_dirname/$config->{image_name_prefix}%05d$image_type -aspect $aspect_ratio $filter_str -c:v $output_codec -pix_fmt $pix_fmt_str -threads 0 -profile:v 1 -movflags +write_colr -an -color_range $color_range -color_primaries bt709 -colorspace bt709 -color_trc bt709 ";
+    my $ffmpeg_cmd = "ffmpeg -y -r $frame_rate -i $image_sequence_full_dirname/$config->{image_name_prefix}%05d$image_type -aspect $aspect_ratio $filter_str -c:v $output_codec -pix_fmt $pix_fmt_str -threads 0 -profile:v 1 -movflags +write_colr -an -color_range $color_range -color_primaries bt709 -colorspace bt709 -color_trc bt709 ";
 
     # attach exif values
     foreach my $exif_key (keys %$exif_data) {
@@ -608,18 +607,16 @@ sub initiate_render() {
 my $exif_map = {};		# XXX move this
 
 sub read_exif_json($$$) {
-  my ($image_sequence_dirname, $base_dirname, $raw_image_sequence_name) = @_;
+  my ($image_sequence_export_dirname, $raw_sequence_dirname, $raw_image_sequence_name) = @_;
 
-  my $exif_json_filename = "$base_dirname/$raw_image_sequence_name.json";
+  my $exif_json_filename = "$raw_sequence_dirname/$raw_image_sequence_name.json";
   my $image_sequence_exif = {};
 
   unless (-e $exif_json_filename) {
     return if $exif_map->{$exif_json_filename};
 
-    $log->timeLog($image_sequence_dirname, MAGENTA."creating".RESET." json exif file for".BLUE." $base_dirname/$raw_image_sequence_name".RESET, 10);
-
     $exif_map->{$exif_json_filename} = 1;
-    my $dirname = "$base_dirname/$raw_image_sequence_name";
+    my $dirname = "$raw_sequence_dirname/$raw_image_sequence_name";
 
     opendir my $dir, $dirname or die "cannot open dir: $!\n";
 
@@ -645,8 +642,8 @@ sub read_exif_json($$$) {
 
       my $progress_bar = progress_bar($config->{progress_bar_width}, $progress_percentage); # XXX move to config
 
-      $progress_bar .= MAGENTA" creating ".RESET." json exif file for ".BLUE."$image_sequence_dirname".RESET;
-      $log->log($image_sequence_dirname, $progress_bar.BLUE." $self->{output_video_filename}".RESET, 10, $progress_percentage);
+      $progress_bar .= MAGENTA" creating".RESET." json exif file for ".BLUE.$image_sequence_export_dirname.RESET;
+      $log->log($image_sequence_export_dirname, $progress_bar.BLUE." $self->{output_video_filename}".RESET, 10, $progress_percentage);
     };
     my $raw_filetypes = ['ARW', 'DNG']; # XXX fix hardcode
 
