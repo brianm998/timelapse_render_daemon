@@ -486,7 +486,7 @@ sub should_render($) {
   }
 
   # make sure we've not already got a render setup for this video file
-  foreach my $render_filename (keys %{$processes->{ffmpeg}}) { # XXX processes
+  foreach my $render_filename (keys %{$processes->{ffmpeg}}) {
     if($render_filename eq $output_video_filename) {
       $should_render = 0;
     }
@@ -610,7 +610,7 @@ sub initiate_render() {
 				   $really_finished_callback,
 				   $group_finished_callback);
 
-    $processes->{ffmpeg}{$output_video_filename} = $runner; # XXX processes
+    $processes->{ffmpeg}{$output_video_filename} = $runner;
     push @$group, $runner;
 
     return $runner;
@@ -629,6 +629,7 @@ sub read_exif_json($$$) {
 
   unless (-e $exif_json_filename) {
     return if $exif_map->{$exif_json_filename};
+    # create the exif json file from the raw images
 
     $exif_map->{$exif_json_filename} = 1;
     my $dirname = "$raw_sequence_dirname/$raw_image_sequence_name";
@@ -675,7 +676,7 @@ sub read_exif_json($$$) {
 				       $update_successful_callback,
 				       undef,
 				       $completion_callback);
-      $processes->{exiftool}{$full_filename} = $runner; # XXX processes
+      $processes->{exiftool}{$full_filename} = $runner;
       push @$group, $runner;
     }
     closedir $dir;
