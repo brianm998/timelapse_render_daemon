@@ -88,14 +88,13 @@ unless(defined $config_json_filename) {
   }
 }
 
+# file global variable
 my $config = load_config($config_json_filename, undef);
 
 die unless ($config);
 
+# file global variable
 my $processes =	{};	# track current spawned processes
-
-# run once without renders to fully flesh out the display
-search_and_discover(1);
 
 while(1) {
   # search again and populate the current processes we should run
@@ -193,8 +192,7 @@ sub manage_processes($) {
 }
 
 # look for image sequences that might be ready to render
-sub search_and_discover($$$) {
-  my ($no_render) = @_;
+sub search_and_discover() {
 
   # a hash of all raw image sequences to their number of raw images
   my $raw_image_sequence_counts = count_raw_image_sequences($config);
@@ -203,8 +201,7 @@ sub search_and_discover($$$) {
   foreach my $export_path (@{$config->{export_paths}}) {
     opendir my $export_dir, $export_path or die "cannot open $export_path: $!\n";
 
-    search_and_discover_from_export_dir($no_render,
-					$raw_image_sequence_counts,
+    search_and_discover_from_export_dir($raw_image_sequence_counts,
 					$export_dir,
 					$export_path);
 
@@ -214,8 +211,7 @@ sub search_and_discover($$$) {
 
 # look into a specific temp dir for image sequences that might be ready to render
 sub search_and_discover_from_export_dir($$$$) {
-  my ($no_render,
-      $raw_image_sequence_counts,
+  my ($raw_image_sequence_counts,
       $export_dir,
       $export_path) = @_;
 
@@ -239,8 +235,7 @@ sub search_and_discover_from_export_dir($$$$) {
     # we need to know the $raw_image_sequence_name for this generated image sequence
     next unless defined $raw_image_sequence_name;
 
-    process_image_sequence($no_render,
-			   $export_dir,
+    process_image_sequence($export_dir,
 			   $export_path,
 			   $image_sequence_dirname,
 			   $raw_sequence_length,
@@ -253,8 +248,7 @@ sub search_and_discover_from_export_dir($$$$) {
 # maybe render, or just log
 sub process_image_sequence($$$$$$$) {
 
-  my ($no_render,
-      $export_dir,
+  my ($export_dir,
       $export_path,
       $image_sequence_dirname,
       $raw_sequence_length,
@@ -297,8 +291,6 @@ sub process_image_sequence($$$$$$$) {
     if (-e "$export_path/$image_sequence_dirname.json") {
       $log->timeLog($image_sequence_dirname, "$sequence_size $raw_sequence_length frame image sequence $export_path/$image_sequence_dirname is ready to render", 1);
     }
-
-    return if($no_render);
 
     # actually try to render
     render_all_videos_for_image_sequence($export_path,
