@@ -25,7 +25,7 @@ sub run($) {
   my $ret = {};
 
   my $csv = Text::CSV->new ({ binary => 1, auto_diag => 1 });
-  open my $fh, "exiftool -csv $filename |" or die $!;
+  open my $fh, "exiftool -csv $filename 2>&1 |" or die $!;
 
   # first row is keys
   my $row1 = $csv->getline ($fh);

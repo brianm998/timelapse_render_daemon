@@ -386,7 +386,7 @@ sub render_all_videos_for_image_sequence() {
       my $removed = 0;
       foreach my $delete_regex (@{$config->{delete_sequence_after_render_regexes}}) {
 	if ("$export_path/$image_sequence_dirname" =~ /$delete_regex/) {
-	  my $rm_cmd = "rm -rf $export_path/$image_sequence_dirname";
+	  my $rm_cmd = "rm -rf $export_path/$image_sequence_dirname 2>&1";
 	  $log->timeLog($image_sequence_dirname, MAGENTA."running".RED." $rm_cmd".RESET, 10);
 	  system($rm_cmd);
 	  $removed = 1;
@@ -697,13 +697,13 @@ sub read_exif_json($$$) {
   return $image_sequence_exif;
 }
 
-# XXX copied from TimelapseExitool
+
 sub read_json_from {
   my ($filename) = @_;
 
   my $json_text = do {
     open(my $json_fh, "<:encoding(UTF-8)", $filename)
-      or warn ("Can't open \"$filename\": $!\n");
+      or $log->timeLog($filename, RED."Can't open \"$filename\": $!");
     local $/;
     <$json_fh>
   };
@@ -779,7 +779,7 @@ sub progress_bar($$) {
 # XXX fix this
 sub sizeStringOf {
   my ($item) = @_;
-  open DU, "du -ch $item |";
+  open DU, "du -ch $item 2>&1 |";
   $/ = "\n";
   while (<DU>) { return $1 if $_ =~ /^\s*([\d\w.]+)\s+total/; }
   close DU;

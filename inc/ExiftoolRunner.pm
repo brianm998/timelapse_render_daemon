@@ -14,7 +14,7 @@ sub new {
      )
     = @_;
 
-  my $self = $class->SUPER::new("exiftool -csv $filename", $group,
+  my $self = $class->SUPER::new("exiftool -csv $filename 2>&1", $group,
 				$start_callback,
 				$successful_update_callback,
 				$finished_callback,
