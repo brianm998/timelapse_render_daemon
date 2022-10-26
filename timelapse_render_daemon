@@ -59,6 +59,11 @@ Exiftool::validate();
 # - support jpeg
 # - only refresh changed lines in log (avoid flickering)
 # - allow comments in config file
+# - write README.md
+# - figure out 709 in ffmpeg command line
+# - allow config syntax to specify output video naming convention (hardcoded now)
+# - add to check for $finished_export_render_paths to use existing rendered videos
+#   to avoid displaying waiting message for deleted export dirs that wern't rendered in this proc
 
 # all user visible output goes through this log
 my $log = UpdateableLog->new();
@@ -565,7 +570,7 @@ sub initiate_render() {
 
     # assemble render command
     # XXX hardcoded five digit sequence number index
-    my $ffmpeg_cmd = "ffmpeg -y -r $frame_rate -i $image_sequence_full_dirname/$config->{image_name_prefix}%05d$image_type -aspect $aspect_ratio $filter_str -c:v $output_codec -pix_fmt $pix_fmt_str -threads 0 -profile:v 1 -movflags +write_colr -an -color_range $color_range -color_primaries bt709 -colorspace bt709 -color_trc bt709 ";
+    my $ffmpeg_cmd = "ffmpeg -y -r $frame_rate -i $image_sequence_full_dirname/$config->{image_name_prefix}%05d$image_type -aspect $aspect_ratio $filter_str -c:v $output_codec -pix_fmt $pix_fmt_str -threads 0 -profile:v 1 -movflags +write_colr -an -color_range $color_range -color_primaries bt709 -colorspace bt709 -color_trc bt709 -timecode 00:00:00:00 ";
 
     # attach exif values
     foreach my $exif_key (keys %$exif_data) {
