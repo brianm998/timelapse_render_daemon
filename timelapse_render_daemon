@@ -182,7 +182,6 @@ sub load_config($$) {
 #  - have all other processes process one more line of output
 sub manage_processes($) {
   my ($process_type) = @_;
-
   my $map = $processes->{$process_type};
   foreach my $key (keys %$map) {
     my $proc = $map->{$key};	# A ProcessPipe object
@@ -201,7 +200,7 @@ sub manage_processes($) {
       }
     } else {
       # not done and still running, read output, update display
-      $proc->read_line();
+      while($proc->read_line() != 0) { }
     }
   }
 }

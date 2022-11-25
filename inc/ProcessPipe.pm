@@ -59,7 +59,7 @@ sub finish($) {
   }
 }
 
-sub read_line($) {
+sub read_line($) {		# return 0 if blocking, if unblocking return 1 if there is more to read
  my ($self) = @_;
 
  die "should be overwritten by subclasses\n";

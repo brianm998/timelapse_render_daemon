@@ -51,42 +51,41 @@ sub new {
 }
 
 sub read_line($) {
- my ($self) = @_;
+  my ($self) = @_;
 
- my $ret = undef;
- $/ = "";
- my ($line, $eof) = sysreadline($self->{shell_input}, 1);
- $/ = "\n";
+  $/ = "";
+  my ($line, $eof, $can_read_more) = sysreadline($self->{shell_input}, 0.1);
+  $/ = "\n";
 
- if ($line =~ /[^M]$/) {
-   #print "read line '$line'\n";
-   # append previous line
-   if (exists $self->{partial_line_read}) {
-     $line = $self->{partial_line_read}.$line;
-     delete($self->{partial_line_read});
-   }
-   # frame= 1569 fps=0.9 q=-0.0 Lsize=  286475kB time=00:00:52.26 bitrate=44900.6kbits/s speed=0.0292x 
-   if ($line =~ /^frame\s*=\s*(\d+)\s+fps\s*=\s*([\d.]+)/) {
-     #print "line match\n";
-     $self->{frame_num} = $1;
-     $self->{fps} = $2;
+  if ($line =~ /[^M]$/) {
+    #print "read line '$line'\n";
+    # append previous line
+    if (exists $self->{partial_line_read}) {
+      $line = $self->{partial_line_read}.$line;
+      delete($self->{partial_line_read});
+    }
+    # frame= 1569 fps=0.9 q=-0.0 Lsize=  286475kB time=00:00:52.26 bitrate=44900.6kbits/s speed=0.0292x 
+    if ($line =~ /^frame\s*=\s*(\d+)\s+fps\s*=\s*([\d.]+)/) {
+      #print "line match\n";
+      $self->{frame_num} = $1;
+      $self->{fps} = $2;
 
-     my $successful_update_callback = $self->{successful_update_callback};
-     &$successful_update_callback($self) if defined $successful_update_callback;
-   } else {
-     #print "no match\n";
-   }
-   $ret = 0;
- } else {
-   # keep $line for next time around
-   $self->{partial_line_read} = $line;
- }
+      my $successful_update_callback = $self->{successful_update_callback};
+      &$successful_update_callback($self) if defined $successful_update_callback;
+    } else {
+      #print "no match\n";
+    }
+  } else {
+    # keep $line for next time around
+    $self->{partial_line_read} = $line;
+  }
 
- if ($eof) {
-   $self->finish();
- }
-
- return $ret;
+  if ($eof) {
+      $self->finish();
+      return 0;
+  } else {
+      return $can_read_more;
+  }
 }
 
 sub finish($) {
@@ -124,9 +123,10 @@ sub sysreadline(*;$) {
   my $start_time = time( );
   my $selector = IO::Select->new( );
   $selector->add($handle);
-  my $line = "";
+  my $line = undef;
   my $marker = $/;
   my $eof = 0;
+  my $can_read_more = 0;
   until ($line =~ /[$marker]\z/) {
     unless ($infinitely_patient) {
       if (time() > ($start_time + $timeout)) {
@@ -135,7 +135,7 @@ sub sysreadline(*;$) {
       }
     }
     # sleep only 1 second before checking again
-    if($selector->can_read(1.0)) {
+    if($selector->can_read(0.1)) {
       my $done = 0;
       my $was_blocking = $handle->blocking(0);
       while (!$done && $selector->can_read(0.0)) {
@@ -151,8 +151,9 @@ sub sysreadline(*;$) {
       $handle->blocking($was_blocking);
     }
   }
+  $can_read_more = $selector->can_read(0.0);
   #print "returning full line\n";
-  return ($line, $eof);
+  return ($line, $eof, $can_read_more);
 }
 
 1;

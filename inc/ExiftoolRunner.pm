@@ -41,6 +41,7 @@ sub read_line($) {
        &$successful_update_callback($self) if defined $successful_update_callback;
    return;
  }
+ return 0;
 }
 
 sub finish($) {
