@@ -97,6 +97,24 @@ my $processes =	{};	# track current spawned processes
 # to avoid logging about them on external rm
 my $finished_export_render_paths = {};
 
+# look for backup .json files, allowing backup before image sequence processing is done
+my $backup_image_sequence_counts = {};
+foreach my $backup_path (@{$config->{backup_paths}}) {
+  opendir my $backup_dir, $backup_path or die "cannot open $backup_path: $!\n";
+  foreach my $backup_entry (readdir $backup_dir) {
+    if($backup_entry =~ /^([^.]+)[.]json$/) {
+      my $backup_sequence_name = $1;
+
+      my $sequence_json = read_json_from("$backup_path/$backup_entry");
+      my $image_size = (keys %{$sequence_json->{ImageSize}})[0];
+      my $sequence_length = $sequence_json->{ImageSize}{$image_size};
+
+      $backup_image_sequence_counts->{$backup_path}{$backup_sequence_name} = $sequence_length;
+    }
+  }
+  closedir $backup_dir;
+}
+
 while(1) {
   # search and populate the current processes we should run
   search_and_discover();
@@ -264,7 +282,7 @@ sub process_image_sequence($$$$$) {
       $raw_image_sequence_name) = @_;
 
   # check number of generated images present
-  opendir my $export_dir, "$export_path/$image_sequence_export_dirname" or die "cannot open dfs dir: $!\n";
+  opendir my $export_dir, "$export_path/$image_sequence_export_dirname" or return;
   my $number_of_generated_images = 0;
   foreach my $entry (readdir $export_dir) {
     next if($entry =~ /^[.]/);
@@ -332,16 +350,16 @@ sub count_raw_image_sequences() {
 
   my () = @_;
 
-  my $raw_image_sequence_counts = {};
+  my $raw_image_sequence_counts = $backup_image_sequence_counts;
   foreach my $source_path (@{$config->{source_paths}}) {
-    opendir my $source_dir, $source_path or die "cannot open fuck $source_path: $!\n";
+    opendir my $source_dir, $source_path or return $raw_image_sequence_counts;
 
     foreach my $source_entry (readdir $source_dir) {
       next if($source_entry =~ /^[.]/);
       next unless(-d "$source_path/$source_entry");
 
       my $raw_image_count = 0;
-      opendir my $entry_dir, "$source_path/$source_entry" or die "cannot open shit dir: $!\n";
+      opendir my $entry_dir, "$source_path/$source_entry" or return $raw_image_sequence_counts;
 
       foreach my $entry (readdir $entry_dir) {
 	my $keep = 0;

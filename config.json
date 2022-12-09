@@ -11,6 +11,13 @@
     [
 	"/Users/brian/Pictures/timelapses/2022/"
     ],
+    "backup_paths" :
+    [
+	"/mnt/trunk/Photos/timelapses/2022",
+	"/mnt/trunk/Photos/timelapses/2021",
+	"/mnt/trunk/Photos/timelapses/2020",
+	"/mnt/trunk/Photos/timelapses/2019"
+    ],
     "master_videos" :
     [
 	"/Users/brian/Pictures/timelapses/2022/2022-video"
@@ -36,7 +43,7 @@
     ],
     "log_in_color": true,
     "sleep_time_seconds" : 2,
-    "progress_bar_width" : 30,
-    "delete_sequence_after_render_regexes" : ["-merge$"]
+    "progress_bar_width" : 40,
+    "delete_sequence_after_render_regexes" : ["-merge$", "-ntar-"]
 }
 
