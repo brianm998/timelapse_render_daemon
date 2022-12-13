@@ -47,13 +47,13 @@ sub read_line($) {
 sub finish($) {
   my ($self) = @_;
 
-  $self->SUPER::finish();
-
   $self->{exif_data} = {};
 
   for(my $i = 0 ; $i < scalar @{$self->{row1}} ; $i++) {
     $self->{exif_data}{$self->{row1}[$i]} = $self->{row2}[$i];
   }
+  
+  $self->SUPER::finish();
 }
 
 # this adds tallies for a new exif map to the totals
