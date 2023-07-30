@@ -47,8 +47,6 @@ Exiftool::validate();
 
 # - support {year} in dirs?
 # - notice when existing master video is older than the new sequence, and still render to temp path, assuming no file at temp path exists yet
-# - allow rendering when base image sequence has been archived, based upon # of images from json
-#   - specify archive locations in config
 # - write a real log file as well as the refreshing  console output
 # - avoid printing lines longer than the console
 # - have timeLog not update time on log when message is the same
@@ -63,7 +61,12 @@ Exiftool::validate();
 # - figure out 709 in ffmpeg command line
 # - allow config syntax to specify output video naming convention (hardcoded now)
 # - add to check for $finished_export_render_paths to use existing rendered videos
-#   to avoid displaying waiting message for deleted export dirs that wern't rendered in this proc
+#   to avoid displaying 'waiting' message for deleted export dirs that wern't rendered in this proc
+# - add config option to allow always rendering videos to a specific dir
+#   currently videos are always rendered aside the image sequences, writing to a different
+#   volume _may_ speed up ffmpeg (if it's I/O blocked)
+# - render to a '.rendering_videofilename' file and then mv afterwards?
+# - year 2022 assumed in backup :(
 
 # all user visible output goes through this log
 my $log = UpdateableLog->new();
@@ -108,6 +111,9 @@ foreach my $backup_path (@{$config->{backup_paths}}) {
       my $sequence_json = read_json_from("$backup_path/$backup_entry");
       my $image_size = (keys %{$sequence_json->{ImageSize}})[0];
       my $sequence_length = $sequence_json->{ImageSize}{$image_size};
+
+      # older json files have this
+      $sequence_length = $sequence_json->{number_source_images} if($sequence_length == 0);
 
       $backup_image_sequence_counts->{$backup_path}{$backup_sequence_name} = $sequence_length;
     }
@@ -262,6 +268,12 @@ sub search_and_discover_from_export_dir($$) {
     # we need to know the $raw_image_sequence_name for this generated image sequence
     next unless defined $raw_image_sequence_name;
 
+    my $continue = 1;
+    foreach my $regex (@{$config->{ignore_sequence_regexes}}) {
+	$continue = 0 if $image_sequence_export_dirname =~ /$regex/;
+    }
+    next unless $continue;
+    
     process_image_sequence($export_path,
 			   $image_sequence_export_dirname,
 			   $raw_sequence_length,
@@ -320,29 +332,32 @@ sub process_image_sequence($$$$$) {
 
     # actually try to render
     render_all_videos_for_image_sequence($export_path,
-					 $image_sequence_export_dirname,
-					 $raw_sequence_dirname,
-					 $raw_image_sequence_name,
-					 $raw_sequence_length)
-  } else {
+				    $image_sequence_export_dirname,
+				    $raw_sequence_dirname,
+				    $raw_image_sequence_name,
+				    $raw_sequence_length);
+  } elsif ($raw_sequence_length > 0) {
     # cannot process this one yet, not enough images
     # log of how far along it is
-    unless (exists $finished_export_render_paths->{"$export_path/$image_sequence_export_dirname"}) {
-      my $percentage = $number_of_generated_images / $raw_sequence_length;
-      my $progress_bar = progress_bar($config->{progress_bar_width},  $percentage);
+      unless (exists $finished_export_render_paths->{"$export_path/$image_sequence_export_dirname"} ||
+	      $number_of_generated_images == 0)
+	{
+	  my $percentage = $number_of_generated_images / $raw_sequence_length;
+	  my $progress_bar = progress_bar($config->{progress_bar_width},  $percentage);
 
-      my $frames_left = $raw_sequence_length - $number_of_generated_images;
-      my $msg = sprintf(YELLOW."waiting ".RESET."for %04.d more frames (%04.d / %04.d)",
-			$frames_left, $number_of_generated_images, $raw_sequence_length);
-      my $sequence_size = sizeStringOf("$export_path/$image_sequence_export_dirname");
+	  my $frames_left = $raw_sequence_length - $number_of_generated_images;
+	  my $msg = sprintf(YELLOW."waiting ".RESET."for %04.d more frames (%04.d / %04.d)",
+			    $frames_left, $number_of_generated_images, $raw_sequence_length);
+	  my $sequence_size = sizeStringOf("$export_path/$image_sequence_export_dirname");
 
-      # XXX this is a hack to align layers. usually 4 chars, add another when 3
-      $sequence_size = " $sequence_size" if(length($sequence_size) == 3);
+	  # XXX this is a hack to align layers. usually 4 chars, add another when 3
+	  $sequence_size = " $sequence_size" if(length($sequence_size) == 3);
 
-      $log->log($image_sequence_export_dirname, "$progress_bar $msg in ".CYAN."$sequence_size".BLUE." $export_path/$image_sequence_export_dirname".RESET, $percentage);
+	  $log->log($image_sequence_export_dirname, "$progress_bar $msg in ".CYAN."$sequence_size".BLUE." $export_path/$image_sequence_export_dirname".RESET, $percentage);
+	}
     }
-  }
 }
+
 
 # reads all the raw image sequences based upon the config
 # and returns a hash of source path/entry to raw image count
@@ -709,11 +724,14 @@ sub read_exif_json($$$) {
 
   # remove keys with more than one value
   foreach my $exif_key (keys %$exif_json) {
-    my @keys = keys %{$exif_json->{$exif_key}};
-    my $num = scalar(@keys);
-    if ($num == 1) {
-      my $value = $keys[0];
-      $image_sequence_exif->{$exif_key} = $value;
+    my $key = $exif_json->{$exif_key};
+    if (ref $key eq ref {}) {
+      my @keys = keys %{$key};
+      my $num = scalar(@keys);
+      if ($num == 1) {
+	my $value = $keys[0];
+	$image_sequence_exif->{$exif_key} = $value;
+      }
     }
   }
   return $image_sequence_exif;
