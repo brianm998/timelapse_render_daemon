@@ -1,0 +1,6 @@
+.build/
+.swiftpm/
+DerivedData/
+releases/
+release_config.json
+*.xcodeproj/xcuserdata
