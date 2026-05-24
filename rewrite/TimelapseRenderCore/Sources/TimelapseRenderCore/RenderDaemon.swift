@@ -25,6 +25,11 @@ public actor RenderDaemon {
     private var pausedVariants: Set<PausedVariant> = []
     private var renders: [String: ActiveRender] = [:]    // outputPath -> render
     private var skippedExports: Set<String> = []         // export full paths that finished
+    private var completedRenderResults: [CompletedRenderResult] = []
+    private let maxCompletedRenderResults = 200
+    /// Sequences whose configured variants are all already rendered.  Set by
+    /// processDiscovered; surfaced to the GUI via SequenceState.allVariantsRendered.
+    private var fullyRenderedSequences: Set<String> = []   // exportPath/dirname
     private var exifKnownSet: Set<String> = []           // exif json files already produced
     private var exifInFlight: Set<String> = []           // exif jobs running for this raw sequence
     private var lastSnapshot: DaemonStateSnapshot
@@ -62,9 +67,15 @@ public actor RenderDaemon {
 
     // MARK: - Init
 
+    /// Where the daemon persists the render-history file.  Resolved at init
+    /// from (in priority order): explicit `historyURL` argument, the config's
+    /// `render_history_path`, or `nil` (no persistence).
+    private let historyURL: URL?
+
     public init(
         configPath: String,
         codecsPath: String? = nil,
+        historyURL: URL? = nil,
         logger: DaemonLogger = PlainLogger()
     ) throws {
         self.configPath = configPath
@@ -83,6 +94,28 @@ public actor RenderDaemon {
         self.pausedSequenceNames = Set(self.config.pausedSequenceNames)
         self.pausedVariants = Set(self.config.pausedVariants)
 
+        // Resolve the history file location.
+        if let url = historyURL {
+            self.historyURL = url
+        } else if let p = self.config.renderHistoryPath, !p.isEmpty {
+            self.historyURL = URL(fileURLWithPath: p)
+        } else {
+            self.historyURL = nil
+        }
+        // Load any existing history, prune entries older than the retention
+        // window, and seed `completedRenderResults`.
+        if let url = self.historyURL,
+           let data = try? Data(contentsOf: url) {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            if let list = try? decoder.decode([CompletedRenderResult].self, from: data) {
+                let cutoff = Date().addingTimeInterval(-Double(self.config.recentRenderHistoryDays) * 86400)
+                self.completedRenderResults = list
+                    .filter { $0.timestamp > cutoff }
+                    .sorted { $0.timestamp > $1.timestamp }
+            }
+        }
+
         var continuation: AsyncStream<DaemonStateSnapshot>.Continuation!
         self.stateStream = AsyncStream { c in continuation = c }
         self.stateContinuation = continuation
@@ -90,9 +123,23 @@ public actor RenderDaemon {
         self.lastSnapshot = DaemonStateSnapshot(
             phase: .startingUp,
             configPath: configPath,
+            completedRenders: self.completedRenderResults,
             pausedSequenceNames: self.pausedSequenceNames,
             pausedVariants: self.pausedVariants
         )
+    }
+
+    /// Default history-file location: `~/Library/Application Support/TimelapseRenderDaemon/render_history.json`
+    /// on Apple platforms, or the equivalent application-support dir on Linux.
+    public static func defaultHistoryURL() -> URL {
+        let fm = FileManager.default
+        if let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            return appSupport
+                .appendingPathComponent("TimelapseRenderDaemon")
+                .appendingPathComponent("render_history.json")
+        }
+        return URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("timelapse_render_history.json")
     }
 
     public func currentConfig() -> DaemonConfig { config }
@@ -268,6 +315,10 @@ public actor RenderDaemon {
                 ? "adopted ffmpeg finished"
                 : "adopted ffmpeg ended with no output file"
             renders[key] = copy
+            if success {
+                // Add to the persistent history just like a managed render.
+                recordCompletedRender(render)
+            }
             logger.timeLog(
                 name: render.outputFilename,
                 message: success
@@ -397,6 +448,7 @@ public actor RenderDaemon {
                     && !pausedVariants.contains(PausedVariant(sequenceName: seq.dirname, variantKey: renderType.variantKey))
             }
             if variantsToRender.isEmpty {
+                fullyRenderedSequences.insert(seq.fullPath)
                 if !skippedExports.contains(seq.fullPath) {
                     logger.timeLog(
                         name: seq.dirname,
@@ -406,6 +458,8 @@ public actor RenderDaemon {
                     skippedExports.insert(seq.fullPath)
                 }
                 continue
+            } else {
+                fullyRenderedSequences.remove(seq.fullPath)
             }
 
             // Build / read exif metadata; once available, kick off all renders.
@@ -621,6 +675,7 @@ public actor RenderDaemon {
             r.status = .cancelled
         } else if success {
             r.status = .finished
+            recordCompletedRender(r)
             // Possibly delete the source sequence if matching delete regex.
             for pattern in config.deleteSequenceAfterRenderRegexes {
                 if let regex = try? NSRegularExpression(pattern: pattern) {
@@ -648,6 +703,59 @@ public actor RenderDaemon {
         // A slot just opened; promote the next queued variant of this sequence
         // (or any other sequence) without waiting for the next scan tick.
         promoteQueuedRenders()
+    }
+
+    /// Record a successful render in the completed-results log and persist
+    /// it to disk so the entry survives an app restart.
+    private func recordCompletedRender(_ r: ActiveRender) {
+        let size: Int64
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: r.outputPath),
+           let n = attrs[.size] as? NSNumber {
+            size = n.int64Value
+        } else {
+            size = 0
+        }
+        let result = CompletedRenderResult(
+            timestamp: Date(),
+            sequenceName: r.sequenceName,
+            exportPath: r.exportPath,
+            outputFilename: r.outputFilename,
+            outputPath: r.outputPath,
+            frameCount: r.totalFrames,
+            fileSize: size
+        )
+        // De-dup by output path: an adopted render that completes might also
+        // get an entry from elsewhere; just keep the most recent.
+        completedRenderResults.removeAll { $0.outputPath == result.outputPath }
+        completedRenderResults.insert(result, at: 0)
+        pruneAndSaveHistory()
+    }
+
+    /// Prune entries older than `recent_render_history_days` and write the
+    /// result to disk if a history URL is configured.  No-op if persistence
+    /// is disabled.
+    private func pruneAndSaveHistory() {
+        let cutoff = Date().addingTimeInterval(
+            -Double(config.recentRenderHistoryDays) * 86400
+        )
+        completedRenderResults.removeAll { $0.timestamp <= cutoff }
+        if completedRenderResults.count > maxCompletedRenderResults {
+            completedRenderResults.removeLast(
+                completedRenderResults.count - maxCompletedRenderResults
+            )
+        }
+        guard let url = historyURL else { return }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(completedRenderResults) else { return }
+        let dir = url.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            logger.warn("could not write render history to \(url.path): \(error)")
+        }
     }
 
     // MARK: - Exif extraction
@@ -813,7 +921,8 @@ public actor RenderDaemon {
                     dirname: s.dirname,
                     rawSequenceLength: s.rawSequenceLength,
                     generatedImageCount: s.generatedImageCount,
-                    isComplete: s.isComplete
+                    isComplete: s.isComplete,
+                    allVariantsRendered: fullyRenderedSequences.contains(s.fullPath)
                 )
             }
         } else {
@@ -840,6 +949,7 @@ public actor RenderDaemon {
             rawSequenceCount: rawCount,
             sequences: seqStates,
             renders: renderStates,
+            completedRenders: completedRenderResults,
             pausedSequenceNames: pausedSequenceNames,
             pausedVariants: pausedVariants,
             lastError: lastSnapshot.lastError

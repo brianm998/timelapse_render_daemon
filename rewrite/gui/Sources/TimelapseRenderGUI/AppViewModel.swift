@@ -143,7 +143,11 @@ final class AppViewModel {
                 logger = SilentLogger()
                 self.lastError = "could not open log file: \(error)"
             }
-            let daemon = try RenderDaemon(configPath: configPath, logger: logger)
+            let daemon = try RenderDaemon(
+                configPath: configPath,
+                historyURL: RenderDaemon.defaultHistoryURL(),
+                logger: logger
+            )
             self.daemon = daemon
             self.isRunning = true
 

@@ -19,7 +19,8 @@ enum UserPreferences {
         static let selectedTab           = "selectedTab"
         static let lastConfigPath        = "lastConfigPath"
         static let sequenceFilter        = "sequenceFilter"
-        static let skipStopRenderConfirm = "skipStopRenderConfirm"
+        static let skipStopRenderConfirm   = "skipStopRenderConfirm"
+        static let showCompletedSequences  = "showCompletedSequences"
     }
 }
 

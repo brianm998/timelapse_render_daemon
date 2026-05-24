@@ -35,6 +35,17 @@ public struct DaemonConfig: Codable, Sendable, Equatable {
     public var pausedSequenceNames: [String]
     public var pausedVariants: [PausedVariant]
 
+    /// Number of days of completed-render history to retain.  Older entries
+    /// are pruned at startup and on every successful render.  Default 30.
+    public var recentRenderHistoryDays: Int
+
+    /// Optional override for where the daemon stores its persistent
+    /// render-history file.  When nil, the daemon uses a platform-default
+    /// location (`~/Library/Application Support/TimelapseRenderDaemon/...`
+    /// on macOS) — or no persistence at all if no `historyURL` is passed
+    /// to `RenderDaemon.init`.
+    public var renderHistoryPath: String?
+
     public init(
         exportPaths: [String] = [],
         sourcePaths: [String] = [],
@@ -54,7 +65,9 @@ public struct DaemonConfig: Codable, Sendable, Equatable {
         ignoreSequenceRegexes: [String] = [],
         deleteSequenceAfterRenderRegexes: [String] = [],
         pausedSequenceNames: [String] = [],
-        pausedVariants: [PausedVariant] = []
+        pausedVariants: [PausedVariant] = [],
+        recentRenderHistoryDays: Int = 30,
+        renderHistoryPath: String? = nil
     ) {
         self.exportPaths = exportPaths
         self.sourcePaths = sourcePaths
@@ -75,6 +88,8 @@ public struct DaemonConfig: Codable, Sendable, Equatable {
         self.deleteSequenceAfterRenderRegexes = deleteSequenceAfterRenderRegexes
         self.pausedSequenceNames = pausedSequenceNames
         self.pausedVariants = pausedVariants
+        self.recentRenderHistoryDays = recentRenderHistoryDays
+        self.renderHistoryPath = renderHistoryPath
     }
 
     enum CodingKeys: String, CodingKey {
@@ -97,6 +112,8 @@ public struct DaemonConfig: Codable, Sendable, Equatable {
         case deleteSequenceAfterRenderRegexes = "delete_sequence_after_render_regexes"
         case pausedSequenceNames = "paused_sequence_names"
         case pausedVariants = "paused_variants"
+        case recentRenderHistoryDays = "recent_render_history_days"
+        case renderHistoryPath = "render_history_path"
     }
 
     public init(from decoder: Decoder) throws {
@@ -120,6 +137,8 @@ public struct DaemonConfig: Codable, Sendable, Equatable {
         deleteSequenceAfterRenderRegexes = try c.decodeIfPresent([String].self, forKey: .deleteSequenceAfterRenderRegexes) ?? []
         pausedSequenceNames = try c.decodeIfPresent([String].self, forKey: .pausedSequenceNames) ?? []
         pausedVariants = try c.decodeIfPresent([PausedVariant].self, forKey: .pausedVariants) ?? []
+        recentRenderHistoryDays = try c.decodeIfPresent(Int.self, forKey: .recentRenderHistoryDays) ?? 30
+        renderHistoryPath = try c.decodeIfPresent(String.self, forKey: .renderHistoryPath)
     }
 }
 

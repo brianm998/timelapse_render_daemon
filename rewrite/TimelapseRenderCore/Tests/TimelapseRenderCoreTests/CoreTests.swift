@@ -164,6 +164,40 @@ final class CoreTests: XCTestCase {
         )
     }
 
+    func testCompletedRenderResultRoundTripsThroughJSON() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let r = CompletedRenderResult(
+            timestamp: now,
+            sequenceName: "seq-foo",
+            exportPath: "/rp/tmp",
+            outputFilename: "foo.mov",
+            outputPath: "/rp/tmp/foo.mov",
+            frameCount: 1234,
+            fileSize: 56_789
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let data = try encoder.encode([r])
+        let back = try decoder.decode([CompletedRenderResult].self, from: data)
+        XCTAssertEqual(back.count, 1)
+        XCTAssertEqual(back[0].sequenceName, "seq-foo")
+        XCTAssertEqual(back[0].timestamp, now)
+        XCTAssertEqual(back[0].fileSize, 56_789)
+    }
+
+    func testConfigDefaultsForRenderHistory() throws {
+        // Old-format config (no history fields) should still decode and
+        // pick up sensible defaults.
+        let json = """
+        { "rendering": [ { "codec": "ProResMQ", "frame_rate": 30 } ] }
+        """
+        let cfg = try JSONDecoder().decode(DaemonConfig.self, from: Data(json.utf8))
+        XCTAssertEqual(cfg.recentRenderHistoryDays, 30)
+        XCTAssertNil(cfg.renderHistoryPath)
+    }
+
     func testOrphanScannerParsesFFmpegLine() {
         let line = "12345 /usr/local/bin/ffmpeg -nostdin -y -r 30 -i /rp/tmp/LRT_07_06_2024-foo/LRT_%05d-severe-noise.tiff -aspect 16/9 -c:v prores_ks /rp/tmp/foo_ProRes-422_2160p_30_MQ.mov"
         let orphan = OrphanScanner.parse(line: line)

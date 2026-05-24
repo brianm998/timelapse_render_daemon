@@ -1,0 +1,16 @@
+{
+  "platforms": [
+    {
+      "platform": "linux",
+      "hostname": "192.168.4.23",
+      "username": "brian",
+      "path": "/home/brian/git/timelapse_render_daemon/rewrite"
+    },
+    {
+      "platform": "windows",
+      "hostname": "192.168.4.42",
+      "username": "brian",
+      "path": "/c/Users/brian/git/timelapse_render_daemon/rewrite"
+    }
+  ]
+}

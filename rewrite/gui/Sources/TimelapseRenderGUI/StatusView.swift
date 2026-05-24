@@ -3,93 +3,157 @@ import TimelapseRenderCore
 
 struct StatusView: View {
     @Environment(AppViewModel.self) var viewModel
-
-    var body: some View {
-        HSplitView {
-            SequenceListView()
-                .frame(minWidth: 320)
-            RenderListView()
-                .frame(minWidth: 360)
-        }
-    }
-}
-
-struct SequenceListView: View {
-    @Environment(AppViewModel.self) var viewModel
     @State private var filter = SequenceFilter.loadFromDefaults()
-
-    private var filteredSequences: [SequenceState] {
-        filter.apply(
-            to: viewModel.snapshot.sequences,
-            paused: viewModel.snapshot.pausedSequenceNames
-        )
-    }
+    @AppStorage(UserPreferences.Key.showCompletedSequences, store: UserPreferences.defaults)
+    private var showCompletedSequences: Bool = false
+    @State private var highlightedItemID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Image Sequences")
-                    .font(.title3.bold())
-                Spacer()
-                Text(countLabel)
-                    .foregroundStyle(.secondary)
-                    .font(.caption.monospacedDigit())
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-
+            header
             SequenceFilterBar(
                 filter: $filter,
-                exportPaths: uniqueExportPaths
+                exportPaths: uniqueExportPaths,
+                showCompletedSequences: $showCompletedSequences
             )
             .padding(.horizontal)
             .padding(.bottom, 8)
-
             Divider()
-
-            content
+            unifiedList
         }
         .onChange(of: filter) { _, newValue in
             newValue.saveToDefaults()
         }
     }
 
-    @ViewBuilder
-    private var content: some View {
-        if viewModel.snapshot.sequences.isEmpty {
+    private var header: some View {
+        HStack {
+            Text("Renders & Sequences")
+                .font(.title3.bold())
             Spacer()
-            Text("No sequences discovered yet").foregroundStyle(.secondary)
-            Spacer()
-        } else if filteredSequences.isEmpty {
-            Spacer()
-            VStack(spacing: 8) {
-                Text("No sequences match the current filter")
-                    .foregroundStyle(.secondary)
-                Button("Clear filter") { filter = SequenceFilter() }
-            }
-            Spacer()
-        } else {
-            List {
-                ForEach(filteredSequences) { seq in
-                    SequenceRow(sequence: seq)
-                }
-            }
-            .listStyle(.inset)
+            Text(headerCount).foregroundStyle(.secondary)
+                .font(.caption.monospacedDigit())
         }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
     }
 
-    private var countLabel: String {
-        let total = viewModel.snapshot.sequences.count
-        if filter.isActive {
-            return "\(filteredSequences.count) / \(total)"
-        }
-        return "\(total)"
+    private var headerCount: String {
+        let active = viewModel.snapshot.renders.count
+        let inProgress = viewModel.snapshot.sequences.filter { !$0.isComplete }.count
+        let done = viewModel.snapshot.completedRenders.count
+        return "\(active) rendering · \(inProgress) in progress · \(done) finished"
     }
 
     private var uniqueExportPaths: [String] {
-        Array(Set(viewModel.snapshot.sequences.map(\.exportPath))).sorted()
+        var s = Set<String>()
+        for x in viewModel.snapshot.sequences { s.insert(x.exportPath) }
+        for x in viewModel.snapshot.renders { s.insert(x.exportPath) }
+        for x in viewModel.snapshot.completedRenders { s.insert(x.exportPath) }
+        return Array(s).sorted()
+    }
+
+    @ViewBuilder
+    private var unifiedList: some View {
+        let items = buildItems()
+        if items.isEmpty {
+            Spacer()
+            Text("Nothing yet").foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+            Spacer()
+        } else {
+            ScrollViewReader { proxy in
+                List {
+                    ForEach(items) { item in
+                        UnifiedItemRow(
+                            item: item,
+                            isHighlighted: highlightedItemID == item.id,
+                            onJumpToSequence: { sequenceName, exportPath in
+                                jumpToSequence(name: sequenceName, exportPath: exportPath, proxy: proxy)
+                            }
+                        )
+                        .id(item.id)
+                    }
+                }
+                .listStyle(.inset)
+            }
+        }
+    }
+
+    private func jumpToSequence(name: String, exportPath: String, proxy: ScrollViewProxy) {
+        // Make sure completed sequences are visible — that's where the user
+        // wants to land when they click "go to sequence" on a completed result.
+        if !showCompletedSequences {
+            showCompletedSequences = true
+        }
+        // The UnifiedItem.id for a completed sequence is "done:<exportPath>/<dirname>"
+        // (see UnifiedItem.id below).  Build the same string directly so we
+        // don't have to construct a SequenceState from outside the core.
+        let targetID = "done:\(exportPath)/\(name)"
+        // SwiftUI needs a moment to rebuild the list with completed sequences
+        // before scrollTo can find the new id.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            withAnimation { proxy.scrollTo(targetID, anchor: .center) }
+            highlightedItemID = targetID
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                if highlightedItemID == targetID { highlightedItemID = nil }
+            }
+        }
+    }
+
+    /// Build the unified list of items in the order the GUI displays them.
+    private func buildItems() -> [UnifiedItem] {
+        var items: [UnifiedItem] = []
+        let snap = viewModel.snapshot
+
+        // 1. Active renders — closest to done at the top.
+        let activeRenders = filter.matches(renders: snap.renders).sorted {
+            if $0.progress != $1.progress { return $0.progress > $1.progress }
+            return $0.id < $1.id
+        }
+        items.append(contentsOf: activeRenders.map { .activeRender($0) })
+
+        // 2. In-progress sequences — most-complete first.
+        let inProgress = filter.matches(sequences: snap.sequences,
+                                        paused: snap.pausedSequenceNames)
+            .filter { !$0.allVariantsRendered }
+            .filter { !$0.isComplete }
+        items.append(contentsOf: inProgress.map { .inProgressSequence($0) })
+
+        // 3. Bottom: either completed results (default) or completed sequences.
+        if showCompletedSequences {
+            let completed = filter.matches(sequences: snap.sequences,
+                                           paused: snap.pausedSequenceNames)
+                .filter { $0.allVariantsRendered }
+                .sorted { $0.dirname < $1.dirname }
+            items.append(contentsOf: completed.map { .completedSequence($0) })
+        } else {
+            let results = filter.matches(results: snap.completedRenders)
+            items.append(contentsOf: results.map { .completedResult($0) })
+        }
+        return items
     }
 }
+
+// MARK: - Item types
+
+enum UnifiedItem: Identifiable, Hashable {
+    case activeRender(RenderJobState)
+    case inProgressSequence(SequenceState)
+    case completedResult(CompletedRenderResult)
+    case completedSequence(SequenceState)
+
+    var id: String {
+        switch self {
+        case .activeRender(let r):       return "render:\(r.id)"
+        case .inProgressSequence(let s): return "seq:\(s.id)"
+        case .completedResult(let r):    return "result:\(r.id)"
+        case .completedSequence(let s):  return "done:\(s.id)"
+        }
+    }
+}
+
+// MARK: - Filter (preserved from earlier; matches multiple item types)
 
 struct SequenceFilter: Equatable, Codable {
     enum Status: String, CaseIterable, Identifiable, Codable {
@@ -106,37 +170,38 @@ struct SequenceFilter: Equatable, Codable {
         var id: String { rawValue }
     }
 
-    enum SortBy: String, CaseIterable, Identifiable, Codable {
-        case progressDesc   = "Progress (high → low)"
-        case progressAsc    = "Progress (low → high)"
-        case nameAsc        = "Name (A → Z)"
-        case nameDesc       = "Name (Z → A)"
-        case imageCountDesc = "Frames (most first)"
-        case imageCountAsc  = "Frames (fewest first)"
-        var id: String { rawValue }
-    }
-
     var search: String = ""
     var status: Status = .all
     var pauseFilter: PauseFilter = .all
-    var exportPath: String? = nil   // nil == any path
-    var sortBy: SortBy = .progressDesc
+    var exportPath: String? = nil
 
-    /// Whether any filter (not the sort) is in non-default state.
-    /// Used to decide whether to show the "Reset" button and the
-    /// "filtered / total" count label.
     var isActive: Bool {
         !search.isEmpty || status != .all || pauseFilter != .all || exportPath != nil
     }
 
-    func apply(to sequences: [SequenceState], paused: Set<String>) -> [SequenceState] {
-        let needle = search.trimmingCharacters(in: .whitespaces).lowercased()
-        let filtered = sequences.filter { seq in
-            if !needle.isEmpty && !seq.dirname.lowercased().contains(needle) { return false }
+    static func loadFromDefaults() -> SequenceFilter {
+        guard let data = UserPreferences.defaults.data(forKey: UserPreferences.Key.sequenceFilter),
+              let decoded = try? JSONDecoder().decode(SequenceFilter.self, from: data)
+        else { return SequenceFilter() }
+        return decoded
+    }
+    func saveToDefaults() {
+        guard let data = try? JSONEncoder().encode(self) else { return }
+        UserPreferences.defaults.set(data, forKey: UserPreferences.Key.sequenceFilter)
+    }
+
+    private var needle: String {
+        search.trimmingCharacters(in: .whitespaces).lowercased()
+    }
+
+    func matches(sequences: [SequenceState], paused: Set<String>) -> [SequenceState] {
+        let n = needle
+        return sequences.filter { seq in
+            if !n.isEmpty && !seq.dirname.lowercased().contains(n) { return false }
             switch status {
             case .all: break
-            case .inProgress: if seq.isComplete { return false }
-            case .complete:   if !seq.isComplete { return false }
+            case .inProgress: if seq.isComplete && seq.allVariantsRendered { return false }
+            case .complete:   if !seq.allVariantsRendered { return false }
             }
             let isPaused = paused.contains(seq.dirname)
             switch pauseFilter {
@@ -146,77 +211,55 @@ struct SequenceFilter: Equatable, Codable {
             }
             if let exportPath, seq.exportPath != exportPath { return false }
             return true
+        }.sorted {
+            if $0.progress != $1.progress { return $0.progress > $1.progress }
+            return $0.dirname < $1.dirname
         }
-        return sort(filtered)
     }
 
-    /// Read the persisted filter from UserDefaults, or return defaults.
-    static func loadFromDefaults() -> SequenceFilter {
-        guard let data = UserPreferences.defaults.data(forKey: UserPreferences.Key.sequenceFilter),
-              let decoded = try? JSONDecoder().decode(SequenceFilter.self, from: data)
-        else { return SequenceFilter() }
-        return decoded
+    func matches(renders: [RenderJobState]) -> [RenderJobState] {
+        let n = needle
+        return renders.filter { r in
+            if !n.isEmpty,
+               !r.outputFilename.lowercased().contains(n),
+               !r.sequenceName.lowercased().contains(n) {
+                return false
+            }
+            if let exportPath, r.exportPath != exportPath { return false }
+            return true
+        }
     }
 
-    /// Persist the current filter to UserDefaults.
-    func saveToDefaults() {
-        guard let data = try? JSONEncoder().encode(self) else { return }
-        UserPreferences.defaults.set(data, forKey: UserPreferences.Key.sequenceFilter)
-    }
-
-    private func sort(_ sequences: [SequenceState]) -> [SequenceState] {
-        // Use dirname as a stable tie-breaker so equal-progress sequences
-        // (e.g. all complete at 1.0) don't reshuffle on every snapshot.
-        switch sortBy {
-        case .progressDesc:
-            return sequences.sorted {
-                $0.progress == $1.progress
-                  ? $0.dirname < $1.dirname
-                  : $0.progress > $1.progress
+    func matches(results: [CompletedRenderResult]) -> [CompletedRenderResult] {
+        let n = needle
+        return results.filter { r in
+            if !n.isEmpty,
+               !r.outputFilename.lowercased().contains(n),
+               !r.sequenceName.lowercased().contains(n) {
+                return false
             }
-        case .progressAsc:
-            return sequences.sorted {
-                $0.progress == $1.progress
-                  ? $0.dirname < $1.dirname
-                  : $0.progress < $1.progress
-            }
-        case .nameAsc:
-            return sequences.sorted { $0.dirname < $1.dirname }
-        case .nameDesc:
-            return sequences.sorted { $0.dirname > $1.dirname }
-        case .imageCountDesc:
-            return sequences.sorted {
-                $0.rawSequenceLength == $1.rawSequenceLength
-                  ? $0.dirname < $1.dirname
-                  : $0.rawSequenceLength > $1.rawSequenceLength
-            }
-        case .imageCountAsc:
-            return sequences.sorted {
-                $0.rawSequenceLength == $1.rawSequenceLength
-                  ? $0.dirname < $1.dirname
-                  : $0.rawSequenceLength < $1.rawSequenceLength
-            }
+            if let exportPath, r.exportPath != exportPath { return false }
+            return true
         }
     }
 }
 
+// MARK: - Filter bar
+
 struct SequenceFilterBar: View {
     @Binding var filter: SequenceFilter
     let exportPaths: [String]
+    @Binding var showCompletedSequences: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("Filter by name", text: $filter.search)
                     .textFieldStyle(.roundedBorder)
                 if !filter.search.isEmpty {
-                    Button {
-                        filter.search = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
+                    Button { filter.search = "" } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                     }
                     .buttonStyle(.borderless)
                 }
@@ -225,16 +268,12 @@ struct SequenceFilterBar: View {
                 Picker("Status", selection: $filter.status) {
                     ForEach(SequenceFilter.Status.allCases) { Text($0.rawValue).tag($0) }
                 }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .frame(maxWidth: 130)
+                .labelsHidden().pickerStyle(.menu).frame(maxWidth: 130)
 
                 Picker("Pause", selection: $filter.pauseFilter) {
                     ForEach(SequenceFilter.PauseFilter.allCases) { Text($0.rawValue).tag($0) }
                 }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .frame(maxWidth: 100)
+                .labelsHidden().pickerStyle(.menu).frame(maxWidth: 100)
 
                 Picker("Export path", selection: $filter.exportPath) {
                     Text("Any path").tag(String?.none)
@@ -242,8 +281,13 @@ struct SequenceFilterBar: View {
                         Text(p).tag(String?.some(p))
                     }
                 }
-                .labelsHidden()
-                .pickerStyle(.menu)
+                .labelsHidden().pickerStyle(.menu)
+
+                Spacer()
+
+                Toggle("Show completed sequences", isOn: $showCompletedSequences)
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
 
                 if filter.isActive {
                     Button("Reset") { filter = SequenceFilter() }
@@ -251,113 +295,156 @@ struct SequenceFilterBar: View {
                         .font(.caption)
                 }
             }
-            HStack(spacing: 6) {
-                Image(systemName: "arrow.up.arrow.down")
-                    .foregroundStyle(.secondary)
-                Text("Sort by")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Picker("Sort by", selection: $filter.sortBy) {
-                    ForEach(SequenceFilter.SortBy.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-            }
         }
     }
 }
 
-struct SequenceRow: View {
+// MARK: - One row, dispatches per item type
+
+struct UnifiedItemRow: View {
+    let item: UnifiedItem
+    let isHighlighted: Bool
+    let onJumpToSequence: (_ sequenceName: String, _ exportPath: String) -> Void
+
+    var body: some View {
+        Group {
+            switch item {
+            case .activeRender(let r):       RenderRow(render: r)
+            case .inProgressSequence(let s): SequenceProgressRow(sequence: s)
+            case .completedResult(let r):    CompletedResultRow(result: r, onJumpToSequence: onJumpToSequence)
+            case .completedSequence(let s):  CompletedSequenceRow(sequence: s)
+            }
+        }
+        .listRowBackground(
+            isHighlighted ? Color.yellow.opacity(0.25) : Color.clear
+        )
+    }
+}
+
+// MARK: - In-progress sequence row (was SequenceRow)
+
+struct SequenceProgressRow: View {
     @Environment(AppViewModel.self) var viewModel
     let sequence: SequenceState
 
-    var isPaused: Bool { viewModel.snapshot.pausedSequenceNames.contains(sequence.dirname) }
+    var isPaused: Bool {
+        viewModel.snapshot.pausedSequenceNames.contains(sequence.dirname)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Image(systemName: sequence.isComplete ? "checkmark.circle.fill" : "hourglass")
-                    .foregroundStyle(sequence.isComplete ? .green : .orange)
+                Image(systemName: "hourglass").foregroundStyle(.orange)
                 Text(sequence.dirname).font(.system(.body, design: .monospaced))
                 Spacer()
                 if isPaused {
                     Text("paused").font(.caption).foregroundStyle(.orange)
                 }
-                Menu {
-                    if isPaused {
-                        Button("Resume") { viewModel.resumeSequence(sequence.dirname) }
-                    } else {
-                        Button("Pause") { viewModel.pauseSequence(sequence.dirname) }
-                    }
-                    if let config = viewModel.config {
-                        ForEach(config.rendering, id: \.variantKey) { rt in
-                            Menu(rt.variantKey) {
-                                let pv = PausedVariant(sequenceName: sequence.dirname, variantKey: rt.variantKey)
-                                if viewModel.snapshot.pausedVariants.contains(pv) {
-                                    Button("Resume variant") {
-                                        viewModel.resumeVariant(sequenceName: sequence.dirname, variantKey: rt.variantKey)
-                                    }
-                                } else {
-                                    Button("Pause variant") {
-                                        viewModel.pauseVariant(sequenceName: sequence.dirname, variantKey: rt.variantKey)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                .menuStyle(.borderlessButton)
-                .frame(width: 26)
+                sequenceMenu
             }
             HStack(spacing: 8) {
-                ProgressView(value: sequence.progress)
-                    .progressViewStyle(.linear)
+                ProgressView(value: sequence.progress).progressViewStyle(.linear)
                 Text("\(sequence.generatedImageCount)/\(sequence.rawSequenceLength)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            Text(sequence.exportPath)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            Text(sequence.exportPath).font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var sequenceMenu: some View {
+        Menu {
+            if isPaused {
+                Button("Resume") { viewModel.resumeSequence(sequence.dirname) }
+            } else {
+                Button("Pause") { viewModel.pauseSequence(sequence.dirname) }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .menuStyle(.borderlessButton)
+        .frame(width: 26)
+    }
+}
+
+// MARK: - Completed sequence row (when toggle is on)
+
+struct CompletedSequenceRow: View {
+    let sequence: SequenceState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                Text(sequence.dirname).font(.system(.body, design: .monospaced))
+                Spacer()
+                Text("done").font(.caption).foregroundStyle(.secondary)
+            }
+            Text(sequence.exportPath).font(.caption2).foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
     }
 }
 
-struct RenderListView: View {
-    @Environment(AppViewModel.self) var viewModel
+// MARK: - Completed individual render row
+
+struct CompletedResultRow: View {
+    let result: CompletedRenderResult
+    let onJumpToSequence: (_ sequenceName: String, _ exportPath: String) -> Void
+
+    static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "h:mm:ss a"
+        return f
+    }()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 2) {
             HStack {
-                Text("Active Renders")
-                    .font(.title3.bold())
-                Spacer()
-                Text("\(viewModel.snapshot.renders.count)")
+                Image(systemName: "film").foregroundStyle(.blue)
+                Text(Self.timeFormatter.string(from: result.timestamp))
+                    .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-            Divider()
-
-            if viewModel.snapshot.renders.isEmpty {
+                Text("rendered")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+                Text(result.outputFilename)
+                    .font(.system(.body, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 Spacer()
-                Text("No active renders")
-                    .foregroundStyle(.secondary)
-                Spacer()
-            } else {
-                List {
-                    ForEach(viewModel.snapshot.renders) { r in
-                        RenderRow(render: r)
-                    }
+                if result.fileSize > 0 {
+                    Text(humanSize(result.fileSize))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
-                .listStyle(.inset)
+                Button {
+                    onJumpToSequence(result.sequenceName, result.exportPath)
+                } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right.magnifyingglass")
+                }
+                .buttonStyle(.borderless)
+                .help("Show parent sequence (turns on 'Show completed sequences' if needed)")
             }
+            Text("\(result.frameCount) frames · \(result.exportPath)/\(result.sequenceName)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
+        .padding(.vertical, 4)
+    }
+
+    private func humanSize(_ bytes: Int64) -> String {
+        let units = ["B", "K", "M", "G", "T"]
+        var d = Double(bytes)
+        var i = 0
+        while d >= 1024 && i < units.count - 1 { d /= 1024; i += 1 }
+        if d >= 100 { return "\(Int(d))\(units[i])" }
+        return String(format: "%.1f%@", d, units[i])
     }
 }
+
+// MARK: - Active render row (mostly the same as before)
 
 struct RenderRow: View {
     @Environment(AppViewModel.self) var viewModel
@@ -366,55 +453,40 @@ struct RenderRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 8, height: 8)
-                Text(render.outputFilename)
-                    .font(.system(.body, design: .monospaced))
+                Circle().fill(statusColor).frame(width: 8, height: 8)
+                Text(render.outputFilename).font(.system(.body, design: .monospaced))
                 Spacer()
                 if render.isAdopted {
                     Text("adopted")
                         .font(.caption.bold())
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(.purple.opacity(0.2))
                         .foregroundColor(.purple)
                         .clipShape(Capsule())
                 }
-                Text(render.status.rawValue)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(render.status.rawValue).font(.caption).foregroundStyle(.secondary)
                 pauseResumeButton
                 stopButton
             }
             HStack(spacing: 8) {
                 if render.isAdopted && render.status != .paused {
-                    // We have no pipe to the orphan, so progress is unknown.
-                    // Use SwiftUI's indeterminate "barber pole" style.
-                    ProgressView()
-                        .progressViewStyle(.linear)
+                    ProgressView().progressViewStyle(.linear)
                 } else {
-                    ProgressView(value: render.progress)
-                        .progressViewStyle(.linear)
+                    ProgressView(value: render.progress).progressViewStyle(.linear)
                 }
                 if render.isAdopted {
-                    Text("? frames")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    Text("? frames").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 } else {
                     Text("\(render.frame)/\(render.totalFrames)")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     if render.fps > 0 {
                         Text("\(render.fps, specifier: "%.1f") fps")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     }
                 }
             }
             Text("\(render.exportPath)  ·  \(render.variantKey)")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(.caption2).foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
     }
@@ -423,32 +495,20 @@ struct RenderRow: View {
     private var pauseResumeButton: some View {
         switch render.status {
         case .paused:
-            Button {
-                viewModel.resumeRender(outputPath: render.id)
-            } label: {
+            Button { viewModel.resumeRender(outputPath: render.id) } label: {
                 Image(systemName: "play.circle")
             }
-            .buttonStyle(.borderless)
-            .help("Resume (SIGCONT)")
+            .buttonStyle(.borderless).help("Resume (SIGCONT)")
         case .running:
-            Button {
-                viewModel.pauseRender(outputPath: render.id)
-            } label: {
+            Button { viewModel.pauseRender(outputPath: render.id) } label: {
                 Image(systemName: "pause.circle")
             }
-            .buttonStyle(.borderless)
-            .help("Pause (SIGSTOP)")
+            .buttonStyle(.borderless).help("Pause (SIGSTOP)")
         case .queued:
-            // Queued renders haven't started yet — show the play icon as a
-            // "ready to play" cue.  Clicking it marks the render paused so
-            // it isn't auto-promoted on the next slot.
-            Button {
-                viewModel.pauseRender(outputPath: render.id)
-            } label: {
+            Button { viewModel.pauseRender(outputPath: render.id) } label: {
                 Image(systemName: "play.circle")
             }
-            .buttonStyle(.borderless)
-            .help("Pause (don't promote)")
+            .buttonStyle(.borderless).help("Pause (don't promote)")
         default:
             EmptyView()
         }
@@ -469,8 +529,7 @@ struct RenderRow: View {
             } label: {
                 Image(systemName: "xmark.circle")
             }
-            .buttonStyle(.borderless)
-            .help("Stop and cancel render")
+            .buttonStyle(.borderless).help("Stop and cancel render")
         }
     }
 

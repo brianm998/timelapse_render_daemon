@@ -17,6 +17,9 @@ public struct DaemonStateSnapshot: Sendable, Equatable {
     public var rawSequenceCount: Int
     public var sequences: [SequenceState]
     public var renders: [RenderJobState]
+    /// Recently rendered videos, newest first.  Bounded length; the daemon
+    /// trims old entries to avoid unbounded growth.
+    public var completedRenders: [CompletedRenderResult]
     public var pausedSequenceNames: Set<String>
     public var pausedVariants: Set<PausedVariant>
     public var lastError: String?
@@ -27,6 +30,7 @@ public struct DaemonStateSnapshot: Sendable, Equatable {
         rawSequenceCount: Int = 0,
         sequences: [SequenceState] = [],
         renders: [RenderJobState] = [],
+        completedRenders: [CompletedRenderResult] = [],
         pausedSequenceNames: Set<String> = [],
         pausedVariants: Set<PausedVariant> = [],
         lastError: String? = nil
@@ -36,18 +40,23 @@ public struct DaemonStateSnapshot: Sendable, Equatable {
         self.rawSequenceCount = rawSequenceCount
         self.sequences = sequences
         self.renders = renders
+        self.completedRenders = completedRenders
         self.pausedSequenceNames = pausedSequenceNames
         self.pausedVariants = pausedVariants
         self.lastError = lastError
     }
 }
 
-public struct SequenceState: Sendable, Equatable, Identifiable {
+public struct SequenceState: Sendable, Equatable, Identifiable, Hashable {
     public let exportPath: String
     public let dirname: String
     public let rawSequenceLength: Int
     public let generatedImageCount: Int
     public let isComplete: Bool
+    /// True when all configured render variants have already produced output
+    /// files for this sequence (no work remaining).  Used by the GUI to
+    /// distinguish "fully done" from "in progress".
+    public var allVariantsRendered: Bool = false
     public var id: String { "\(exportPath)/\(dirname)" }
 
     public var progress: Double {
@@ -56,7 +65,38 @@ public struct SequenceState: Sendable, Equatable, Identifiable {
     }
 }
 
-public struct RenderJobState: Sendable, Equatable, Identifiable {
+/// A single video that finished rendering successfully — recorded for the
+/// "rendered" timeline in the GUI.
+public struct CompletedRenderResult: Sendable, Equatable, Identifiable, Hashable, Codable {
+    public let timestamp: Date
+    public let sequenceName: String
+    public let exportPath: String
+    public let outputFilename: String
+    public let outputPath: String
+    public let frameCount: Int
+    public let fileSize: Int64
+    public var id: String { outputPath }
+
+    public init(
+        timestamp: Date,
+        sequenceName: String,
+        exportPath: String,
+        outputFilename: String,
+        outputPath: String,
+        frameCount: Int,
+        fileSize: Int64
+    ) {
+        self.timestamp = timestamp
+        self.sequenceName = sequenceName
+        self.exportPath = exportPath
+        self.outputFilename = outputFilename
+        self.outputPath = outputPath
+        self.frameCount = frameCount
+        self.fileSize = fileSize
+    }
+}
+
+public struct RenderJobState: Sendable, Equatable, Identifiable, Hashable {
     public enum Status: String, Sendable, Equatable {
         case queued
         case running
