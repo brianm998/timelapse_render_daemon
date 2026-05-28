@@ -73,6 +73,13 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(r2.variantKey, "ProResUHQ_ori_30")
     }
 
+    func testWidthOnlyRenderType() {
+        let r = RenderType(resolution: [1080], codec: "ProResMQ", frameRate: 30)
+        XCTAssertEqual(r.width, 1080)
+        XCTAssertNil(r.height)
+        XCTAssertEqual(r.variantKey, "ProResMQ_1080w_30")
+    }
+
     func testYearExpansionPreservesNonPlaceholderPaths() {
         // Without $YEAR, paths are returned unchanged (no existence check).
         let input = ["/foo/bar", "/baz"]

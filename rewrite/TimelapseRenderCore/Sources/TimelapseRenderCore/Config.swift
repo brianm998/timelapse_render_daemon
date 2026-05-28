@@ -174,8 +174,14 @@ public struct RenderType: Codable, Sendable, Equatable, Identifiable {
     /// Stable string used to identify a variant of a render set.
     public var variantKey: String {
         let res: String
-        if let r = resolution, r.count == 2 {
-            res = "\(r[0])x\(r[1])"
+        if let r = resolution {
+            if r.count >= 2 {
+                res = "\(r[0])x\(r[1])"
+            } else if r.count == 1 {
+                res = "\(r[0])w"
+            } else {
+                res = "ori"
+            }
         } else {
             res = "ori"
         }
@@ -185,11 +191,11 @@ public struct RenderType: Codable, Sendable, Equatable, Identifiable {
     public var id: String { variantKey }
 
     public var width: Int? {
-        guard let r = resolution, r.count == 2 else { return nil }
+        guard let r = resolution, r.count >= 1 else { return nil }
         return r[0]
     }
     public var height: Int? {
-        guard let r = resolution, r.count == 2 else { return nil }
+        guard let r = resolution, r.count >= 2 else { return nil }
         return r[1]
     }
 }

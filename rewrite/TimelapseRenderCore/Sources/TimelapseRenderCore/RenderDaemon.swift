@@ -485,7 +485,7 @@ public actor RenderDaemon {
             // ffmpeg processes get started later by promoteQueuedRenders(),
             // subject to maxConcurrentRenders / maxProcesses.ffmpeg limits.
             for renderType in variantsToRender {
-                queueRender(for: renderType, sequence: seq, metadata: metadata!)
+                await queueRender(for: renderType, sequence: seq, metadata: metadata!)
             }
         }
 
@@ -520,7 +520,7 @@ public actor RenderDaemon {
         for renderType: RenderType,
         sequence: ExportSequence,
         metadata: [String: String]
-    ) {
+    ) async {
         let outputFilename = outputVideoFilename(for: renderType, sequenceName: sequence.dirname)
         let outputPath = "\(sequence.exportPath)/\(outputFilename)"
         if renders[outputPath] != nil { return }   // already queued or running
@@ -542,18 +542,23 @@ public actor RenderDaemon {
             fallbackExtension: ".tif"
         )
 
-        var width = renderType.width
-        var height = renderType.height
-        if width == nil || height == nil {
-            if let any = config.rendering.first(where: { $0.width != nil && $0.height != nil }) {
-                width = any.width
-                height = any.height
+        // Determine the scale dimensions for this render.
+        // Width-only renders probe the first source image so the height
+        // inherits the source's aspect ratio rather than assuming 16:9.
+        let finalWidth = renderType.width
+        var finalHeight = renderType.height
+
+        if let w = renderType.width, renderType.height == nil {
+            let imagePath = "\(sequence.fullPath)/\(firstImage)"
+            if let dims = await probeImageDimensions(at: imagePath) {
+                let h = Int((Double(w) * Double(dims.height) / Double(dims.width)).rounded())
+                finalHeight = h.isMultiple(of: 2) ? h : h + 1
             }
         }
 
-        let useResize = renderType.width != nil && renderType.height != nil
-        let aspectW = width ?? 16
-        let aspectH = height ?? 9
+        let useResize = finalWidth != nil && finalHeight != nil
+        let aspectW = finalWidth ?? 16
+        let aspectH = finalHeight ?? 9
         let aspect = AspectRatio.string(width: aspectW, height: aspectH)
 
         let plan = FFmpegRunner.Plan(
@@ -563,8 +568,8 @@ public actor RenderDaemon {
             outputPath: outputPath,
             frameRate: renderType.frameRate,
             aspect: aspect,
-            width: useResize ? width : nil,
-            height: useResize ? height : nil,
+            width: useResize ? finalWidth : nil,
+            height: useResize ? finalHeight : nil,
             codec: codec,
             metadata: metadata,
             totalFrames: sequence.rawSequenceLength
@@ -861,7 +866,13 @@ public actor RenderDaemon {
             return "\(name)_\(renderType.codec)_\(renderType.frameRate).mov"
         }
         let resStr: String
-        if let h = renderType.height { resStr = "\(h)p" } else { resStr = "OriRes" }
+        if let h = renderType.height {
+            resStr = "\(h)p"
+        } else if let w = renderType.width {
+            resStr = "\(w)w"
+        } else {
+            resStr = "OriRes"
+        }
         return "\(name)_\(codec.filename.codec)-\(codec.filename.pixelFormat)_Rec.709F_\(resStr)_\(renderType.frameRate)_\(codec.filename.quality).mov"
     }
 
@@ -877,6 +888,31 @@ public actor RenderDaemon {
         let target = "\(exportPath)/\(outputFilename)"
         if let existing = renders[target], existing.status == .running || existing.status == .queued { return false }
         return true
+    }
+
+    /// Runs ffprobe to get pixel dimensions of an image or video file.
+    /// Returns nil if the probe fails or the file has no video stream.
+    private func probeImageDimensions(at imagePath: String) async -> (width: Int, height: Int)? {
+        let runner = ProcessRunner(
+            executable: "ffprobe",
+            arguments: ["-v", "error", "-select_streams", "v:0",
+                        "-show_entries", "stream=width,height",
+                        "-of", "default=noprint_wrappers=1", imagePath]
+        )
+        let output = OutputLineBuffer(capacity: 10)
+        guard (try? await runner.run { output.append($0) }) != nil else { return nil }
+        var w: Int?
+        var h: Int?
+        for line in output.lines() {
+            let parts = line.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            let key = String(parts[0]).trimmingCharacters(in: .whitespaces)
+            let val = String(parts[1]).trimmingCharacters(in: .whitespaces)
+            if key == "width" { w = Int(val) }
+            else if key == "height" { h = Int(val) }
+        }
+        guard let w, let h, w > 0, h > 0 else { return nil }
+        return (width: w, height: h)
     }
 
     private func firstImageInSequence(at dir: String) -> String? {
