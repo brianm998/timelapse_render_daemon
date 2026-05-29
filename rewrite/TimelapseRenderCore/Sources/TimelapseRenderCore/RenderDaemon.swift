@@ -57,6 +57,10 @@ public actor RenderDaemon {
         /// Build plan for ffmpeg.  `nil` for adopted renders since we can't
         /// reconstruct the original plan from a running process.
         let plan: FFmpegRunner.Plan?
+        /// Path to the EXIF histogram sidecar JSON, used after the render
+        /// completes to embed a canonical XMP-EXIF packet into the video.
+        /// `nil` for adopted renders.
+        let sidecarJSONPath: String?
         var frame: Int
         var fps: Double
         var status: RenderJobState.Status
@@ -286,6 +290,7 @@ public actor RenderDaemon {
                 task: nil,
                 pid: orphan.pid,
                 plan: nil,
+                sidecarJSONPath: nil,
                 frame: 0,
                 fps: 0,
                 status: .running,
@@ -585,6 +590,7 @@ public actor RenderDaemon {
             task: nil,
             pid: nil,
             plan: plan,
+            sidecarJSONPath: "\(sequence.rawSequenceParent)/\(sequence.rawSequenceName).json",
             frame: 0,
             fps: 0,
             status: .queued,
@@ -624,6 +630,7 @@ public actor RenderDaemon {
         let runner = FFmpegRunner(plan: plan)
         let outputPath = render.outputPath
         let outputFilename = render.outputFilename
+        let sidecarPath = render.sidecarJSONPath
         let argv = plan.arguments
         let daemonRef = self
         let outputBuffer = OutputLineBuffer(capacity: 200)
@@ -645,6 +652,21 @@ public actor RenderDaemon {
                         outputBuffer.append(line)
                     }
                 )
+                if result.success, let sidecarPath {
+                    do {
+                        try await XMPEmbedder(
+                            videoPath: outputPath,
+                            sidecarPath: sidecarPath
+                        ).embed()
+                        logger.timeLog(
+                            name: outputFilename,
+                            message: "embedded XMP metadata in \(outputPath)",
+                            value: -1
+                        )
+                    } catch {
+                        logger.warn("XMP embed failed for \(outputFilename): \(error)")
+                    }
+                }
                 await daemonRef.markRenderFinished(outputPath: outputPath, success: result.success)
                 if result.success {
                     logger.timeLog(name: outputFilename, message: "rendered \(outputPath)", value: -1)
