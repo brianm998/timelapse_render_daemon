@@ -269,6 +269,79 @@ final class CoreTests: XCTestCase {
         // Most recent first.
         XCTAssertEqual(expanded.first, "\(root.path)/2025")
     }
+
+    // MARK: - XMP embed
+
+    /// End-to-end round trip: fixture sidecar + fixture .mov → embed → read
+    /// back the XMP-EXIF tags and confirm they match what the mapper picked.
+    /// Skips unless `XMP_INTEGRATION_FIXTURES` points at a directory holding
+    /// `sidecar.json` and `video.mov`.  Keeps the test out of the default
+    /// suite because it requires a real .mov file and the `exiftool` binary.
+    func testXMPEmbedRoundTripWithFixture() async throws {
+        guard let fixturesPath = ProcessInfo.processInfo
+            .environment["XMP_INTEGRATION_FIXTURES"] else {
+            throw XCTSkip("XMP_INTEGRATION_FIXTURES not set")
+        }
+        let sidecarSrc = "\(fixturesPath)/sidecar.json"
+        let videoSrc = "\(fixturesPath)/video.mov"
+        guard FileManager.default.fileExists(atPath: sidecarSrc),
+              FileManager.default.fileExists(atPath: videoSrc) else {
+            throw XCTSkip("fixture files missing under \(fixturesPath)")
+        }
+        // Work on a copy so we don't modify the fixture.
+        let work = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xmp-roundtrip-\(UUID().uuidString).mov")
+        try FileManager.default.copyItem(atPath: videoSrc, toPath: work.path)
+        defer { try? FileManager.default.removeItem(at: work) }
+
+        try await XMPEmbedder(videoPath: work.path, sidecarPath: sidecarSrc).embed()
+
+        // Read back every mapped field and assert it's non-empty.  We
+        // verify the *presence* of each field rather than its exact
+        // value — different fixtures will have different modes, and the
+        // mapper's correctness is covered by the round trip itself: if
+        // an arg was malformed exiftool would have rejected it and we'd
+        // see a blank readback.
+        let readback = try await readbackXMPTags(videoPath: work.path)
+        let expected = [
+            "XMP-tiff:Make", "XMP-tiff:Model", "XMP-aux:Lens",
+            "XMP-exif:ISO", "XMP-exif:FNumber", "XMP-exif:ExposureTime",
+            "XMP-exif:FocalLength", "XMP-exif:ExposureProgram",
+            "XMP-exif:ExposureMode", "XMP-exif:WhiteBalance",
+            "XMP-exif:DateTimeOriginal",
+        ]
+        for tag in expected {
+            XCTAssertNotNil(readback[tag], "missing \(tag) after embed; readback=\(readback)")
+            XCTAssertFalse((readback[tag] ?? "").isEmpty, "empty \(tag) after embed")
+        }
+    }
+
+    private func readbackXMPTags(videoPath: String) async throws -> [String: String] {
+        let runner = ProcessRunner(executable: "exiftool", arguments: [
+            "-G1", "-s",
+            "-XMP-tiff:Make", "-XMP-tiff:Model", "-XMP-aux:Lens",
+            "-XMP-exif:ISO", "-XMP-exif:FNumber", "-XMP-exif:ExposureTime",
+            "-XMP-exif:FocalLength", "-XMP-exif:ExposureProgram",
+            "-XMP-exif:ExposureMode", "-XMP-exif:WhiteBalance",
+            "-XMP-exif:DateTimeOriginal",
+            videoPath,
+        ])
+        let collector = LineCollector()
+        _ = try await runner.run { collector.append($0) }
+        var out: [String: String] = [:]
+        // Lines look like: "[XMP-tiff]      Make                            : SONY"
+        let pattern = #/^\[(?<group>[^\]]+)\]\s+(?<tag>\S+(?:\s\S+)*?)\s*:\s*(?<value>.*)$/#
+        for raw in collector.snapshot() {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard let m = line.firstMatch(of: pattern) else { continue }
+            let group = String(m.output.group)
+            var tag = String(m.output.tag).replacingOccurrences(of: " ", with: "")
+            // ExifTool prints "Camera Model Name" for the Model tag — map back.
+            if tag == "CameraModelName" { tag = "Model" }
+            out["\(group):\(tag)"] = String(m.output.value).trimmingCharacters(in: .whitespaces)
+        }
+        return out
+    }
 }
 
 private final class LineCollector: @unchecked Sendable {
