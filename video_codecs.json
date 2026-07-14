@@ -3,7 +3,8 @@
 	"ffmpeg" : {
 	    "codec": "prores_ks",
 	    "pixel_format" : "yuv422p10le",
-	    "color_range": "pc"
+	    "color_range": "pc",
+	    "profile": "1"
 	},
 	"filename": {
 	    "pixel_format": "444",
@@ -15,12 +16,27 @@
 	"ffmpeg" : {
 	    "codec": "prores_ks",
 	    "pixel_format" : "yuv444p10le",
-	    "color_range": "pc"
+	    "color_range": "pc",
+	    "profile": "1"
 	},
 	"filename": {
 	    "pixel_format": "422",
 	    "codec": "ProRes",
 	    "quality": "MQ"
+	}
+    },
+    "h264" : {
+	"ffmpeg" : {
+	    "codec": "libx264",
+	    "pixel_format" : "yuv420p",
+	    "color_range": "pc",
+	    "profile": "high",
+	    "extra_args": ["-crf", "18"]
+	},
+	"filename": {
+	    "pixel_format": "420",
+	    "codec": "H264",
+	    "quality": "HQ"
 	}
     }
 }

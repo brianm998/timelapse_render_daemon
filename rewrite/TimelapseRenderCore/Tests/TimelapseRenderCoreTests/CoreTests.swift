@@ -80,6 +80,107 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(r.variantKey, "ProResMQ_1080w_30")
     }
 
+    func testDefaultCodecTableIncludesH264() {
+        let codecs = ConfigLoader.defaultCodecs
+        let h264 = codecs["h264"]
+        XCTAssertNotNil(h264)
+        XCTAssertEqual(h264?.ffmpeg.codec, "libx264")
+        XCTAssertEqual(h264?.ffmpeg.profile, "high")
+        XCTAssertEqual(h264?.ffmpeg.extraArgs, ["-crf", "18"])
+        // ProRes keeps the -profile:v 1 the Perl daemon hardcoded.
+        XCTAssertEqual(codecs["ProResUHQ"]?.ffmpeg.profile, "1")
+        XCTAssertEqual(codecs["ProResMQ"]?.ffmpeg.profile, "1")
+    }
+
+    func testCodecTableDecodesProfileAndExtraArgs() throws {
+        let json = """
+        {
+          "h264": {
+            "ffmpeg": { "codec": "libx264", "pixel_format": "yuv420p",
+                        "color_range": "pc", "profile": "high",
+                        "extra_args": ["-crf", "18"] },
+            "filename": { "pixel_format": "420", "codec": "H264", "quality": "HQ" }
+          },
+          "legacy": {
+            "ffmpeg": { "codec": "prores_ks", "pixel_format": "yuv422p10le",
+                        "color_range": "pc" },
+            "filename": { "pixel_format": "444", "codec": "ProRes", "quality": "UHQ" }
+          }
+        }
+        """
+        let codecs = try JSONDecoder().decode(VideoCodecs.self, from: Data(json.utf8))
+        XCTAssertEqual(codecs["h264"]?.ffmpeg.profile, "high")
+        XCTAssertEqual(codecs["h264"]?.ffmpeg.extraArgs, ["-crf", "18"])
+        // Entries without the new keys still decode (older video_codecs.json).
+        XCTAssertNil(codecs["legacy"]?.ffmpeg.profile)
+        XCTAssertNil(codecs["legacy"]?.ffmpeg.extraArgs)
+    }
+
+    private func makePlan(codec: VideoCodec) -> FFmpegRunner.Plan {
+        FFmpegRunner.Plan(
+            inputDir: "/seq",
+            imageNamePrefix: "LRT_",
+            imageExtension: ".tif",
+            outputPath: "/out/video.mov",
+            frameRate: 30,
+            aspect: "16/9",
+            width: 1280,
+            height: 720,
+            codec: codec,
+            metadata: [:],
+            totalFrames: 100
+        )
+    }
+
+    func testFFmpegArgsUseCodecProfileAndExtraArgs() throws {
+        let h264 = try XCTUnwrap(ConfigLoader.defaultCodecs["h264"])
+        let args = makePlan(codec: h264).arguments
+        let profileIdx = try XCTUnwrap(args.firstIndex(of: "-profile:v"))
+        XCTAssertEqual(args[profileIdx + 1], "high")
+        let crfIdx = try XCTUnwrap(args.firstIndex(of: "-crf"))
+        XCTAssertEqual(args[crfIdx + 1], "18")
+        XCTAssertEqual(args[try XCTUnwrap(args.firstIndex(of: "-c:v")) + 1], "libx264")
+    }
+
+    func testFFmpegArgsProResUnchanged() throws {
+        let prores = try XCTUnwrap(ConfigLoader.defaultCodecs["ProResUHQ"])
+        let args = makePlan(codec: prores).arguments
+        let profileIdx = try XCTUnwrap(args.firstIndex(of: "-profile:v"))
+        XCTAssertEqual(args[profileIdx + 1], "1")
+        XCTAssertFalse(args.contains("-crf"))
+    }
+
+    func testFFmpegArgsOmitProfileWhenNil() {
+        var codec = ConfigLoader.defaultCodecs["ProResUHQ"]!
+        codec.ffmpeg.profile = nil
+        let args = makePlan(codec: codec).arguments
+        XCTAssertFalse(args.contains("-profile:v"))
+    }
+
+    func testDetectStructuralCorruptionMatchesExifToolError() {
+        // Real exiftool output observed against the corrupt
+        // 01_18_2026-a7riii-1-aurora-topaz-star-v-0_10_6_*_UHQ.mov.
+        let real = "Error: Truncated mdat atom - /path/to/file.mov"
+        XCTAssertEqual(XMPEmbedder.detectStructuralCorruption(in: real), "Truncated mdat atom")
+    }
+
+    func testDetectStructuralCorruptionIgnoresUnrelatedFailures() {
+        // "Error writing output file" surfaces from disk-full / permission /
+        // leftover-tmp issues — NOT a structural problem with the video.
+        let stale = "Error: Temporary file already exists: /path/foo.mov_exiftool_tmp"
+        XCTAssertNil(XMPEmbedder.detectStructuralCorruption(in: stale))
+        let perms = "Error: Error writing output file - /path/foo.mov"
+        XCTAssertNil(XMPEmbedder.detectStructuralCorruption(in: perms))
+        let missing = "Error: File not found - /path/sidecar.json"
+        XCTAssertNil(XMPEmbedder.detectStructuralCorruption(in: missing))
+    }
+
+    func testDetectStructuralCorruptionMatchesOtherAtomErrors() {
+        XCTAssertNotNil(XMPEmbedder.detectStructuralCorruption(in: "Error: Bad atom size in moov"))
+        XCTAssertNotNil(XMPEmbedder.detectStructuralCorruption(in: "Error: Could not parse moov atom"))
+        XCTAssertNotNil(XMPEmbedder.detectStructuralCorruption(in: "Error: Invalid mdat header"))
+    }
+
     func testYearExpansionPreservesNonPlaceholderPaths() {
         // Without $YEAR, paths are returned unchanged (no existence check).
         let input = ["/foo/bar", "/baz"]

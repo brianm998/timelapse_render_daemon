@@ -62,7 +62,12 @@ public struct FFmpegRunner: Sendable {
                 "-c:v", codec.ffmpeg.codec,
                 "-pix_fmt", codec.ffmpeg.pixelFormat,
                 "-threads", "0",
-                "-profile:v", "1",
+            ]
+            if let profile = codec.ffmpeg.profile {
+                args += ["-profile:v", profile]
+            }
+            args += codec.ffmpeg.extraArgs ?? []
+            args += [
                 "-movflags", "+write_colr",
                 "-an",
                 "-color_range", codec.ffmpeg.colorRange,

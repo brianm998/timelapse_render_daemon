@@ -884,9 +884,6 @@ public actor RenderDaemon {
         if !nameOnlyPrefix.isEmpty {
             while name.contains(nameOnlyPrefix) { name = name.replacingOccurrences(of: nameOnlyPrefix, with: "") }
         }
-        guard let codec = codecs[renderType.codec] else {
-            return "\(name)_\(renderType.codec)_\(renderType.frameRate).mov"
-        }
         let resStr: String
         if let h = renderType.height {
             resStr = "\(h)p"
@@ -894,6 +891,9 @@ public actor RenderDaemon {
             resStr = "\(w)w"
         } else {
             resStr = "OriRes"
+        }
+        guard let codec = codecs[renderType.codec] else {
+            return "\(name)_\(renderType.codec)_\(resStr)_\(renderType.frameRate).mov"
         }
         return "\(name)_\(codec.filename.codec)-\(codec.filename.pixelFormat)_Rec.709F_\(resStr)_\(renderType.frameRate)_\(codec.filename.quality).mov"
     }

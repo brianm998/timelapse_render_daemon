@@ -223,11 +223,20 @@ public struct VideoCodec: Codable, Sendable, Equatable {
         public var codec: String
         public var pixelFormat: String
         public var colorRange: String
+        /// Value for `-profile:v`.  Profile names are encoder-specific
+        /// (prores_ks wants "0"..."5", libx264 wants "baseline"/"main"/
+        /// "high"), so the table owns it.  nil omits the flag entirely.
+        public var profile: String? = nil
+        /// Extra encoder-specific argv appended after the profile,
+        /// e.g. ["-crf", "18"] for libx264.
+        public var extraArgs: [String]? = nil
 
         enum CodingKeys: String, CodingKey {
             case codec
             case pixelFormat = "pixel_format"
             case colorRange = "color_range"
+            case profile
+            case extraArgs = "extra_args"
         }
     }
     public struct Filename: Codable, Sendable, Equatable {
@@ -272,12 +281,21 @@ public enum ConfigLoader {
     public static var defaultCodecs: VideoCodecs {
         [
             "ProResUHQ": VideoCodec(
-                ffmpeg: .init(codec: "prores_ks", pixelFormat: "yuv422p10le", colorRange: "pc"),
+                ffmpeg: .init(codec: "prores_ks", pixelFormat: "yuv422p10le", colorRange: "pc",
+                              profile: "1"),
                 filename: .init(pixelFormat: "444", codec: "ProRes", quality: "UHQ")
             ),
             "ProResMQ": VideoCodec(
-                ffmpeg: .init(codec: "prores_ks", pixelFormat: "yuv444p10le", colorRange: "pc"),
+                ffmpeg: .init(codec: "prores_ks", pixelFormat: "yuv444p10le", colorRange: "pc",
+                              profile: "1"),
                 filename: .init(pixelFormat: "422", codec: "ProRes", quality: "MQ")
+            ),
+            // Full-range h264 to match the rest of the (Rec.709F) pipeline.
+            // crf 18 ~ visually lossless for delivery renders.
+            "h264": VideoCodec(
+                ffmpeg: .init(codec: "libx264", pixelFormat: "yuv420p", colorRange: "pc",
+                              profile: "high", extraArgs: ["-crf", "18"]),
+                filename: .init(pixelFormat: "420", codec: "H264", quality: "HQ")
             ),
         ]
     }
