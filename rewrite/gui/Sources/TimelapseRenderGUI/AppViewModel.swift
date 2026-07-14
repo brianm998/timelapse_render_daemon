@@ -13,6 +13,17 @@ final class AppViewModel {
     var isRunning: Bool = false
     var lastError: String?
 
+    /// Codec table used to validate render variants and populate the codec
+    /// picker in the config editor.  Loaded from a `video_codecs.json` next
+    /// to the config file when present, otherwise the compiled-in defaults —
+    /// the same resolution the daemon uses, so GUI and daemon agree.
+    var videoCodecs: VideoCodecs = ConfigLoader.defaultCodecs
+    /// Path of the user-editable video_codecs.json next to the config file,
+    /// if one exists.  Passed to the daemon on start.
+    private(set) var codecsPath: String?
+
+    var codecNames: [String] { videoCodecs.keys.sorted() }
+
     private var daemon: RenderDaemon?
     private var runTask: Task<Void, Never>?
     private var observerTask: Task<Void, Never>?
@@ -103,11 +114,24 @@ final class AppViewModel {
             let cfg = try ConfigLoader.load(at: path)
             self.configPath = path
             self.config = cfg
+            loadCodecs(alongsideConfig: path)
             // Remember this path so a future restart can re-open it without
             // a CLI flag or Open dialog.
             UserPreferences.defaults.set(path, forKey: UserPreferences.Key.lastConfigPath)
         } catch {
             self.lastError = "could not load \(path): \(error)"
+        }
+    }
+
+    private func loadCodecs(alongsideConfig path: String) {
+        self.codecsPath = ConfigLoader.codecsPath(alongsideConfig: path)
+        self.videoCodecs = ConfigLoader.defaultCodecs
+        if let codecsPath {
+            do {
+                self.videoCodecs = try ConfigLoader.loadCodecs(at: codecsPath)
+            } catch {
+                self.lastError = "could not load \(codecsPath): \(error) — using built-in codec table"
+            }
         }
     }
 
@@ -145,6 +169,7 @@ final class AppViewModel {
             }
             let daemon = try RenderDaemon(
                 configPath: configPath,
+                codecsPath: codecsPath,
                 historyURL: RenderDaemon.defaultHistoryURL(),
                 logger: logger
             )

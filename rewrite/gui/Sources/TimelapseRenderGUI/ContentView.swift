@@ -27,6 +27,8 @@ struct ContentView: View {
 
             Divider()
 
+            WarningBanner()
+
             switch selectedTab {
             case .status:
                 StatusView()
@@ -71,6 +73,36 @@ struct HeaderBar: View {
                 .disabled(viewModel.configPath == nil)
             }
         }
+    }
+}
+
+/// Surfaces problems that previously went only to the log file: the daemon
+/// dropping render variants whose codec isn't in the codec table, and the
+/// view-model's lastError (config load/save failures etc.).
+struct WarningBanner: View {
+    @Environment(AppViewModel.self) var viewModel
+
+    var body: some View {
+        let unknown = viewModel.isRunning ? viewModel.snapshot.unknownCodecs : []
+        if !unknown.isEmpty {
+            banner(
+                "Unknown codec\(unknown.count == 1 ? "" : "s") \(unknown.joined(separator: ", ")) in rendering config — those variants are being skipped. Fix them in the Config tab.",
+                color: .orange
+            )
+        }
+        if let error = viewModel.lastError {
+            banner(error, color: .red)
+        }
+    }
+
+    private func banner(_ text: String, color: Color) -> some View {
+        Label(text, systemImage: "exclamationmark.triangle.fill")
+            .font(.caption)
+            .foregroundStyle(color)
+            .padding(.horizontal)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(color.opacity(0.1))
     }
 }
 

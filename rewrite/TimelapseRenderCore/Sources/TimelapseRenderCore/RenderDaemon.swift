@@ -88,8 +88,13 @@ public actor RenderDaemon {
            let mod = attrs[.modificationDate] as? Date {
             self.configMTime = mod.timeIntervalSince1970
         }
-        if let codecsPath, let codecs = try? ConfigLoader.loadCodecs(at: codecsPath) {
-            self.codecs = codecs
+        if let codecsPath {
+            do {
+                self.codecs = try ConfigLoader.loadCodecs(at: codecsPath)
+            } catch {
+                self.codecs = ConfigLoader.defaultCodecs
+                logger.warn("could not load codecs from \(codecsPath): \(error); using built-in codec table")
+            }
         } else {
             self.codecs = ConfigLoader.defaultCodecs
         }
@@ -129,8 +134,27 @@ public actor RenderDaemon {
             configPath: configPath,
             completedRenders: self.completedRenderResults,
             pausedSequenceNames: self.pausedSequenceNames,
-            pausedVariants: self.pausedVariants
+            pausedVariants: self.pausedVariants,
+            unknownCodecs: Self.unknownCodecNames(in: self.config, codecs: self.codecs)
         )
+    }
+
+    /// Codec names referenced by the config's rendering variants that have no
+    /// entry in the codec table.  `queueRender` skips these variants, so they
+    /// are surfaced in every snapshot and logged when the config (re)loads.
+    private static func unknownCodecNames(in config: DaemonConfig, codecs: VideoCodecs) -> [String] {
+        Set(config.rendering.map(\.codec).filter { codecs[$0] == nil }).sorted()
+    }
+
+    private func unknownCodecNames() -> [String] {
+        Self.unknownCodecNames(in: config, codecs: codecs)
+    }
+
+    private func warnIfUnknownCodecs() {
+        let unknown = unknownCodecNames()
+        if !unknown.isEmpty {
+            logger.warn("render config references unknown codec(s) \(unknown.joined(separator: ", ")); those variants will not render")
+        }
     }
 
     /// Default history-file location: `~/Library/Application Support/TimelapseRenderDaemon/render_history.json`
@@ -166,6 +190,7 @@ public actor RenderDaemon {
         }
         self.pausedSequenceNames = Set(newConfig.pausedSequenceNames)
         self.pausedVariants = Set(newConfig.pausedVariants)
+        warnIfUnknownCodecs()
         publishSnapshot()
     }
 
@@ -355,6 +380,7 @@ public actor RenderDaemon {
         if !ToolValidator.isAvailable("exiftool") {
             logger.warn("exiftool not found in PATH; exif extraction will fail until installed")
         }
+        warnIfUnknownCodecs()
 
         // Kick off backup loading in the background. This is what makes the
         // original Perl daemon slow to start - we don't block on it.
@@ -412,6 +438,7 @@ public actor RenderDaemon {
                 self.pausedSequenceNames.formUnion(Set(new.pausedSequenceNames))
                 self.pausedVariants.formUnion(Set(new.pausedVariants))
                 logger.info("reloaded config")
+                warnIfUnknownCodecs()
             } catch {
                 logger.warn("could not reload config: \(error)")
             }
@@ -1010,6 +1037,7 @@ public actor RenderDaemon {
             completedRenders: completedRenderResults,
             pausedSequenceNames: pausedSequenceNames,
             pausedVariants: pausedVariants,
+            unknownCodecs: unknownCodecNames(),
             lastError: lastSnapshot.lastError
         )
         lastSnapshot = snap

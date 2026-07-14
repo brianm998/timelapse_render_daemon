@@ -198,12 +198,10 @@ struct RenderingEditor: View {
     var body: some View {
         GroupBox("Rendering variants") {
             VStack(alignment: .leading) {
-                ForEach(Array(rendering.enumerated()), id: \.offset) { idx, _ in
+                ForEach(Array(rendering.enumerated()), id: \.offset) { idx, variant in
                     HStack {
                         Text("\(idx + 1).").frame(width: 24)
-                        TextField("codec", text: codecBinding(at: idx))
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 140)
+                        codecPicker(at: idx, current: variant.codec)
                         TextField("frame rate", value: frameRateBinding(at: idx), format: .number)
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 60)
@@ -217,9 +215,17 @@ struct RenderingEditor: View {
                             .buttonStyle(.borderless)
                     }
                 }
+                if !unknownCodecs.isEmpty {
+                    Label(
+                        "Unknown codec\(unknownCodecs.count == 1 ? "" : "s") \(unknownCodecs.joined(separator: ", ")) — not in the codec table, so these variants will never render. Pick a known codec or add an entry to video_codecs.json next to the config file.",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                }
                 Button {
                     var v = rendering
-                    v.append(RenderType(codec: "ProResMQ", frameRate: 30))
+                    v.append(RenderType(codec: viewModel.codecNames.first ?? "ProResMQ", frameRate: 30))
                     write(v)
                 } label: {
                     Label("Add variant", systemImage: "plus")
@@ -227,6 +233,37 @@ struct RenderingEditor: View {
                 .buttonStyle(.borderless)
             }
         }
+    }
+
+    /// Picker over the known codec-table keys.  A codec name that isn't in
+    /// the table (e.g. hand-edited config, or the table changed) is kept as
+    /// an extra selectable entry so the current value stays visible, and is
+    /// flagged with a warning badge.
+    @ViewBuilder
+    private func codecPicker(at idx: Int, current: String) -> some View {
+        let known = viewModel.codecNames
+        let isUnknown = !known.contains(current)
+        Picker("codec", selection: codecBinding(at: idx)) {
+            ForEach(known, id: \.self) { name in
+                Text(name).tag(name)
+            }
+            if isUnknown {
+                Text("\(current) (unknown)").tag(current)
+            }
+        }
+        .labelsHidden()
+        .frame(width: 140)
+        if isUnknown {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .help("Codec '\(current)' is not in the codec table — this variant will not render.")
+        }
+    }
+
+    /// Codec names used by variants that don't exist in the codec table.
+    private var unknownCodecs: [String] {
+        let known = Set(viewModel.codecNames)
+        return Array(Set(rendering.map(\.codec).filter { !known.contains($0) })).sorted()
     }
 
     private var rendering: [RenderType] { viewModel.config?.rendering ?? [] }
