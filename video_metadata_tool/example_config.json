@@ -1,0 +1,17 @@
+{
+    "video_paths": [
+        "/Users/brian/Pictures/timelapses/2026/2026-video"
+    ],
+    "raw_archive_paths": [
+        "/Users/brian/Pictures/timelapses/2026",
+        "/mammoth/Photos/timelapses/2026"
+    ],
+    "exif_json_paths": [
+        "/Users/brian/Pictures/timelapses/2026",
+        "/mammoth/Photos/timelapses/2026"
+    ],
+    "raw_types": ["ARW", "ORF"],
+    "video_extensions": ["mov", "mp4"],
+    "exiftool_parallelism": 8,
+    "scratch_dir" : "/sp/tmp"
+}

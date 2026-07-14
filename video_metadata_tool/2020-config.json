@@ -1,0 +1,17 @@
+{
+    "video_paths": [
+        "/Users/brian/Pictures/timelapses/2019/2019-video"
+    ],
+    "raw_archive_paths": [
+        "/Users/brian/Pictures/timelapses/2019",
+        "/mnt/trunk/Photos/timelapses/2019"
+    ],
+    "exif_json_paths": [
+        "/Users/brian/Pictures/timelapses/2019",
+        "/mnt/trunk/Photos/timelapses/2019"
+    ],
+    "raw_types": ["ARW", "ORF"],
+    "video_extensions": ["mov", "mp4"],
+    "exiftool_parallelism": 16,
+    "scratch_dir" : "/sp/tmp"
+}

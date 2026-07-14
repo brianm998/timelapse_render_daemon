@@ -1,0 +1,17 @@
+{
+    "video_paths": [
+        "/Users/brian/Pictures/timelapses/2025/2025-video"
+    ],
+    "raw_archive_paths": [
+        "/Users/brian/Pictures/timelapses/2025",
+        "/mammoth/Photos/timelapses/2025"
+    ],
+    "exif_json_paths": [
+        "/Users/brian/Pictures/timelapses/2025",
+        "/mammoth/Photos/timelapses/2025"
+    ],
+    "raw_types": ["ARW", "ORF"],
+    "video_extensions": ["mov", "mp4"],
+    "exiftool_parallelism": 16,
+    "scratch_dir" : "/sp/tmp"
+}
