@@ -54,7 +54,7 @@ sub read_line($) {
   my ($self) = @_;
 
   $/ = "";
-  my ($line, $eof, $can_read_more) = sysreadline($self->{shell_input}, 0.1);
+  my ($line, $eof, $can_read_more) = sysreadline($self->{shell_input}, 0.01);
   $/ = "\n";
 
   if ($line =~ /[^M]$/) {
@@ -130,8 +130,8 @@ sub sysreadline(*;$) {
   until ($line =~ /[$marker]\z/) {
     unless ($infinitely_patient) {
       if (time() > ($start_time + $timeout)) {
-	#print "bailing out\n";
-	return ($line, $eof);
+        # print "bailing out\n";
+          return ($line, $eof);
       }
     }
     # sleep only 1 second before checking again
