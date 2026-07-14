@@ -1,5 +1,25 @@
 import Foundation
 
+/// Outcome of an XMP embed attempt.  Distinguishes "fine — just no metadata
+/// to write" from "exiftool detected the video itself is structurally
+/// broken" from "exiftool failed for some other reason".  The render daemon
+/// uses this distinction to decide whether to delete + re-queue the output.
+public enum XMPEmbedResult: Sendable, Equatable {
+    /// exiftool exited 0 and wrote the XMP block.
+    case succeeded
+    /// Sidecar missing, unparseable, or empty after mapping — no XMP to write,
+    /// not a structural problem with the video.
+    case skipped(reason: String)
+    /// exiftool refused to write because the container is corrupt (e.g.,
+    /// `Truncated mdat atom`, moov references past EOF).  The video itself
+    /// needs to be re-rendered.
+    case structuralCorruption(reason: String, output: String)
+    /// exiftool failed for some reason other than container corruption
+    /// (permissions, sidecar issue, disk full, etc.).  The video is presumed
+    /// usable; the failure is just about embedding metadata into it.
+    case toolError(stderr: String, exitCode: Int32)
+}
+
 /// Embeds an XMP packet (canonical XMP-EXIF schema) into an encoded video by
 /// shelling out to exiftool.  ExifTool picks the correct atom location based
 /// on extension: moov/udta/XMP_ for .mov, the Adobe-UUID atom for .mp4.
@@ -19,23 +39,71 @@ public struct XMPEmbedder: Sendable {
         self.sidecarPath = sidecarPath
     }
 
-    /// Read the sidecar, build exiftool args, run exiftool.  No-op if the
-    /// sidecar is missing or unparseable — embedding XMP is a best-effort
-    /// step layered on top of a successful render.
-    public func embed() async throws {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: sidecarPath)),
-              let histogram = Self.parseHistogram(data: data)
-        else { return }
+    /// Read the sidecar, build exiftool args, run exiftool.  Returns a
+    /// `XMPEmbedResult` describing the outcome.  The exiftool write path is
+    /// also our render-integrity check: corrupt MOV containers (truncated
+    /// mdat atom, sample-table inconsistencies) fail here even when ffprobe
+    /// and `exiftool -validate` would say the file is fine.
+    public func embed() async throws -> XMPEmbedResult {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: sidecarPath)) else {
+            return .skipped(reason: "sidecar not readable: \(sidecarPath)")
+        }
+        guard let histogram = Self.parseHistogram(data: data) else {
+            return .skipped(reason: "sidecar not parseable: \(sidecarPath)")
+        }
 
         let assignments = XMPFieldMapper.buildExiftoolAssignments(from: histogram)
-        guard !assignments.isEmpty else { return }
+        guard !assignments.isEmpty else {
+            return .skipped(reason: "no tags resolved from sidecar")
+        }
 
         var args = ["-overwrite_original", "-q"]
         args.append(contentsOf: assignments)
         args.append(videoPath)
 
         let runner = ProcessRunner(executable: "exiftool", arguments: args)
-        _ = try await runner.run { _ in }
+        let lines = LineCollector()
+        let output = try await runner.run { line in lines.append(line) }
+        let combined = lines.joined()
+        if output.exitCode == 0 {
+            return .succeeded
+        }
+        if let reason = Self.detectStructuralCorruption(in: combined) {
+            return .structuralCorruption(reason: reason, output: combined)
+        }
+        return .toolError(stderr: combined, exitCode: output.exitCode)
+    }
+
+    /// Returns the matched substring describing the container corruption if
+    /// the supplied exiftool output indicates a structurally bad video file;
+    /// nil otherwise.  Public so the daemon (and tests) can use the same
+    /// classifier.
+    public static func detectStructuralCorruption(in output: String) -> String? {
+        // Exact strings emitted by ExifTool's QuickTime writer when the moov
+        // sample table is internally inconsistent or the mdat is short of
+        // what stsz claims.
+        let needles = [
+            "Truncated mdat atom",
+            "Bad atom size",
+            "Invalid mdat",
+            "Could not parse moov",
+        ]
+        for needle in needles {
+            if output.contains(needle) {
+                return needle
+            }
+        }
+        return nil
+    }
+
+    private final class LineCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var lines: [String] = []
+        func append(_ line: String) { lock.lock(); lines.append(line); lock.unlock() }
+        func joined() -> String {
+            lock.lock(); defer { lock.unlock() }
+            return lines.joined(separator: "\n")
+        }
     }
 
     static func parseHistogram(data: Data) -> [String: [String: Int]]? {

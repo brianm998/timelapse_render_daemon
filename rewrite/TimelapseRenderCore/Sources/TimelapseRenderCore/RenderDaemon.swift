@@ -32,6 +32,11 @@ public actor RenderDaemon {
     private var fullyRenderedSequences: Set<String> = []   // exportPath/dirname
     private var exifKnownSet: Set<String> = []           // exif json files already produced
     private var exifInFlight: Set<String> = []           // exif jobs running for this raw sequence
+    /// Per-variant counter of consecutive renders that produced a structurally
+    /// corrupt output file (caught by the post-render exiftool validation).
+    /// Reset on the first clean render; auto-paused at `corruptionPauseThreshold`.
+    private var corruptionFailures: [PausedVariant: Int] = [:]
+    private let corruptionPauseThreshold = 3
     private var lastSnapshot: DaemonStateSnapshot
     private var phase: DaemonStateSnapshot.Phase = .startingUp
     private var stateContinuation: AsyncStream<DaemonStateSnapshot>.Continuation?
@@ -652,31 +657,72 @@ public actor RenderDaemon {
                         outputBuffer.append(line)
                     }
                 )
+                // The exiftool XMP embed is also our render integrity check.
+                // exiftool's QuickTime writer walks the moov sample tables and
+                // refuses to write when offsets/sizes point past EOF — which
+                // is exactly the failure mode ffprobe and `exiftool -validate`
+                // miss.  See XMPEmbedder.detectStructuralCorruption.
+                var corruptionReason: String? = nil
                 if result.success, let sidecarPath {
                     do {
-                        try await XMPEmbedder(
+                        let embed = try await XMPEmbedder(
                             videoPath: outputPath,
                             sidecarPath: sidecarPath
                         ).embed()
-                        logger.timeLog(
-                            name: outputFilename,
-                            message: "embedded XMP metadata in \(outputPath)",
-                            value: -1
-                        )
+                        switch embed {
+                        case .succeeded:
+                            logger.timeLog(
+                                name: outputFilename,
+                                message: "embedded XMP metadata in \(outputPath)",
+                                value: -1
+                            )
+                        case .skipped(let why):
+                            logger.timeLog(
+                                name: outputFilename,
+                                message: "XMP embed skipped (\(why)) for \(outputPath)",
+                                value: -1
+                            )
+                        case .structuralCorruption(let why, let toolOutput):
+                            corruptionReason = why
+                            logger.warn("post-render validation FAILED for \(outputFilename): \(why)\nexiftool output:\n    | \(toolOutput.split(separator: "\n").joined(separator: "\n    | "))")
+                        case .toolError(let stderr, let code):
+                            // Non-corruption exiftool failure (sidecar busted,
+                            // permissions, etc.).  Don't fail the render — XMP
+                            // is best-effort.  Log and move on.
+                            logger.warn("XMP embed failed for \(outputFilename) (exiftool exit \(code)) — keeping render: \(stderr)")
+                        }
                     } catch {
                         logger.warn("XMP embed failed for \(outputFilename): \(error)")
                     }
                 }
-                await daemonRef.markRenderFinished(outputPath: outputPath, success: result.success)
-                if result.success {
-                    logger.timeLog(name: outputFilename, message: "rendered \(outputPath)", value: -1)
-                } else {
-                    let tail = outputBuffer.lines().joined(separator: "\n    | ")
+                if corruptionReason != nil {
+                    // Delete the corrupt output so the next scan tick sees the
+                    // variant as missing and re-queues it.  markRenderFinished
+                    // will also bump the corruption counter and auto-pause
+                    // after a few consecutive failures.
+                    try? FileManager.default.removeItem(atPath: outputPath)
+                    await daemonRef.markRenderFinished(
+                        outputPath: outputPath,
+                        success: false,
+                        corruptionReason: corruptionReason
+                    )
                     logger.timeLog(
                         name: outputFilename,
-                        message: "render FAILED for \(outputPath) (ffmpeg exit code \(result.exitCode)). last \(outputBuffer.count) line(s) of ffmpeg output:\n    | \(tail)",
+                        message: "deleted corrupt render \(outputPath) (\(corruptionReason!))",
                         value: -1
                     )
+                } else {
+                    await daemonRef.markRenderFinished(outputPath: outputPath, success: result.success)
+                    if result.success {
+                        logger.timeLog(name: outputFilename, message: "rendered \(outputPath)", value: -1)
+                    } else {
+                        let tail = outputBuffer.lines().joined(separator: "\n    | ")
+                        logger.timeLog(
+                            name: outputFilename,
+                            message: "render FAILED for \(outputPath) (ffmpeg exit code \(result.exitCode)). last \(outputBuffer.count) line(s) of ffmpeg output:\n    | \(tail)",
+                            value: -1
+                        )
+                    }
                 }
             } catch is CancellationError {
                 await daemonRef.markRenderFinished(outputPath: outputPath, success: false, cancelled: true)
@@ -696,12 +742,21 @@ public actor RenderDaemon {
         publishSnapshot()
     }
 
-    private func markRenderFinished(outputPath: String, success: Bool, cancelled: Bool = false) {
+    private func markRenderFinished(
+        outputPath: String,
+        success: Bool,
+        cancelled: Bool = false,
+        corruptionReason: String? = nil
+    ) {
         guard var r = renders[outputPath] else { return }
+        let variantKey = PausedVariant(sequenceName: r.sequenceName, variantKey: r.variantKey)
         if cancelled {
             r.status = .cancelled
         } else if success {
             r.status = .finished
+            // A successful render clears any prior corruption streak so a
+            // single flaky render doesn't permanently count against the variant.
+            corruptionFailures.removeValue(forKey: variantKey)
             recordCompletedRender(r)
             // Possibly delete the source sequence if matching delete regex.
             for pattern in config.deleteSequenceAfterRenderRegexes {
@@ -724,6 +779,23 @@ public actor RenderDaemon {
             }
         } else {
             r.status = .failed
+            if let reason = corruptionReason {
+                let count = (corruptionFailures[variantKey] ?? 0) + 1
+                corruptionFailures[variantKey] = count
+                r.message = "corrupt (\(reason)) — strike \(count)/\(corruptionPauseThreshold)"
+                if count >= corruptionPauseThreshold {
+                    // Auto-pause: the next scan tick won't re-queue this
+                    // variant.  User can unpause from the GUI / CLI after
+                    // investigating (likely the source TIFF sequence is bad).
+                    pausedVariants.insert(variantKey)
+                    logger.warn(
+                        "auto-paused \(r.sequenceName)/\(r.variantKey) after "
+                        + "\(count) consecutive corrupt renders (last: \(reason)). "
+                        + "Inspect the source sequence and resume manually."
+                    )
+                    r.message = "auto-paused after \(count) corrupt renders (\(reason))"
+                }
+            }
         }
         renders[outputPath] = r
         publishSnapshot()
