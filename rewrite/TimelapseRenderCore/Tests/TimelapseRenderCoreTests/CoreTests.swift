@@ -371,6 +371,53 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(expanded.first, "\(root.path)/2025")
     }
 
+    // MARK: - Codec table resolution
+
+    func testCodecsPathAlongsideConfig() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(
+            "codecs-\(UUID().uuidString)"
+        )
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let configPath = root.appendingPathComponent("config.json").path
+        try Data("{}".utf8).write(to: URL(fileURLWithPath: configPath))
+
+        // No video_codecs.json next to the config → nil.
+        XCTAssertNil(ConfigLoader.codecsPath(alongsideConfig: configPath))
+
+        let codecsPath = root.appendingPathComponent("video_codecs.json").path
+        try Data("{}".utf8).write(to: URL(fileURLWithPath: codecsPath))
+        XCTAssertEqual(ConfigLoader.codecsPath(alongsideConfig: configPath), codecsPath)
+    }
+
+    func testSnapshotReportsUnknownCodecs() async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(
+            "unknown-codec-\(UUID().uuidString)"
+        )
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let json = """
+        {
+          "rendering": [
+            { "codec": "ProResMQ", "frame_rate": 30 },
+            { "codec": "h264", "frame_rate": 30 },
+            { "resolution": [1920, 1080], "codec": "h264", "frame_rate": 24 }
+          ]
+        }
+        """
+        let configPath = root.appendingPathComponent("config.json").path
+        try Data(json.utf8).write(to: URL(fileURLWithPath: configPath))
+
+        let daemon = try RenderDaemon(configPath: configPath, logger: SilentLogger())
+        let snapshot = await daemon.currentSnapshot()
+        // "h264" isn't in the built-in codec table; ProResMQ is.  Deduped.
+        XCTAssertEqual(snapshot.unknownCodecs, ["h264"])
+    }
+
     // MARK: - XMP embed
 
     /// End-to-end round trip: fixture sidecar + fixture .mov → embed → read

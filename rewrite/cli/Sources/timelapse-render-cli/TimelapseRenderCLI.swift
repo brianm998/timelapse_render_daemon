@@ -18,8 +18,12 @@ struct ConfigOption: ParsableArguments {
     @Option(name: [.customShort("c"), .long], help: "Path to config.json")
     var config: String?
 
-    @Option(name: .long, help: "Path to video_codecs.json (optional)")
+    @Option(name: .long, help: "Path to video_codecs.json (defaults to one next to the config file, if present)")
     var codecs: String?
+
+    func resolveCodecsPath(configPath: String) -> String? {
+        codecs ?? ConfigLoader.codecsPath(alongsideConfig: configPath)
+    }
 
     func resolveConfigPath() throws -> String {
         if let config { return config }
@@ -53,7 +57,7 @@ struct Run: AsyncParsableCommand {
         do {
             daemon = try RenderDaemon(
                 configPath: configPath,
-                codecsPath: configOpt.codecs,
+                codecsPath: configOpt.resolveCodecsPath(configPath: configPath),
                 logger: logger
             )
         } catch {

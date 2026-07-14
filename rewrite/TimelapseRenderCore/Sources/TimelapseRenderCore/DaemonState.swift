@@ -22,6 +22,10 @@ public struct DaemonStateSnapshot: Sendable, Equatable {
     public var completedRenders: [CompletedRenderResult]
     public var pausedSequenceNames: Set<String>
     public var pausedVariants: Set<PausedVariant>
+    /// Codec names referenced by the config's rendering variants that have no
+    /// entry in the daemon's codec table.  Variants using them are silently
+    /// skipped by the render queue, so observers should surface these.
+    public var unknownCodecs: [String]
     public var lastError: String?
 
     public init(
@@ -33,6 +37,7 @@ public struct DaemonStateSnapshot: Sendable, Equatable {
         completedRenders: [CompletedRenderResult] = [],
         pausedSequenceNames: Set<String> = [],
         pausedVariants: Set<PausedVariant> = [],
+        unknownCodecs: [String] = [],
         lastError: String? = nil
     ) {
         self.phase = phase
@@ -43,6 +48,7 @@ public struct DaemonStateSnapshot: Sendable, Equatable {
         self.completedRenders = completedRenders
         self.pausedSequenceNames = pausedSequenceNames
         self.pausedVariants = pausedVariants
+        self.unknownCodecs = unknownCodecs
         self.lastError = lastError
     }
 }

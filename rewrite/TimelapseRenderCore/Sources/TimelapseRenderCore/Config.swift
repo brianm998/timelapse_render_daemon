@@ -276,6 +276,17 @@ public enum ConfigLoader {
         return try JSONDecoder().decode(VideoCodecs.self, from: data)
     }
 
+    /// Path of a user-editable `video_codecs.json` sitting next to the given
+    /// config file, or nil if none exists.  Both the GUI and the daemon use
+    /// this so they resolve the same codec table for the same config.
+    public static func codecsPath(alongsideConfig configPath: String) -> String? {
+        let candidate = URL(fileURLWithPath: configPath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("video_codecs.json")
+            .path
+        return FileManager.default.fileExists(atPath: candidate) ? candidate : nil
+    }
+
     /// Built-in codec table that matches the original `video_codecs.json`,
     /// used as a fallback when the file is not present.
     public static var defaultCodecs: VideoCodecs {
