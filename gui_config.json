@@ -1,0 +1,81 @@
+{
+  "backup_paths" : [
+    "\/mammoth\/Photos\/timelapses\/$YEAR",
+  ],
+  "delete_sequence_after_render_regexes" : [
+    "-merge$"
+  ],
+  "export_paths" : [
+    "\/qp\/tmp",
+    "\/rp\/tmp",
+    "\/pp\/tmp",
+    "\/sp\/tmp",
+    "\/op\/tmp"
+  ],
+  "ignore_sequence_regexes" : [
+    "-auto-processed$",
+    "-selective-processed$",
+    "-aligned$",
+    "-subtracted$",
+    "-blobs$",
+    "-blobs-",
+    "-khtb?$",
+    "-paintMask$",
+    "-star-horizon$",
+    "-star-mergedHorizon$",
+    "-star-validated-outlier-images$",
+    "-user-slices$",
+    "^star_temp_"
+  ],
+  "image_extensions" : [
+    "tif",
+    "tiff"
+  ],
+  "image_name_prefix" : "LRT_",
+  "image_sequence_dirname_prefix" : "LRT_",
+  "log_in_color" : true,
+  "master_videos" : [
+    "\/Users\/brian\/Pictures\/timelapses\/$YEAR\/$YEAR-video"
+  ],
+  "max_cuncurrent_renders" : 1,
+  "max_processes" : {
+    "exiftool" : 100,
+    "ffmpeg" : 1
+  },
+  "paused_sequence_names" : [
+
+  ],
+  "paused_variants" : [
+
+  ],
+  "progress_bar_width" : 40,
+  "raw_types" : [
+    "ARW",
+    "ORF"
+  ],
+  "rendering" : [
+    {
+      "codec" : "h264",
+      "frame_rate" : 30,
+      "resolution" : [
+        720
+      ]
+    },
+    {
+      "codec" : "h264",
+      "frame_rate" : 30,
+      "resolution" : [
+        2160
+      ]
+    },
+    {
+      "codec" : "ProResUHQ",
+      "frame_rate" : 30
+    }
+  ],
+  "scan_interval_seconds" : 2,
+  "sleep_time_seconds" : 12,
+  "source_paths" : [
+    "\/Users\/brian\/Pictures\/timelapses\/$YEAR\/"
+  ]
+}
