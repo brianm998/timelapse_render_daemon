@@ -1,0 +1,22 @@
+write a lr export plugin which reads the config.json for trd,
+
+and shows radio buttons for all of these export paths:
+
+    "export_paths" :	
+    [
+	"/qp/tmp",
+	"/rp/tmp",
+	"/op/tmp",
+	"/pp/tmp",
+	"/sp/tmp"
+    ],
+
+_maybe_ allow for 8/16 bit tiff/jpeg
+
+is it possible to figure out how much space is on each one, and how much space
+the exported sequence will take up?
+
+
+put it in a .lrplugin dir inside of 
+
+~/Library/Application\ Support/Adobe/Lightroom/Modules
