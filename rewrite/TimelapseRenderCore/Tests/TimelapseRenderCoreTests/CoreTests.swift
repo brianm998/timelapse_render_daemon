@@ -400,8 +400,8 @@ final class CoreTests: XCTestCase {
         {
           "rendering": [
             { "codec": "ProResMQ", "frame_rate": 30 },
-            { "codec": "h264", "frame_rate": 30 },
-            { "resolution": [1920, 1080], "codec": "h264", "frame_rate": 24 }
+            { "codec": "NotARealCodec", "frame_rate": 30 },
+            { "resolution": [1920, 1080], "codec": "NotARealCodec", "frame_rate": 24 }
           ]
         }
         """
@@ -410,8 +410,8 @@ final class CoreTests: XCTestCase {
 
         let daemon = try RenderDaemon(configPath: configPath, logger: SilentLogger())
         let snapshot = await daemon.currentSnapshot()
-        // "h264" isn't in the built-in codec table; ProResMQ is.  Deduped.
-        XCTAssertEqual(snapshot.unknownCodecs, ["h264"])
+        // "NotARealCodec" isn't in the built-in codec table; ProResMQ is.  Deduped.
+        XCTAssertEqual(snapshot.unknownCodecs, ["NotARealCodec"])
     }
 
     // MARK: - XMP embed
