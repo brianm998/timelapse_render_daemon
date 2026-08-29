@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import TimelapseRenderCore
 
 struct StatusView: View {
@@ -42,7 +43,10 @@ struct StatusView: View {
         let active = viewModel.snapshot.renders.count
         let inProgress = viewModel.snapshot.sequences.filter { !$0.isComplete }.count
         let done = viewModel.snapshot.completedRenders.count
-        return "\(active) rendering · \(inProgress) in progress · \(done) finished"
+        var s = "\(active) rendering · \(inProgress) in progress · \(done) finished"
+        let failed = viewModel.failures.count
+        if failed > 0 { s += " · \(failed) failed" }
+        return s
     }
 
     private var uniqueExportPaths: [String] {
@@ -50,6 +54,7 @@ struct StatusView: View {
         for x in viewModel.snapshot.sequences { s.insert(x.exportPath) }
         for x in viewModel.snapshot.renders { s.insert(x.exportPath) }
         for x in viewModel.snapshot.completedRenders { s.insert(x.exportPath) }
+        for x in viewModel.failures { s.insert(x.exportPath) }
         return Array(s).sorted()
     }
 
@@ -106,6 +111,11 @@ struct StatusView: View {
         var items: [UnifiedItem] = []
         let snap = viewModel.snapshot
 
+        // 0. Failures first.  They are the only thing here that needs the
+        //    user to do something, and they used to be invisible entirely.
+        let failures = filter.matches(failures: viewModel.failures)
+        items.append(contentsOf: failures.map { .failure($0) })
+
         // 1. Active renders — closest to done at the top.
         let activeRenders = filter.matches(renders: snap.renders).sorted {
             if $0.progress != $1.progress { return $0.progress > $1.progress }
@@ -138,6 +148,7 @@ struct StatusView: View {
 // MARK: - Item types
 
 enum UnifiedItem: Identifiable, Hashable {
+    case failure(RenderFailure)
     case activeRender(RenderJobState)
     case inProgressSequence(SequenceState)
     case completedResult(CompletedRenderResult)
@@ -145,6 +156,7 @@ enum UnifiedItem: Identifiable, Hashable {
 
     var id: String {
         switch self {
+        case .failure(let f):            return "fail:\(f.id)"
         case .activeRender(let r):       return "render:\(r.id)"
         case .inProgressSequence(let s): return "seq:\(s.id)"
         case .completedResult(let r):    return "result:\(r.id)"
@@ -230,6 +242,22 @@ struct SequenceFilter: Equatable, Codable {
         }
     }
 
+    func matches(failures: [RenderFailure]) -> [RenderFailure] {
+        let n = needle
+        return failures.filter { f in
+            if !n.isEmpty,
+               !f.outputFilename.lowercased().contains(n),
+               !f.sequenceName.lowercased().contains(n) {
+                return false
+            }
+            if let exportPath, f.exportPath != exportPath { return false }
+            // A failure is never "complete", so hide it when the user has
+            // asked to see only completed work.
+            if status == .complete { return false }
+            return true
+        }
+    }
+
     func matches(results: [CompletedRenderResult]) -> [CompletedRenderResult] {
         let n = needle
         return results.filter { r in
@@ -309,6 +337,7 @@ struct UnifiedItemRow: View {
     var body: some View {
         Group {
             switch item {
+            case .failure(let f):            FailureRow(failure: f)
             case .activeRender(let r):       RenderRow(render: r)
             case .inProgressSequence(let s): SequenceProgressRow(sequence: s)
             case .completedResult(let r):    CompletedResultRow(result: r, onJumpToSequence: onJumpToSequence)
@@ -485,6 +514,13 @@ struct RenderRow: View {
                     }
                 }
             }
+            if let message = render.message, render.status == .failed || render.status == .cancelled {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(render.status == .failed ? Color.red : Color.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Text("\(render.exportPath)  ·  \(render.variantKey)")
                 .font(.caption2).foregroundStyle(.secondary)
         }
@@ -543,5 +579,115 @@ struct RenderRow: View {
         case .paused:    return .gray
         case .skipped:   return .gray
         }
+    }
+}
+
+// MARK: - Failed render row
+
+/// A render that did not produce a video, with the diagnosis inline and the
+/// tool output one click away.  Failures used to be visible only as a red dot
+/// on a row that `cleanupFinishedRenders()` swept away seconds later, so in
+/// practice they were invisible.
+struct FailureRow: View {
+    @Environment(AppViewModel.self) var viewModel
+    let failure: RenderFailure
+    @State private var expanded = false
+
+    static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "h:mm:ss a"
+        return f
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                Text(Self.timeFormatter.string(from: failure.timestamp))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Text(failure.kind.label)
+                    .font(.caption.bold())
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(.red.opacity(0.18))
+                    .foregroundColor(.red)
+                    .clipShape(Capsule())
+                Text(failure.outputFilename)
+                    .font(.system(.body, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                if failure.occurrences > 1 {
+                    Text("x\(failure.occurrences)")
+                        .font(.caption.monospacedDigit().bold())
+                        .foregroundStyle(.red)
+                        .help("This render has failed the same way \(failure.occurrences) times")
+                }
+                Button {
+                    copyToPasteboard()
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .buttonStyle(.borderless)
+                .help("Copy the full failure report")
+
+                Button {
+                    viewModel.clearFailure(outputPath: failure.outputPath)
+                } label: {
+                    Image(systemName: "xmark.circle")
+                }
+                .buttonStyle(.borderless)
+                .help("Dismiss (it will come back if the render fails again)")
+            }
+
+            Text(failure.summary)
+                .font(.callout)
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let detail = failure.detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !failure.toolOutput.isEmpty || failure.commandLine != nil {
+                DisclosureGroup(isExpanded: $expanded) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if !failure.toolOutput.isEmpty {
+                            Text(failure.toolOutput.joined(separator: "\n"))
+                                .font(.caption2.monospaced())
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if let cmd = failure.commandLine {
+                            Text(cmd)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.top, 4)
+                } label: {
+                    Text(expanded ? "Hide ffmpeg output" : "Show ffmpeg output and command")
+                        .font(.caption)
+                }
+            }
+
+            Text("\(failure.sequenceName)  ·  \(failure.variantKey)")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 6)
+    }
+
+    private func copyToPasteboard() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(failure.consoleReport, forType: .string)
     }
 }

@@ -90,6 +90,20 @@ struct WarningBanner: View {
                 color: .orange
             )
         }
+        let failures = viewModel.failures
+        if !failures.isEmpty {
+            // Visible from the Config tab too, and regardless of how the
+            // status list is filtered.
+            let newest = failures[0]
+            let others = failures.count - 1
+            banner(
+                "\(failures.count) render\(failures.count == 1 ? "" : "s") failing — "
+                + "\(newest.outputFilename): \(newest.summary)"
+                + (others > 0 ? " (and \(others) more)" : "")
+                + "  ·  see the Status tab, the console, or \(FileLogger.defaultURL().path)",
+                color: .red
+            )
+        }
         if let error = viewModel.lastError {
             banner(error, color: .red)
         }

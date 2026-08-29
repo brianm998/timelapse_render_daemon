@@ -155,18 +155,22 @@ final class AppViewModel {
     func start() {
         guard let configPath else { return }
         do {
-            // Log to ~/Library/Logs/TimelapseRenderDaemon/daemon.log so the
-            // user can inspect ffmpeg failures, scan errors, etc. without us
-            // spamming stdout.  Falls back to SilentLogger if the file can't
-            // be opened (e.g. the directory isn't writable).
-            let logger: DaemonLogger
+            // Two sinks:
+            //   * the full log at ~/Library/Logs/TimelapseRenderDaemon/daemon.log,
+            //     which keeps every line including routine progress chatter;
+            //   * stderr, which gets warnings and errors only.  The GUI is
+            //     normally launched from a terminal, and a render that fails
+            //     two seconds after it starts needs to say so somewhere the
+            //     user is already looking.
+            // Falls back to console-only if the log file can't be opened.
+            var sinks: [any DaemonLogger] = [ConsoleLogger(minimumSeverity: .warning)]
             do {
-                logger = try FileLogger(url: FileLogger.defaultURL())
+                sinks.append(try FileLogger(url: FileLogger.defaultURL()))
                 self.lastError = nil
             } catch {
-                logger = SilentLogger()
-                self.lastError = "could not open log file: \(error)"
+                self.lastError = "could not open log file: \(error) — logging to the console only"
             }
+            let logger: DaemonLogger = TeeLogger(sinks)
             let daemon = try RenderDaemon(
                 configPath: configPath,
                 codecsPath: codecsPath,
@@ -245,6 +249,22 @@ final class AppViewModel {
     func stopRender(outputPath: String) {
         guard let daemon else { return }
         Task { await daemon.stopRenderJob(outputPath: outputPath) }
+    }
+
+    /// Recent render failures, newest first.  Empty when the daemon isn't
+    /// running — a stopped daemon's failures aren't actionable.
+    var failures: [RenderFailure] {
+        isRunning ? snapshot.recentFailures : []
+    }
+
+    func clearFailures() {
+        guard let daemon else { return }
+        Task { await daemon.clearFailures() }
+    }
+
+    func clearFailure(outputPath: String) {
+        guard let daemon else { return }
+        Task { await daemon.clearFailure(outputPath: outputPath) }
     }
 
     func pushConfigToDaemon() {

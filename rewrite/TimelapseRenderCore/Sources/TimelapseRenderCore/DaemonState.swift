@@ -20,6 +20,11 @@ public struct DaemonStateSnapshot: Sendable, Equatable {
     /// Recently rendered videos, newest first.  Bounded length; the daemon
     /// trims old entries to avoid unbounded growth.
     public var completedRenders: [CompletedRenderResult]
+    /// Renders that failed, newest first, each with a diagnosis of why.
+    /// Retained across scan ticks — `cleanupFinishedRenders()` drops the
+    /// `.failed` job itself within seconds, so without this a render that dies
+    /// on launch leaves no trace in the UI.
+    public var recentFailures: [RenderFailure]
     public var pausedSequenceNames: Set<String>
     public var pausedVariants: Set<PausedVariant>
     /// Codec names referenced by the config's rendering variants that have no
@@ -35,6 +40,7 @@ public struct DaemonStateSnapshot: Sendable, Equatable {
         sequences: [SequenceState] = [],
         renders: [RenderJobState] = [],
         completedRenders: [CompletedRenderResult] = [],
+        recentFailures: [RenderFailure] = [],
         pausedSequenceNames: Set<String> = [],
         pausedVariants: Set<PausedVariant> = [],
         unknownCodecs: [String] = [],
@@ -46,6 +52,7 @@ public struct DaemonStateSnapshot: Sendable, Equatable {
         self.sequences = sequences
         self.renders = renders
         self.completedRenders = completedRenders
+        self.recentFailures = recentFailures
         self.pausedSequenceNames = pausedSequenceNames
         self.pausedVariants = pausedVariants
         self.unknownCodecs = unknownCodecs
@@ -121,7 +128,13 @@ public struct RenderJobState: Sendable, Equatable, Identifiable, Hashable {
     public var frame: Int
     public var fps: Double
     public var status: Status
+    /// Human-readable note about this job — for a failed render this is the
+    /// one-line diagnosis, previously left nil for everything except
+    /// corruption.
     public var message: String?
+    /// Set when `status == .failed`, so the GUI can label the row without
+    /// re-parsing `message`.
+    public var failureKind: RenderFailure.Kind?
     /// True when this render is an ffmpeg process the daemon adopted — it
     /// was running at startup, left over from a previous session.  We have
     /// no pipe to it, so progress can't be tracked; callers should display

@@ -50,6 +50,20 @@ public final class FileLogger: DaemonLogger, @unchecked Sendable {
         write(format(name: name, message: message))
     }
 
+    /// Problems keep their line breaks, indented under the first line, so a
+    /// multi-line failure report is readable in the log file instead of being
+    /// squashed into one enormous line.
+    public func problem(_ severity: LogSeverity, name: String, message: String) {
+        let stamp = formatter.string(from: Date())
+        let tag = severity == .error ? "ERROR" : "WARN"
+        let lines = message.split(separator: "\n", omittingEmptySubsequences: false)
+        var out = "\(stamp) [\(name)] \(tag): \(lines.first ?? "")\n"
+        for line in lines.dropFirst() {
+            out += "\(stamp) [\(name)]   \(line)\n"
+        }
+        write(out)
+    }
+
     private func format(name: String, message: String) -> String {
         let stamp = formatter.string(from: Date())
         let cleaned = message.replacingOccurrences(of: "\n", with: " ")

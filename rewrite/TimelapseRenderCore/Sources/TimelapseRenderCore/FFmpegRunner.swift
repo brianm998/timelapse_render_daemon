@@ -7,6 +7,13 @@ public struct FFmpegRunner: Sendable {
         public let inputDir: String
         public let imageNamePrefix: String
         public let imageExtension: String
+        /// Width of the zero-padded frame number, detected from the files by
+        /// `ImageSequencePattern`.  Defaults to the five digits the daemon
+        /// used to hardcode.
+        public let frameNumberDigits: Int
+        /// Passed to ffmpeg as `-start_number` when the sequence begins past
+        /// the handful of indices the image2 demuxer probes on its own.
+        public let startNumber: Int?
         public let outputPath: String
         public let frameRate: Int
         public let aspect: String
@@ -20,6 +27,8 @@ public struct FFmpegRunner: Sendable {
             inputDir: String,
             imageNamePrefix: String,
             imageExtension: String,
+            frameNumberDigits: Int = ImageSequencePattern.legacyFrameNumberDigits,
+            startNumber: Int? = nil,
             outputPath: String,
             frameRate: Int,
             aspect: String,
@@ -32,6 +41,8 @@ public struct FFmpegRunner: Sendable {
             self.inputDir = inputDir
             self.imageNamePrefix = imageNamePrefix
             self.imageExtension = imageExtension
+            self.frameNumberDigits = frameNumberDigits
+            self.startNumber = startNumber
             self.outputPath = outputPath
             self.frameRate = frameRate
             self.aspect = aspect
@@ -40,6 +51,19 @@ public struct FFmpegRunner: Sendable {
             self.codec = codec
             self.metadata = metadata
             self.totalFrames = totalFrames
+        }
+
+        /// The `-i` argument: `<dir>/<prefix>%0Nd<suffix>`.
+        public var inputPattern: String {
+            "\(inputDir)/\(inputPatternDescription)"
+        }
+
+        /// Just the filename part of the input pattern, e.g. `image_%04d.tiff`.
+        /// Used in failure messages, where the directory is reported
+        /// separately.  The image2 demuxer needs an exact digit width, so this
+        /// has to reflect the files on disk rather than a fixed guess.
+        public var inputPatternDescription: String {
+            "\(imageNamePrefix)%0\(frameNumberDigits)d\(imageExtension)"
         }
 
         /// Argv for ffmpeg.  Mirrors the original Perl command line.
@@ -51,7 +75,13 @@ public struct FFmpegRunner: Sendable {
                 "-nostdin",
                 "-y",
                 "-r", String(frameRate),
-                "-i", "\(inputDir)/\(imageNamePrefix)%05d\(imageExtension)",
+            ]
+            // Input option, so it has to precede -i.
+            if let startNumber {
+                args += ["-start_number", String(startNumber)]
+            }
+            args += [
+                "-i", inputPattern,
                 "-aspect", aspect,
             ]
             if let w = width, let h = height {
@@ -98,6 +128,13 @@ public struct FFmpegRunner: Sendable {
     public struct Result: Sendable {
         public let success: Bool
         public let exitCode: Int32
+        /// False when the child was killed by a signal rather than exiting on
+        /// its own — the difference between "ffmpeg gave up" and "something
+        /// killed ffmpeg", which the failure report needs to tell apart.
+        public let terminatedNormally: Bool
+        /// Whether an output file exists on disk after the run.  An exit code
+        /// of 0 with no file is its own distinct failure.
+        public let outputFileExists: Bool
     }
 
     /// Runs ffmpeg.  `onProgress` is called for `frame=… fps=…` lines.
@@ -120,7 +157,9 @@ public struct FFmpegRunner: Sendable {
         let fileExists = FileManager.default.fileExists(atPath: plan.outputPath)
         return Result(
             success: fileExists && output.exitCode == 0,
-            exitCode: output.exitCode
+            exitCode: output.exitCode,
+            terminatedNormally: output.terminatedNormally,
+            outputFileExists: fileExists
         )
     }
 

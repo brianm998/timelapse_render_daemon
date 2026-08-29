@@ -37,6 +37,12 @@ public actor RenderDaemon {
     /// Reset on the first clean render; auto-paused at `corruptionPauseThreshold`.
     private var corruptionFailures: [PausedVariant: Int] = [:]
     private let corruptionPauseThreshold = 3
+    /// Diagnosed render failures, newest first.  Kept separately from
+    /// `renders` because `cleanupFinishedRenders()` drops `.failed` jobs on
+    /// the next scan tick — a render that dies on launch would otherwise
+    /// vanish from the GUI before anyone could read it.
+    private var recentFailures: [RenderFailure] = []
+    private let maxRecentFailures = 100
     private var lastSnapshot: DaemonStateSnapshot
     private var phase: DaemonStateSnapshot.Phase = .startingUp
     private var stateContinuation: AsyncStream<DaemonStateSnapshot>.Continuation?
@@ -70,6 +76,8 @@ public actor RenderDaemon {
         var fps: Double
         var status: RenderJobState.Status
         var message: String?
+        /// Populated alongside `message` when the render fails.
+        var failureKind: RenderFailure.Kind? = nil
         /// True for orphans we adopted at startup.
         var isAdopted: Bool = false
     }
@@ -354,13 +362,29 @@ public actor RenderDaemon {
                 // Add to the persistent history just like a managed render.
                 recordCompletedRender(render)
             }
-            logger.timeLog(
-                name: render.outputFilename,
-                message: success
-                    ? "adopted render finished: \(render.outputPath)"
-                    : "adopted render ended without output: \(render.outputPath)",
-                value: -1
-            )
+            if success {
+                logger.timeLog(
+                    name: render.outputFilename,
+                    message: "adopted render finished: \(render.outputPath)",
+                    value: -1
+                )
+            } else {
+                copy.failureKind = .producedNoOutput
+                recordFailure(RenderFailure(
+                    sequenceName: render.sequenceName,
+                    exportPath: render.exportPath,
+                    outputFilename: render.outputFilename,
+                    outputPath: render.outputPath,
+                    variantKey: render.variantKey,
+                    kind: .producedNoOutput,
+                    summary: "the adopted ffmpeg process exited without writing "
+                           + "\(render.outputPath)",
+                    detail: "This render was inherited from a previous session, so the daemon "
+                          + "never saw its output and cannot say why it stopped. The variant "
+                          + "will be re-queued on the next scan."
+                ))
+                renders[key] = copy
+            }
             changed = true
         }
         if changed { publishSnapshot() }
@@ -380,7 +404,11 @@ public actor RenderDaemon {
         // Validate external tools but don't crash if missing - log a warning so
         // the GUI can surface it to the user.
         if !ToolValidator.isAvailable("ffmpeg") {
-            logger.warn("ffmpeg not found in PATH; renders will fail until installed")
+            logger.error(
+                "ffmpeg not found in PATH — every render will fail until it is installed.\n"
+                + "PATH as this process sees it: "
+                + (ProcessInfo.processInfo.environment["PATH"] ?? "(unset)")
+            )
         }
         if !ToolValidator.isAvailable("exiftool") {
             logger.warn("exiftool not found in PATH; exif extraction will fail until installed")
@@ -565,19 +593,54 @@ public actor RenderDaemon {
             logger.warn("unknown codec '\(renderType.codec)' in render config")
             return
         }
-        let firstImage = firstImageInSequence(at: sequence.fullPath)
-        guard let firstImage else {
-            logger.warn("no images in \(sequence.fullPath); cannot queue render")
+        // Work out the real `prefix%0Nd suffix` shape from the files rather
+        // than assuming the config's image_name_prefix and five digits — the
+        // exporter does not always name frames the way the config expects.
+        let defaultDigits = ImageSequencePattern.legacyFrameNumberDigits
+        guard let pattern = ImageSequencePattern.detect(
+            inDirectory: sequence.fullPath,
+            imageExtensions: config.imageExtensions,
+            preferredPrefix: config.imageNamePrefix
+        ) else {
+            // Nothing to hand ffmpeg.  Report it as a failure rather than a
+            // lone log line — otherwise the sequence just sits there forever
+            // with no explanation.
+            let report = RenderFailureDiagnosis.analyzeInputSequence(
+                inputDir: sequence.fullPath,
+                expectedPrefix: config.imageNamePrefix,
+                expectedDigitWidth: defaultDigits,
+                expectedSuffix: "." + (config.imageExtensions.first ?? "tif"),
+                imageExtensions: config.imageExtensions
+            )
+            recordFailure(RenderFailure(
+                sequenceName: sequence.dirname,
+                exportPath: sequence.exportPath,
+                outputFilename: outputFilename,
+                outputPath: outputPath,
+                variantKey: renderType.variantKey,
+                kind: .notQueueable,
+                summary: "no numbered image sequence in \(sequence.fullPath)",
+                detail: RenderFailureDiagnosis.describe(
+                    report,
+                    inputDir: sequence.fullPath,
+                    pattern: "\(config.imageNamePrefix)%0\(defaultDigits)d"
+                           + ".\(config.imageExtensions.first ?? "tif")"
+                )
+            ))
+            publishSnapshot()
             return
         }
-        // The imageExtension passed to ffmpeg is "everything after the first
-        // run of digits in the filename" — including any decoration star
-        // adds before the dot extension, e.g. "-severe-noise.tiff".  Mirrors
-        // the Perl daemon's `if ($test_image =~ /\d+(.*)$/) { $image_type = $1 }`.
-        let imageExtension = Self.imageSuffixAfterDigits(
-            in: firstImage,
-            fallbackExtension: ".tif"
-        )
+        if !pattern.matchesConfiguredPrefix || pattern.digits != defaultDigits {
+            logger.timeLog(
+                name: outputFilename,
+                message: "frame naming in \(sequence.dirname) is "
+                       + "\(pattern.patternDescription) (\(pattern.frameCount) frames from "
+                       + "\(pattern.exampleFilename)), not the "
+                       + "\(config.imageNamePrefix)%0\(defaultDigits)d the config implies — "
+                       + "rendering with the detected pattern",
+                value: -1
+            )
+        }
 
         // Determine the scale dimensions for this render.
         // Width-only renders probe the first source image so the height
@@ -586,7 +649,7 @@ public actor RenderDaemon {
         var finalHeight = renderType.height
 
         if let w = renderType.width, renderType.height == nil {
-            let imagePath = "\(sequence.fullPath)/\(firstImage)"
+            let imagePath = "\(sequence.fullPath)/\(pattern.exampleFilename)"
             if let dims = await probeImageDimensions(at: imagePath) {
                 let h = Int((Double(w) * Double(dims.height) / Double(dims.width)).rounded())
                 finalHeight = h.isMultiple(of: 2) ? h : h + 1
@@ -600,8 +663,10 @@ public actor RenderDaemon {
 
         let plan = FFmpegRunner.Plan(
             inputDir: sequence.fullPath,
-            imageNamePrefix: config.imageNamePrefix,
-            imageExtension: imageExtension,
+            imageNamePrefix: pattern.prefix,
+            imageExtension: pattern.suffix,
+            frameNumberDigits: pattern.digits,
+            startNumber: pattern.requiresExplicitStartNumber ? pattern.firstIndex : nil,
             outputPath: outputPath,
             frameRate: renderType.frameRate,
             aspect: aspect,
@@ -662,14 +727,45 @@ public actor RenderDaemon {
         let runner = FFmpegRunner(plan: plan)
         let outputPath = render.outputPath
         let outputFilename = render.outputFilename
+        let sequenceName = render.sequenceName
+        let exportPath = render.exportPath
+        let variantKey = render.variantKey
         let sidecarPath = render.sidecarJSONPath
         let argv = plan.arguments
+        let commandLine = (["ffmpeg"] + argv).joined(separator: " ")
+        let imageExtensions = config.imageExtensions
         let daemonRef = self
         let outputBuffer = OutputLineBuffer(capacity: 200)
         return Task.detached(priority: .userInitiated) { [logger] in
+
+            // Every failure below carries the same identity and the command
+            // line that produced it, so the report can be read — or the render
+            // reproduced by hand — without going back to the config.
+            func failure(
+                kind: RenderFailure.Kind,
+                summary: String,
+                detail: String? = nil,
+                exitCode: Int32? = nil,
+                toolOutput: [String] = []
+            ) -> RenderFailure {
+                RenderFailure(
+                    sequenceName: sequenceName,
+                    exportPath: exportPath,
+                    outputFilename: outputFilename,
+                    outputPath: outputPath,
+                    variantKey: variantKey,
+                    kind: kind,
+                    summary: summary,
+                    detail: detail,
+                    exitCode: exitCode,
+                    commandLine: commandLine,
+                    toolOutput: toolOutput
+                )
+            }
+
             logger.timeLog(
                 name: outputFilename,
-                message: "starting ffmpeg: ffmpeg \(argv.joined(separator: " "))",
+                message: "starting ffmpeg: \(commandLine)",
                 value: -1
             )
             do {
@@ -690,6 +786,7 @@ public actor RenderDaemon {
                 // is exactly the failure mode ffprobe and `exiftool -validate`
                 // miss.  See XMPEmbedder.detectStructuralCorruption.
                 var corruptionReason: String? = nil
+                var corruptionOutput: [String] = []
                 if result.success, let sidecarPath {
                     do {
                         let embed = try await XMPEmbedder(
@@ -710,19 +807,24 @@ public actor RenderDaemon {
                                 value: -1
                             )
                         case .structuralCorruption(let why, let toolOutput):
+                            // Reported through recordFailure below so it lands
+                            // on the console and in the GUI like any other
+                            // render failure.
                             corruptionReason = why
-                            logger.warn("post-render validation FAILED for \(outputFilename): \(why)\nexiftool output:\n    | \(toolOutput.split(separator: "\n").joined(separator: "\n    | "))")
+                            corruptionOutput = toolOutput
+                                .split(separator: "\n", omittingEmptySubsequences: true)
+                                .map(String.init)
                         case .toolError(let stderr, let code):
                             // Non-corruption exiftool failure (sidecar busted,
                             // permissions, etc.).  Don't fail the render — XMP
-                            // is best-effort.  Log and move on.
+                            // is best-effort.  Warn and move on.
                             logger.warn("XMP embed failed for \(outputFilename) (exiftool exit \(code)) — keeping render: \(stderr)")
                         }
                     } catch {
                         logger.warn("XMP embed failed for \(outputFilename): \(error)")
                     }
                 }
-                if corruptionReason != nil {
+                if let reason = corruptionReason {
                     // Delete the corrupt output so the next scan tick sees the
                     // variant as missing and re-queues it.  markRenderFinished
                     // will also bump the corruption counter and auto-pause
@@ -731,32 +833,68 @@ public actor RenderDaemon {
                     await daemonRef.markRenderFinished(
                         outputPath: outputPath,
                         success: false,
-                        corruptionReason: corruptionReason
+                        corruptionReason: reason,
+                        failure: failure(
+                            kind: .structuralCorruption,
+                            summary: "ffmpeg finished but the file is structurally corrupt: \(reason)",
+                            detail: "exiftool refused to write into the rendered file, which means "
+                                  + "its sample tables point past the end of the data. The broken "
+                                  + "file has been deleted; the variant will be re-rendered on the "
+                                  + "next scan, and auto-paused if it keeps happening.",
+                            toolOutput: corruptionOutput
+                        )
                     )
                     logger.timeLog(
                         name: outputFilename,
-                        message: "deleted corrupt render \(outputPath) (\(corruptionReason!))",
+                        message: "deleted corrupt render \(outputPath) (\(reason))",
                         value: -1
                     )
+                } else if result.success {
+                    await daemonRef.markRenderFinished(outputPath: outputPath, success: true)
+                    logger.timeLog(name: outputFilename, message: "rendered \(outputPath)", value: -1)
                 } else {
-                    await daemonRef.markRenderFinished(outputPath: outputPath, success: result.success)
-                    if result.success {
-                        logger.timeLog(name: outputFilename, message: "rendered \(outputPath)", value: -1)
-                    } else {
-                        let tail = outputBuffer.lines().joined(separator: "\n    | ")
-                        logger.timeLog(
-                            name: outputFilename,
-                            message: "render FAILED for \(outputPath) (ffmpeg exit code \(result.exitCode)). last \(outputBuffer.count) line(s) of ffmpeg output:\n    | \(tail)",
-                            value: -1
+                    let lines = outputBuffer.lines()
+                    let diagnosis = RenderFailureDiagnosis.diagnose(
+                        plan: plan,
+                        exitCode: result.exitCode,
+                        terminatedNormally: result.terminatedNormally,
+                        outputLines: lines,
+                        imageExtensions: imageExtensions,
+                        outputFileExists: result.outputFileExists
+                    )
+                    await daemonRef.markRenderFinished(
+                        outputPath: outputPath,
+                        success: false,
+                        failure: failure(
+                            kind: diagnosis.kind,
+                            summary: diagnosis.summary,
+                            detail: diagnosis.detail,
+                            exitCode: result.exitCode,
+                            toolOutput: Array(RenderFailureDiagnosis.significantLines(lines).suffix(20))
                         )
-                    }
+                    )
                 }
             } catch is CancellationError {
                 await daemonRef.markRenderFinished(outputPath: outputPath, success: false, cancelled: true)
             } catch {
-                let tail = outputBuffer.lines().joined(separator: "\n    | ")
-                logger.warn("render error for \(outputFilename): \(error)\nffmpeg output:\n    | \(tail)")
-                await daemonRef.markRenderFinished(outputPath: outputPath, success: false)
+                let lines = outputBuffer.lines()
+                let isLaunchFailure = error is ProcessRunner.RunError
+                await daemonRef.markRenderFinished(
+                    outputPath: outputPath,
+                    success: false,
+                    failure: failure(
+                        kind: isLaunchFailure ? .launchFailed : .unknown,
+                        summary: isLaunchFailure
+                            ? "ffmpeg could not be started: \(error)"
+                            : "the render threw before it could finish: \(error)",
+                        detail: isLaunchFailure
+                            ? "Check that ffmpeg is installed and on the PATH this process "
+                            + "inherited — an app launched from Finder does not see a login "
+                            + "shell's PATH."
+                            : nil,
+                        toolOutput: Array(RenderFailureDiagnosis.significantLines(lines).suffix(20))
+                    )
+                )
             }
         }
     }
@@ -769,11 +907,57 @@ public actor RenderDaemon {
         publishSnapshot()
     }
 
+    // MARK: - Failure bookkeeping
+
+    /// Stores a diagnosed failure and reports it on every sink the logger
+    /// feeds.  Repeats of the same failure for the same output are folded
+    /// together and counted rather than appended — the scan loop re-queues a
+    /// failed variant every tick, so identical entries would otherwise pile
+    /// up forever.
+    private func recordFailure(_ failure: RenderFailure) {
+        var stored = failure
+        if let idx = recentFailures.firstIndex(where: {
+            $0.outputPath == failure.outputPath && $0.kind == failure.kind
+        }) {
+            stored = recentFailures[idx].merging(failure)
+            recentFailures.remove(at: idx)
+        }
+        recentFailures.insert(stored, at: 0)
+        if recentFailures.count > maxRecentFailures {
+            recentFailures.removeLast(recentFailures.count - maxRecentFailures)
+        }
+        // Only shout about the first few occurrences.  After that the console
+        // would just be the same block over and over; the GUI keeps the live
+        // count either way.
+        if stored.occurrences <= 3 {
+            logger.problem(.error, name: stored.outputFilename, message: stored.consoleReport)
+        } else if stored.occurrences % 25 == 0 {
+            logger.problem(
+                .error,
+                name: stored.outputFilename,
+                message: "still failing (\(stored.occurrences) times): \(stored.outputFilename) — \(stored.summary)"
+            )
+        }
+    }
+
+    /// Clears the retained failure list (GUI "dismiss" action).
+    public func clearFailures() {
+        recentFailures.removeAll()
+        publishSnapshot()
+    }
+
+    /// Drops the retained failures for one output path.
+    public func clearFailure(outputPath: String) {
+        recentFailures.removeAll { $0.outputPath == outputPath }
+        publishSnapshot()
+    }
+
     private func markRenderFinished(
         outputPath: String,
         success: Bool,
         cancelled: Bool = false,
-        corruptionReason: String? = nil
+        corruptionReason: String? = nil,
+        failure: RenderFailure? = nil
     ) {
         guard var r = renders[outputPath] else { return }
         let variantKey = PausedVariant(sequenceName: r.sequenceName, variantKey: r.variantKey)
@@ -809,6 +993,7 @@ public actor RenderDaemon {
             if let reason = corruptionReason {
                 let count = (corruptionFailures[variantKey] ?? 0) + 1
                 corruptionFailures[variantKey] = count
+                r.failureKind = .structuralCorruption
                 r.message = "corrupt (\(reason)) — strike \(count)/\(corruptionPauseThreshold)"
                 if count >= corruptionPauseThreshold {
                     // Auto-pause: the next scan tick won't re-queue this
@@ -822,6 +1007,12 @@ public actor RenderDaemon {
                     )
                     r.message = "auto-paused after \(count) corrupt renders (\(reason))"
                 }
+            } else if let failure {
+                r.failureKind = failure.kind
+                r.message = failure.shortMessage
+            }
+            if let failure {
+                recordFailure(failure)
             }
         }
         renders[outputPath] = r
@@ -1036,33 +1227,6 @@ public actor RenderDaemon {
         return (width: w, height: h)
     }
 
-    private func firstImageInSequence(at dir: String) -> String? {
-        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return nil }
-        let exts = Set(config.imageExtensions.map { $0.lowercased() })
-        for f in entries.sorted() {
-            if f.hasPrefix(".") { continue }
-            guard let dot = f.lastIndex(of: ".") else { continue }
-            let ext = String(f[f.index(after: dot)...]).lowercased()
-            if exts.contains(ext) { return f }
-        }
-        return nil
-    }
-
-    /// Given a filename like `LRT_00001-severe-noise.tiff`, returns
-    /// `-severe-noise.tiff` — everything after the first run of digits.  This
-    /// is what ffmpeg's image2 demuxer needs as the suffix for a
-    /// `prefix%05dsuffix` glob.  Uses the same regex as the Perl daemon
-    /// (`\d+(.*)$`) so behaviour matches across edge cases.
-    static func imageSuffixAfterDigits(
-        in filename: String,
-        fallbackExtension: String
-    ) -> String {
-        if let match = filename.firstMatch(of: #/\d+(.*)$/#) {
-            return String(match.output.1)
-        }
-        return fallbackExtension
-    }
-
     // MARK: - Snapshot publishing
 
     private func publishSnapshot(
@@ -1096,6 +1260,7 @@ public actor RenderDaemon {
                 fps: r.fps,
                 status: r.status,
                 message: r.message,
+                failureKind: r.failureKind,
                 isAdopted: r.isAdopted
             )
         }.sorted { $0.id < $1.id }
@@ -1107,6 +1272,7 @@ public actor RenderDaemon {
             sequences: seqStates,
             renders: renderStates,
             completedRenders: completedRenderResults,
+            recentFailures: recentFailures,
             pausedSequenceNames: pausedSequenceNames,
             pausedVariants: pausedVariants,
             unknownCodecs: unknownCodecNames(),
