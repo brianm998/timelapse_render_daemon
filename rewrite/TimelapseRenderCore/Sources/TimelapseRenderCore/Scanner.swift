@@ -309,6 +309,14 @@ public actor SequenceScanner {
                     }
                 }
                 if count == 0, let n = any["number_source_images"] as? Int { count = n }
+                // A backup json with neither field (e.g. an empty `{}` placeholder
+                // written before the raw images were collected) has no usable
+                // count. Reporting 0 here would poison rawSequenceCounts with a
+                // false zero for any sequence whose raw source is already gone
+                // from source_paths — isComplete requires rawSequenceLength > 0,
+                // so that permanently (and silently) stalls every export variant
+                // matching this raw sequence.
+                guard count > 0 else { continue }
                 onEntry?(path, name, count)
             }
         }
