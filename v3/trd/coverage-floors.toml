@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+#
+# Line-coverage floors in percent, checked by scripts/coverage.py (overview §15.3). TRD-01 sets
+# them to 0; TRD-GATE raises them. A floor may be raised and never lowered.
+
+trd-core = 0
+trd = 0
