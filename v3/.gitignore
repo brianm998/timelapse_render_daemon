@@ -1,0 +1,11 @@
+.tools/
+ffmpeg/.work/
+ffmpeg/dist/
+exiftool/.work/
+exiftool/dist/
+trd/target/
+clients/kotlin/**/build/
+clients/kotlin/.gradle/
+ios/*.xcodeproj/
+ios/build/
+ios/DerivedData/

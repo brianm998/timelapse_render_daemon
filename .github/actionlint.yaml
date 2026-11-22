@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+#
+# Older actionlint versions do not know these GitHub-hosted runner labels.
+self-hosted-runner:
+  labels:
+    - macos-15-intel
+    - ubuntu-24.04-arm

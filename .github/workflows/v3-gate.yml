@@ -1,0 +1,235 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+#
+# The v3 CI gate (spec 1 §9.1). mason's direct-ci landing dispatches it with no inputs on a
+# `mason/ci/<batch>` branch and fast-forwards `develop` only when it is green. Every component job
+# first checks that its component exists and, if not, prints "<component> does not exist yet" and
+# skips its remaining steps, so the gate is green before the component is created.
+name: v3-gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [develop]
+    paths:
+      - 'v3/**'
+      - '.github/workflows/v3-*.yml'
+      - '.github/actionlint.yaml'
+      - '.mason/**'
+  pull_request:
+    branches: [develop]
+    paths:
+      - 'v3/**'
+      - '.github/workflows/v3-*.yml'
+      - '.github/actionlint.yaml'
+      - '.mason/**'
+
+concurrency:
+  group: v3-gate-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  t0:
+    name: t0 (static checks)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: SPDX headers
+        run: bash v3/scripts/check-spdx.sh
+      - name: Workflow syntax
+        run: bash v3/scripts/check-workflows.sh
+      - name: Makefile contract
+        run: bash v3/scripts/check-makefiles.sh
+      - name: Bootstrap script tests
+        run: bash v3/scripts/test-scripts.sh
+      - name: Test names named by the specs exist
+        run: python3 -I v3/scripts/check-test-names.py --completed
+
+  trd:
+    name: trd (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04, windows-2022]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Is trd present
+        id: present
+        shell: bash
+        run: |
+          if [ -f v3/trd/Cargo.toml ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "trd does not exist yet"
+          fi
+      - uses: Swatinem/rust-cache@v2
+        if: steps.present.outputs.exists == 'true'
+        with:
+          workspaces: v3/trd
+      - name: trd checks and tests
+        if: steps.present.outputs.exists == 'true'
+        shell: bash
+        run: bash v3/trd/scripts/ci.sh
+
+  trd-coverage:
+    name: trd coverage
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Is the trd coverage script present
+        id: present
+        run: |
+          if [ -f v3/trd/scripts/coverage.sh ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "trd coverage does not exist yet"
+          fi
+      - uses: Swatinem/rust-cache@v2
+        if: steps.present.outputs.exists == 'true'
+        with:
+          workspaces: v3/trd
+      - uses: taiki-e/install-action@v2
+        if: steps.present.outputs.exists == 'true'
+        with:
+          tool: cargo-llvm-cov
+      - name: Coverage floors
+        if: steps.present.outputs.exists == 'true'
+        run: bash v3/trd/scripts/coverage.sh
+
+  kotlin:
+    name: kotlin desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04, windows-2022]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Is the Kotlin build present
+        id: present
+        shell: bash
+        run: |
+          if [ -f v3/clients/kotlin/settings.gradle.kts ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "kotlin does not exist yet"
+          fi
+      - uses: actions/setup-java@v5
+        if: steps.present.outputs.exists == 'true'
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v5
+        if: steps.present.outputs.exists == 'true'
+      - name: Desktop build, tests and coverage
+        if: steps.present.outputs.exists == 'true'
+        shell: bash
+        run: bash v3/clients/kotlin/scripts/ci-desktop.sh
+
+  android:
+    name: android
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Is the Android build present
+        id: present
+        run: |
+          if [ -f v3/clients/kotlin/android/build.gradle.kts ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "android does not exist yet"
+          fi
+      - uses: actions/setup-java@v5
+        if: steps.present.outputs.exists == 'true'
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v5
+        if: steps.present.outputs.exists == 'true'
+      - name: Install the Android SDK platform and build tools
+        if: steps.present.outputs.exists == 'true'
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36" "build-tools;36.0.0"
+      - name: Android build, tests and coverage
+        if: steps.present.outputs.exists == 'true'
+        run: bash v3/clients/kotlin/scripts/ci-android.sh
+
+  ios:
+    name: ios
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Is the iOS project present
+        id: present
+        run: |
+          if [ -f v3/ios/project.yml ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "ios does not exist yet"
+          fi
+      - uses: maxim-lobanov/setup-xcode@v1
+        if: steps.present.outputs.exists == 'true'
+        with:
+          xcode-version: latest-stable
+      - name: Install xcodegen
+        if: steps.present.outputs.exists == 'true'
+        run: brew install xcodegen
+      - name: iOS build, tests and coverage
+        if: steps.present.outputs.exists == 'true'
+        run: bash v3/ios/scripts/ci.sh
+
+  contract:
+    name: contract (${{ matrix.kind }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            kind: kotlin
+            script: v3/clients/kotlin/scripts/contract-test.sh
+          - os: macos-15
+            kind: ios
+            script: v3/ios/scripts/contract-test.sh
+    steps:
+      - uses: actions/checkout@v5
+      - name: Is the contract script present
+        id: present
+        env:
+          SCRIPT: ${{ matrix.script }}
+        run: |
+          if [ -f "$SCRIPT" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "${{ matrix.kind }} contract test does not exist yet"
+          fi
+      - uses: Swatinem/rust-cache@v2
+        if: steps.present.outputs.exists == 'true'
+        with:
+          workspaces: v3/trd
+      - uses: actions/setup-java@v5
+        if: steps.present.outputs.exists == 'true' && matrix.kind == 'kotlin'
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v5
+        if: steps.present.outputs.exists == 'true' && matrix.kind == 'kotlin'
+      - uses: maxim-lobanov/setup-xcode@v1
+        if: steps.present.outputs.exists == 'true' && matrix.kind == 'ios'
+        with:
+          xcode-version: latest-stable
+      - name: Contract test
+        if: steps.present.outputs.exists == 'true'
+        env:
+          SCRIPT: ${{ matrix.script }}
+        run: bash "$SCRIPT"

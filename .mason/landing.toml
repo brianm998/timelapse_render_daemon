@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+
+mode = "direct-ci"
+base = "develop"
+window = "20m"
+max_size = 10
+parallel = 1
+
+[[tier]]
+name = "batch"
+suites = ["trd-test", "trd-e2e", "kotlin-test", "android-test", "ios-kit-test"]
+
+[on_red]
+ladder = ["rerun-failed", "blame-by-impact", "bisect", "ask"]

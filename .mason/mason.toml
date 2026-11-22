@@ -1,0 +1,207 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+
+# Mason pipeline for the v3 tickets (v3/1-trd-core-daemon.md §11.3). Every suite runs
+# `bash v3/scripts/suite.sh <name> 2>&1`, which prints a passing placeholder while the suite's
+# component does not exist yet.
+schema = 1
+start = "explore"
+explored_entry = "develop"
+
+[agent.light]
+tier = "light"
+effort = "medium"
+
+[agent.review]
+tier = "light"
+effort = "low"
+
+[step.explore]
+type = "agent"
+category = "exploring"
+agent = "light"
+next = "develop"
+
+[step.develop]
+type = "agent"
+category = "developing"
+agent = "light"
+budget = "4h"
+next = "test"
+
+[step.test]
+type = "test"
+category = "testing"
+suites = ["t0-diff-check", "t0-spdx", "t0-workflows", "t0-scripts", "t0-makefiles", "t0-mason",
+          "trd-check", "trd-test", "trd-e2e", "ffmpeg-smoke", "exiftool-smoke",
+          "kotlin-test", "android-test", "ios-kit-test", "ios-build"]
+max_rounds = 3
+on_red = "develop"
+next = "review"
+
+[step.review]
+type = "agent"
+category = "review"
+agent = "review"
+max_rounds = 2
+on_red = "develop"
+next = "land"
+
+[step.land]
+type = "landing"
+category = "landing"
+max_rounds = 3
+on_red = "develop"
+
+[resource.compile]
+count = 3
+[resource.test-suite]
+count = 2
+[resource.exclusive]
+count = 1
+
+[binding.t0]
+when = ["development", "test_step", "batch"]
+[binding.t1]
+when = ["test_step", "batch"]
+
+# develop's own CI: a red v3-gate freezes landing until it is green again; a red run of any other
+# workflow on develop (v3-system-tests above all) becomes a ticket through mason's long-red rule.
+[watch.ci]
+enabled = true
+gate = "v3-gate"
+exclude = []
+
+[suite.t0-diff-check]
+command = "bash v3/scripts/suite.sh t0-diff-check 2>&1"
+parser = "regex"
+pass_regex = "^T0-DIFF-OK$"
+level = "t0"
+
+[suite.t0-spdx]
+command = "bash v3/scripts/suite.sh t0-spdx 2>&1"
+parser = "regex"
+pass_regex = "^T0-SPDX-OK$"
+level = "t0"
+
+[suite.t0-workflows]
+command = "bash v3/scripts/suite.sh t0-workflows 2>&1"
+parser = "regex"
+pass_regex = "^T0-WORKFLOWS-OK$"
+level = "t0"
+
+[suite.t0-scripts]
+command = "bash v3/scripts/suite.sh t0-scripts 2>&1"
+parser = "regex"
+pass_regex = "^PASS (.+)$"
+fail_regex = "^FAIL (.+)$"
+min_tests = 1
+level = "t0"
+
+[suite.t0-makefiles]
+command = "bash v3/scripts/suite.sh t0-makefiles 2>&1"
+parser = "regex"
+pass_regex = "^T0-MAKEFILES-OK$"
+level = "t0"
+
+[suite.t0-mason]
+command = "bash v3/scripts/suite.sh t0-mason 2>&1"
+parser = "regex"
+pass_regex = "^T0-MASON-OK$"
+level = "t0"
+
+[suite.trd-check]
+command = "bash v3/scripts/suite.sh trd-check 2>&1"
+parser = "regex"
+pass_regex = "^test (.+) \\.\\.\\. ok$"
+fail_regex = "^test (.+) \\.\\.\\. FAILED$"
+min_tests = 1
+level = "t1"
+uses = { compile = 1 }
+
+[suite.trd-test]
+command = "bash v3/scripts/suite.sh trd-test 2>&1"
+parser = "regex"
+pass_regex = "^test (.+) \\.\\.\\. ok$"
+fail_regex = "^test (.+) \\.\\.\\. FAILED$"
+min_tests = 1
+level = "t1"
+uses = { test-suite = 1 }
+
+[suite.trd-e2e]
+command = "bash v3/scripts/suite.sh trd-e2e 2>&1"
+parser = "regex"
+pass_regex = "^test (.+) \\.\\.\\. ok$"
+fail_regex = "^test (.+) \\.\\.\\. FAILED$"
+min_tests = 1
+level = "t1"
+uses = { test-suite = 1 }
+
+[suite.ffmpeg-smoke]
+command = "bash v3/scripts/suite.sh ffmpeg-smoke 2>&1"
+parser = "regex"
+pass_regex = "^\\s*PASS\\s+(.+)$"
+fail_regex = "^\\s*FAIL\\s+(.+)$"
+min_tests = 1
+level = "t1"
+uses = { exclusive = 1 }
+
+[suite.exiftool-smoke]
+command = "bash v3/scripts/suite.sh exiftool-smoke 2>&1"
+parser = "regex"
+pass_regex = "^\\s*PASS\\s+(.+)$"
+fail_regex = "^\\s*FAIL\\s+(.+)$"
+min_tests = 1
+level = "t1"
+
+[suite.kotlin-test]
+command = "bash v3/scripts/suite.sh kotlin-test 2>&1"
+parser = "junit"
+results_file = "v3/clients/kotlin/build/mason-desktop-results.xml"
+min_tests = 1
+level = "t1"
+uses = { test-suite = 1 }
+
+[suite.android-test]
+command = "bash v3/scripts/suite.sh android-test 2>&1"
+parser = "junit"
+results_file = "v3/clients/kotlin/build/mason-android-results.xml"
+min_tests = 1
+level = "t1"
+uses = { test-suite = 1 }
+
+[suite.ios-kit-test]
+command = "bash v3/scripts/suite.sh ios-kit-test 2>&1"
+parser = "xctest"
+min_tests = 1
+level = "t1"
+uses = { test-suite = 1 }
+
+[suite.ios-build]
+command = "bash v3/scripts/suite.sh ios-build 2>&1"
+parser = "regex"
+pass_regex = "^test (.+) \\.\\.\\. ok$"
+fail_regex = "^test (.+) \\.\\.\\. FAILED$"
+min_tests = 1
+level = "t1"
+uses = { compile = 1 }
+
+# Every suite has min_tests = 1 until TRD-GATE, DSK-13, IOS-09 and AND-06 raise their floors to
+# 90 % of the measured counts.
+
+[impact]
+"v3/trd/**" = ["trd-check", "trd-test", "trd-e2e"]
+"v3/proto/**" = ["trd-check", "trd-test", "kotlin-test", "android-test", "ios-kit-test", "ios-build"]
+"v3/ffmpeg/**" = ["ffmpeg-smoke"]
+"v3/exiftool/**" = ["exiftool-smoke", "trd-e2e"]
+"v3/clients/kotlin/**" = ["kotlin-test", "android-test"]
+"v3/ios/**" = ["ios-kit-test", "ios-build"]
+"v3/scripts/**" = ["t0-spdx", "t0-workflows", "t0-scripts", "t0-makefiles"]
+"v3/assets/**" = []
+"v3/*.md" = []
+"v3/instructions" = []
+"v3/Makefile" = ["t0-makefiles"]
+"v3/**/Makefile" = ["t0-makefiles"]
+".github/**" = ["t0-workflows"]
+".mason/**" = ["t0-workflows", "t0-mason"]
+"CLAUDE.md" = []

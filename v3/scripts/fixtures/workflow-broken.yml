@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+name: fixture-broken
+on: workflow_dispatch
+jobs:
+  hello:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo hello
+        bogus-key: [unclosed
