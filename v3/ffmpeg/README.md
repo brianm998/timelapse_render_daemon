@@ -94,9 +94,12 @@ beside them names FFmpeg 9.0.2 and this repository, the architecture (with `--ta
 the encoders, decoders, muxers and hardware accelerators trd needs, and then renders the way trd
 does (`1-trd-core-daemon.md` §6.5 and §6.16): 48 `LRT_%05d.tif` frames at 600×400, ProResUHQ at the
 original size, ProResMQ at 1080×720, h264 at width 720 and libx265 at the original size. Each output
-must have 48 frames, the expected size, SAR 1:1, DAR 3:2, the expected `pix_fmt`, `color_range=pc`,
-`color_primaries=bt709`, a `tmcd` stream and a `-progress` file ending in `progress=end`; each must
-decode to the end, and each yields a 480-wide JPEG thumbnail.
+must have 48 frames, the expected size, SAR 1:1, DAR 3:2, the expected `pix_fmt`, colorspace
+`bt709`, the color range the exact §6.5 vector really yields (`pc` for libx264 and libx265, `tv` for
+prores_ks), a `tmcd` stream and a `-progress` file ending in `progress=end`; each must decode to the
+end, and each yields a 480-wide JPEG thumbnail. The vector's `-color_primaries` and `-color_trc`
+do not reach the stream, so primaries and transfer are printed as `info` lines, not asserted
+(owner's decision; `docs/decisions/0980-ffmpeg-smoke-color-tags.md`).
 
 Hardware encoders are reported, not failed, unless `--hw` is given: a skip means the build has the
 encoder but this machine has no device for it.

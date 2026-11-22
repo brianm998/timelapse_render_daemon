@@ -211,9 +211,11 @@ trd_render() {
         -timecode 00:00:00:00 "$out"
 }
 
-# check_render <name> <width> <height> <pix_fmt>: what every trd output must be
+# check_render <name> <width> <height> <pix_fmt> <color_range>: what every trd output must be.
+# <color_range> is what the exact §6.5 vector really yields (owner's decision, see the README):
+# pc for libx264 and libx265, tv for prores_ks, which writes limited range whatever it is asked.
 check_render() {
-    local name=$1 w=$2 h=$3 pix=$4
+    local name=$1 w=$2 h=$3 pix=$4 range=$5
     local f="$WORK/out_$name.mov" tags thumb half dur have_pix
     if [ ! -f "$f" ]; then
         fail "$name: output exists" "no file, so the other checks for it cannot run"
@@ -228,8 +230,11 @@ check_render() {
     have_pix=$(probe "$f" v:0 pix_fmt)
     case "$have_pix" in yuvj*) have_pix="yuv${have_pix#yuvj}" ;; esac
     expect "$name: pix_fmt $pix" "$pix" "$have_pix"
-    expect "$name: color_range pc" pc "$(probe "$f" v:0 color_range)"
-    expect "$name: color_primaries bt709" bt709 "$(probe "$f" v:0 color_primaries)"
+    expect "$name: color_range $range" "$range" "$(probe "$f" v:0 color_range)"
+    expect "$name: colorspace bt709" bt709 "$(probe "$f" v:0 color_space)"
+    # The vector's -color_primaries and -color_trc do not reach the stream (the TIFF input carries
+    # none and the output options do not override it), so they are reported, not asserted.
+    echo "  info  $name: color_primaries=$(probe "$f" v:0 color_primaries) color_transfer=$(probe "$f" v:0 color_transfer)"
 
     # the timecode track has no decoder, so ffprobe names it only by its tag (codec_name=unknown)
     tags=$("$FFPROBE" -v error -show_entries stream=codec_tag_string -of default=noprint_wrappers=1:nokey=1 "$f")
@@ -254,13 +259,13 @@ check_render() {
 
 # ProResUHQ at the original size; ProResMQ at 1080x720; h264 at width 720; libx265 at the original size
 trd_render prores_uhq_original original -c:v prores_ks -pix_fmt yuv422p10le -threads 0 -profile:v 1
-check_render prores_uhq_original 600 400 yuv422p10le
+check_render prores_uhq_original 600 400 yuv422p10le tv
 trd_render prores_mq_1080x720 1080x720 -c:v prores_ks -pix_fmt yuv444p10le -threads 0 -profile:v 1
-check_render prores_mq_1080x720 1080 720 yuv444p10le
+check_render prores_mq_1080x720 1080 720 yuv444p10le tv
 trd_render h264_w720 720x480 -c:v libx264 -pix_fmt yuv420p -threads 0 -profile:v high -crf 18
-check_render h264_w720 720 480 yuv420p
+check_render h264_w720 720 480 yuv420p pc
 trd_render hevc_original original -c:v libx265 -pix_fmt yuv420p -threads 0 -crf 18
-check_render hevc_original 600 400 yuv420p
+check_render hevc_original 600 400 yuv420p pc
 
 # ── hardware ─────────────────────────────────────────────────────────────────
 echo "-- hardware (a skip means the build has the encoder but this machine has no device for it)"
