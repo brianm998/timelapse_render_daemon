@@ -137,9 +137,10 @@ Per-user locations of `trd` (spec 1 §6.13 is normative):
 .github/workflows/v3-exiftool.yml             exiftool fetch (TRD-23)
 .github/workflows/v3-trd-build.yml            trd packages (TRD-27)
 .github/workflows/v3-release.yml              release orchestrator (TRD-27)
-.github/workflows/v3-desktop-build.yml        desktop packages (DSK-11)
-.github/workflows/v3-ios-build.yml            iOS archive + TestFlight (IOS-08)
-.github/workflows/v3-android-build.yml        Android bundle + Play (AND-05)
+.github/workflows/v3-system-tests.yml         installers, services, mDNS, packaged apps, simulator and emulator tests (TRD-29)
+.github/workflows/v3-desktop-build.yml        desktop packages (DSK-13)
+.github/workflows/v3-ios-build.yml            iOS archive + TestFlight (IOS-09)
+.github/workflows/v3-android-build.yml        Android bundle + Play (AND-06)
 CLAUDE.md                                     rules for agents in this repository (TRD-00)
 v3/
   0-overview.md … 4-trm-android.md            these specifications
@@ -314,8 +315,9 @@ switched off in preferences (both default on).
   `v3/scripts/bump-version.sh X.Y.Z[-pre]` updates every place that embeds it.
 - Pushing a tag `v3.X.Y` or `v3.X.Y-<pre>` (it must equal `v3/VERSION`) runs
   `v3-release.yml`, which builds every component, signs and notarizes the macOS packages,
-  uploads iOS to TestFlight and Android to the Play internal track, and creates a **draft**
-  GitHub Release (a pre-release when the version has a `-` suffix) for the owner to publish.
+  uploads iOS to TestFlight and Android to the Play internal track, runs the system tests
+  (§15) against the packages it just built, and only when they pass creates a **draft** GitHub
+  Release (a pre-release when the version has a `-` suffix) for the owner to publish.
 - `workflow_dispatch` of `v3-release.yml` runs the same builds without uploading or publishing.
 
 ## 8. Owner prerequisites (one-time, done by the owner, never by an agent)
@@ -366,19 +368,31 @@ every component directory that exists, in the order `ffmpeg exiftool trd desktop
 target of one component. It discovers components with `$(wildcard …)`, so adding a component
 never requires editing it.
 
+No Makefile runs a command at parse time (no `$(shell …)` that needs Xcode, adb, cargo or a
+device), so `make -n <target>` works on every OS; `v3/scripts/check-makefiles.sh` relies on that
+when it checks every Makefile on Linux in the gate.
+
 ## 10. Rules for every ticket and every agent
 
-1. **Nothing appears on the owner's screen.** No XCUITest or UI-test bundle runs, no simulator
-   or emulator is booted by a test or suite, no Compose window is opened by a test (UI tests
-   render offscreen with `ImageComposeScene` / `runComposeUiTest` / Robolectric), no `open` of
-   an app, no `caffeinate -u`. `make run` and `make develop` for the iOS and Android apps are
-   for the owner to type; no ticket's tests call them.
-2. **Real processes are off limits.** Tests and the sandbox run `trd` with `--no-adopt` and an
-   injected process table; nothing may signal, adopt or kill an ffmpeg process the test did not
-   start. The owner often has production renders running.
+1. **Nothing appears on the owner's screen.** On the owner's Mac no XCUITest or UI-test bundle
+   runs, no simulator or emulator is booted by a test or suite, no Compose window is opened by a
+   test (UI tests render offscreen with `ImageComposeScene` / `runComposeUiTest` / Robolectric),
+   no app is opened, no `caffeinate -u`. `make run` and `make develop` for the iOS and Android
+   apps are for the owner to type; no ticket's tests call them. Tests that need a simulator, an
+   emulator, a real service manager, real multicast or an installer run only on GitHub-hosted
+   runners in `v3-system-tests.yml` (§15); every other test that starts `trd` passes
+   `--no-mdns`.
+2. **Real processes are off limits.** Nothing may signal, adopt or kill an ffmpeg process the
+   test did not start; the owner often has production renders running. Every `trd` that a test
+   or the sandbox starts, other than a system test's on a GitHub runner, runs with `--sandbox`
+   (which implies `--no-adopt-foreign`: only renders recorded in its own database are
+   re-adopted) or with `--no-adopt`, and in-process tests use `FakeProcessTable`. Spec 1's
+   `check-system-tests.sh` enforces this for the daemon's tests, and the real process table
+   panics when a unit test tries to use it.
 3. **Real data is off limits.** No test reads or writes the owner's config, data directory,
-   LaunchAgents, systemd units or scheduled tasks, or binds ports 50071/50072. Tests use port 0
-   and temporary directories.
+   LaunchAgents, systemd units or scheduled tasks, or binds or connects to ports 50071/50072 (a
+   `trd` client command in a test always passes `--address` with the test daemon's port). Tests
+   use port 0 and temporary directories.
 4. **Fixtures live in the system temporary directory**, never in the worktree: worktrees are on
    an external volume, and touching files there from a test process can raise a macOS privacy
    prompt.
@@ -399,6 +413,12 @@ never requires editing it.
 10. **Versions of third-party libraries**: where a spec names a version, use it. Where it says
     "newest stable", use the newest stable release available on the day of the ticket that is
     compatible with the other pinned versions, and pin it exactly (lockfile or version catalog).
+11. **Every behaviour has a test.** Each ticket adds tests for every behaviour it implements, of
+    the kind §15 assigns to that layer, besides the ones its `## Tests` section names. A
+    behaviour without a test is not done, and the review step sends such work back. Every test
+    that a ticket's acceptance criteria name exists under that name before the ticket lands:
+    `python3 -I v3/scripts/check-test-names.py --ticket <ID>` passes. Tests never weaken an
+    existing assertion or lower a coverage floor or a `min_tests` floor.
 
 ## 11. Ticket format
 
@@ -509,3 +529,76 @@ Kotlin code they reuse (listed per ticket in spec 4).
 | adopted render | an ffmpeg process `trd` did not start in this session (its own from before a restart, or a foreign one from the Perl or Swift daemons) |
 | problem | a condition the user must fix (missing tool, unreachable path, missing Full Disk Access …), shown as a banner |
 | failure | a render that did not produce a usable video, with a diagnosis |
+| contract test | a client library's tests run against a real `trd` built from the same commit, with fake media tools |
+| system test | a test that needs a GitHub-hosted runner: installers, service managers, multicast, packaged apps, a simulator or an emulator |
+
+## 15. Testing
+
+Every component is verified by tests of at least one automated kind, and by a manual check
+where only a person on the real machine or phone can tell. Each spec ends with a test plan that
+maps every area of its component to the tests that verify it and to where they run.
+
+### 15.1 Test levels
+
+| Level | Proves | Tools | Runs in |
+|---|---|---|---|
+| static | formatting, lint, SPDX headers, workflow syntax, the Makefile contract, the bootstrap scripts; that every test the specs name exists; that system tests and real processes cannot be reached from ordinary tests | rustfmt, clippy, Kotlin `allWarningsAsErrors`, `swift build -warnings-as-errors`, `check-spdx.sh`, actionlint, `check-makefiles.sh`, `test-scripts.sh`, `check-test-names.py`, the two `check-system-tests.sh` scripts (spec 1 TRD-01, spec 2 DSK-04) | mason `t0-*` and `trd-check` suites; gate `t0`, `trd` and `kotlin`; `check-test-names.py --ticket` before each ticket lands (§10 rule 11) |
+| unit | each module's logic, against fakes and injected clocks | `cargo test`, JUnit with kotlinx-coroutines-test, XCTest | mason component suites; gate component jobs (`trd` and `kotlin` on macOS, Linux and Windows) |
+| integration | a component's parts wired together: the daemon over gRPC with fake tools; presenters and models over an in-process fake server | cargo integration tests, `FakeTrdService` (Kotlin and Swift) | same as unit |
+| UI | every screen shows the right content and reacts to input, rendered offscreen | Compose Desktop offscreen tests, Robolectric Compose tests, SwiftUI `ImageRenderer` renders plus model-level assertions | same as unit |
+| contract | each client library against a real `trd` from the same commit, with fake media tools: connection, snapshots, every control, config editing, pairing over pinned TLS, log events, thumbnails, the folder browser | Kotlin `:core` and Swift `TRMKit` contract suites (`TRM_E2E=1`) | gate `contract`; runnable locally with one script |
+| end-to-end | the daemon with real ffmpeg and exiftool on generated sequences, including re-adoption across a restart | `crates/trd/tests/e2e.rs` (`TRD_E2E=1`) | mason `trd-e2e`; gate `trd-media` |
+| smoke | the bundled ffmpeg and exiftool do everything `trd` asks of them | `v3/ffmpeg/smoke_test.sh`, `v3/exiftool/smoke_test.sh` | mason `ffmpeg-smoke`, `exiftool-smoke`; `v3-ffmpeg.yml`, `v3-exiftool.yml` |
+| packaging | the packages contain what they must | `build-pkg.sh --self-check`, deb and installer self-checks | the build workflows |
+| system | installers, real service managers, real mDNS, packaged desktop apps, app-hosted iOS tests on a simulator, Android instrumented tests on an emulator | `v3-system-tests.yml` | GitHub-hosted runners only: every push to `develop` touching v3, nightly, and inside every release run before publishing |
+| coverage | how much code the unit, integration and UI tests execute | `cargo-llvm-cov`, Kover, `swift test --enable-code-coverage` | gate (`trd-coverage`, `kotlin`, `android`, `ios`), enforced floors |
+| manual | what only the owner on the real Mac, phone or tablet can check | the checklists `M-TRD-*`, `M-DSK-*`, `M-IOS-*`, `M-AND-*` in each spec | the owner, before publishing a release |
+
+### 15.2 Where tests run, and who sees a failure
+
+- **mason** runs the suites of `.mason/mason.toml` (spec 1 §11.3) in a task's test step and in
+  the landing batch; a red suite sends the task back to develop.
+- **`v3-gate.yml`** is dispatched by mason for every landing batch; a batch lands only when it is
+  green. It holds every test an agent can reproduce on the owner's Mac.
+- **`v3-system-tests.yml`** holds the tests an agent cannot reproduce locally. It runs on every
+  push to `develop` that touches v3 and nightly; mason watches it (`[watch.ci]`) and files a
+  ticket when it goes red. `v3-release.yml` runs it against the packages it built and publishes
+  only when it is green.
+- System tests that would touch the machine they run on (installing services, multicast) stay
+  out of ordinary test runs and need `CI=true` plus their own switch: `TRD_SERVICE_TEST=1`,
+  `TRD_MDNS_TEST=1` or `TRM_MDNS_TEST=1`, so they cannot run on the owner's Mac by accident. The
+  Rust ones are declared with `system_test!` (spec 1 TRD-05), which marks them ignored and makes
+  them fail, not skip, when run without both variables; the Kotlin one skips itself without both
+  (spec 2 DSK-04). Every part of this is tested: a unit test covers each guard's decision,
+  `check-system-tests.sh` (spec 1 TRD-01, spec 2 DSK-04) proves that ordinary runs exclude or
+  skip the system tests and that no other test reaches the real mDNS, service-manager or
+  process-table code, and each system job fails unless its tests really ran. The simulator and
+  emulator scripts refuse to run without `CI=true`, which the iOS and Android `ci` scripts check
+  on the runner. `TRD_E2E=1` and `TRM_E2E=1` (real tools, contract tests) are safe locally: they
+  use temporary directories, port 0, a LAN listener on `127.0.0.1`, `--sandbox` and no mDNS.
+
+### 15.3 Coverage floors
+
+Line coverage of each module's own sources by its automated tests, measured in the gate:
+
+| Module | Floor | Set by | Raised to the floor by |
+|---|---|---|---|
+| `trd-core` | 80 % | TRD-01 (0 %) | TRD-GATE |
+| `trd` (binary crate) | 60 % | TRD-01 (0 %) | TRD-GATE |
+| `:core` (Kotlin) | 80 % | DSK-01 (0 %) | DSK-13 |
+| `:desktop` | 50 % | DSK-01 (0 %) | DSK-13 |
+| `TRMCore` | 80 % | IOS-01 (0 %) | IOS-09 |
+| `TRMUI` | 40 % | IOS-01 (0 %) | IOS-09 |
+| `:android` | 50 % | AND-01 (0 %) | AND-06 |
+
+Generated code (proto stubs) and test helpers are excluded. A floor may be raised by any ticket
+and lowered by none.
+
+### 15.4 Manual checks
+
+Each spec's test plan lists its manual checks with steps and expected results. They cover only
+what automation cannot: macOS privacy grants on the owner's Mac, Gatekeeper on a fresh download,
+real phones on the home Wi-Fi, store installs. Before publishing a release, the owner runs the
+checklists of every component in it and records each result (pass, or fail with a note) as a
+comment on that spec's final ticket (TRD-GATE, DSK-13, IOS-09, AND-06). They are not part of any
+ticket's acceptance criteria, because an agent cannot perform them.

@@ -38,14 +38,19 @@ v3/ios/
   scripts/ci.sh                  what v3-gate.yml's `ios` job runs
   scripts/mason-build.sh         the `ios-build` mason suite
   scripts/gen-proto.sh           regenerates TRMKit/Sources/TRMCore/Generated
+  scripts/coverage.sh            per-target line coverage of TRMKit against coverage-floors.json
+  scripts/contract-test.sh       TRMKit contract tests against a real trd (§4.6)
+  scripts/system-test.sh         app-hosted tests on a simulator (GitHub runners only, §7)
+  coverage-floors.json           {"TRMCore": n, "TRMUI": n}
   TRMKit/
     Package.swift                swift-tools 6.0; platforms iOS 18, macOS 15
     Sources/TRMCore/             models, networking, state, formatting (no SwiftUI)
     Sources/TRMCore/Generated/   trd.pb.swift, trd.grpc.swift, PROTO_SHA256 (committed)
     Sources/TRMUI/               SwiftUI views; platform-neutral so they compile for macOS too
-    Tests/TRMCoreTests/          XCTest
+    Tests/TRMCoreTests/          XCTest, including Contract/ (skipped unless TRM_E2E=1)
     Tests/TRMUITests/            XCTest (offscreen ImageRenderer renders)
   TimelapseRenderMonitor/        the app target: App.swift, Info.plist, Assets.xcassets, PrivacyInfo.xcprivacy
+  TimelapseRenderMonitorTests/   app-hosted unit tests (real Keychain, real Bonjour, launch arguments)
 ```
 
 `TRMKit` dependencies: `swift-protobuf` (from 1.28.0), `grpc-swift` (from 2.2.1; products
@@ -62,7 +67,10 @@ com.timelapserender.monitor`, deployment target 18.0, `TARGETED_DEVICE_FAMILY: "
 `DEVELOPMENT_TEAM: G3L75S65V9`, automatic signing in Debug, manual signing in Release with
 `CODE_SIGN_IDENTITY: Apple Distribution` and `PROVISIONING_PROFILE_SPECIFIER:
 $(IOS_PROVISION_PROFILE_SPECIFIER)`; package dependency `TRMKit` (path `TRMKit`, products `TRMCore`
-and `TRMUI`). `Info.plist`: `CFBundleDisplayName` "Timelapse Render Monitor",
+and `TRMUI`). A second target `TimelapseRenderMonitorTests` (`bundle.unit-test`, host application
+`TimelapseRenderMonitor`, sources `TimelapseRenderMonitorTests`) is part of the scheme's test
+action; it is compiled by `build-for-testing` everywhere and run only on GitHub runners (§7).
+`Info.plist`: `CFBundleDisplayName` "Timelapse Render Monitor",
 `NSLocalNetworkUsageDescription` "Timelapse Render Monitor finds and connects to the Timelapse
 Render Daemon on your network.", `NSBonjourServices` `[_trd._tcp]`,
 `NSAppTransportSecurity`/`NSAllowsLocalNetworking` true, `ITSAppUsesNonExemptEncryption` false
@@ -124,7 +132,26 @@ plus a disk cache of 200 MB per server in the caches directory), `DetailsModel`,
 ### 4.5 Test support
 
 `FakeTrdService` implements every RPC over `GRPCInProcessTransport`, scripted like the Kotlin
-fake (spec 2 §5.6). No test talks to a real `trd`, opens a Bonjour browser, or boots a simulator.
+fake (spec 2 §5.6). Unit, integration and UI tests use it. Only the contract tests (§4.6) talk to
+a real `trd`; only the app-hosted tests (§7) open a Bonjour browser or touch the real Keychain,
+and they run only on a simulator on GitHub runners.
+
+### 4.6 Contract tests
+
+`TRMKit/Tests/TRMCoreTests/Contract/` (skipped unless `TRM_E2E=1`) runs `TRMCore` against a real
+`trd` from the same commit, exactly as the Kotlin contract tests do (spec 2 §5.7): a `TrdProcess`
+helper builds a sandbox tree with `python3 -I v3/trd/sandbox/sandbox.py init --dir <tmp>`, starts
+`$TRM_TRD_BIN daemon --sandbox … --port 0 --lan-bind 127.0.0.1:0 --no-mdns` with the fake tools
+(`$TRM_FAKE_TOOLS_DIR`) and a per-test `TRD_FAKE_FFMPEG` script, reads `TRD_LISTENING`, and stops
+it afterwards. Scenarios: connection and `api_version` 1; a sequence's stages into Recently rendered
+through `ActivityModel`; every control of overview §6.9 with its effect on the snapshot and on
+`config.json`; `ConfigEditorModel` load, validation, save and a revision conflict; `UpdateCodecs`;
+pairing through `PinnedCertificate.probe` and `PairingClient` against the real certificate,
+streaming with the token, a wrong code, the attempt limit and revocation (`NeedsPairing`);
+log events; a real thumbnail through `ThumbnailCache`; `DirectoryBrowserModel` on the sandbox.
+`scripts/contract-test.sh` builds `trd` and the fake tools when `TRM_TRD_BIN` is unset (spec 2
+§5.7 describes the same steps) and runs `swift test --package-path TRMKit --filter Contract` with
+`TRM_E2E=1`; the gate's `contract` job runs it on macOS, and it is safe on the owner's Mac.
 
 ## 5. TRMUI and the app
 
@@ -195,15 +222,32 @@ a server at launch without typing; `make develop` uses them with the sandbox (§
 | `test` | `swift test --package-path TRMKit` |
 | `check` | `swift build --package-path TRMKit -Xswiftc -warnings-as-errors` |
 | `ci` | `bash scripts/ci.sh` |
+| `coverage` | `swift test --package-path TRMKit --enable-code-coverage` then `bash scripts/coverage.sh` |
+| `contract` | `bash scripts/contract-test.sh` (§4.6) |
 
 `run` and `develop` open the Simulator on the owner's screen; they are for the owner only, and no
-ticket's tests use them (overview §10 rule 1).
+ticket's tests use them (overview §10 rule 1). The app-hosted tests also need a simulator, so they
+have no local target; `scripts/system-test.sh` runs them on GitHub runners.
 
-- `scripts/ci.sh`: `xcodegen generate`; `swift test --package-path TRMKit`; `xcodebuild build
-  -project TimelapseRenderMonitor.xcodeproj -scheme TimelapseRenderMonitor -sdk iphonesimulator
-  -destination 'generic/platform=iOS Simulator' -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO`.
-- `scripts/mason-build.sh`: `xcodegen generate` and the same `xcodebuild build`, printing
+- `scripts/ci.sh`: `xcodegen generate`; `swift test --package-path TRMKit --enable-code-coverage`;
+  `bash scripts/coverage.sh`; `xcodebuild build-for-testing -project TimelapseRenderMonitor.xcodeproj
+  -scheme TimelapseRenderMonitor -sdk iphonesimulator -destination 'generic/platform=iOS Simulator'
+  -derivedDataPath DerivedData CODE_SIGNING_ALLOWED=NO` (compiles the app and its app-hosted tests);
+  last, only when `CI=true` (on a GitHub runner, where a simulator boot would be harmless if the
+  guard were broken), `env -u CI bash scripts/system-test.sh`, failing unless that exits 1 and
+  prints `system-test.sh refuses to run without CI=true`.
+- `scripts/coverage.sh [FLOORS_FILE]`: reads the JSON at `swift test --package-path TRMKit
+  --show-codecov-path`, sums line coverage over the files under `Sources/TRMCore` (excluding
+  `Generated/`) and `Sources/TRMUI`, prints both, and exits 1 when either is below its floor in
+  `FLOORS_FILE` (default `coverage-floors.json`; both 0 until IOS-09, then the overview §15.3
+  floors).
+- `scripts/mason-build.sh`: `xcodegen generate` and the same `xcodebuild build-for-testing`, printing
   `test ios_build ... ok` or `test ios_build ... FAILED`.
+- `scripts/system-test.sh` (GitHub runners only): its first command after `set -euo pipefail`
+  exits 1 with `system-test.sh refuses to run without CI=true` unless `CI` is `true`; then it picks the newest
+  available iPhone simulator from `xcrun simctl list devices available -j` and runs `xcodebuild test
+  -project TimelapseRenderMonitor.xcodeproj -scheme TimelapseRenderMonitor -destination
+  'platform=iOS Simulator,id=<udid>' -only-testing:TimelapseRenderMonitorTests CODE_SIGNING_ALLOWED=NO`.
 - `scripts/gen-proto.sh`: builds `protoc-gen-swift` (from the resolved `swift-protobuf` checkout)
   and `protoc-gen-grpc-swift-2` (from `grpc-swift-protobuf` 1.3.1) with `swift build -c release`,
   runs `protoc` (Homebrew `protobuf`) with `Visibility=Public` on `v3/proto/trd/v1/trd.proto`,
@@ -212,8 +256,9 @@ ticket's tests use them (overview §10 rule 1).
 ## 7. GitHub Actions
 
 - `v3-gate.yml` job `ios` (defined by TRD-00) runs `scripts/ci.sh` once `v3/ios/project.yml`
-  exists; nothing here edits it.
-- `v3-ios-build.yml` (IOS-08): `workflow_call` with inputs `version` and `is_release`, secrets
+  exists, and job `contract` runs `scripts/contract-test.sh` on macOS once IOS-08 creates it;
+  nothing here edits the gate.
+- `v3-ios-build.yml` (IOS-09): `workflow_call` with inputs `version` and `is_release`, secrets
   inherited; one job on `macos-15`:
   1. checkout; `maxim-lobanov/setup-xcode@v1` (`latest-stable`); `brew install xcodegen`;
      `xcodegen generate` in `v3/ios`;
@@ -235,7 +280,12 @@ ticket's tests use them (overview §10 rule 1).
   6. always delete the keychain, the key and the profile.
   No GitHub Release asset is produced for iOS (an `.ipa` cannot be installed without provisioning).
 - `v3-release.yml` gains job `ios` (`needs: [version]`, `uses: ./.github/workflows/v3-ios-build.yml`,
-  `with: version, is_release`, `secrets: inherit`), and `ios` is appended to `publish.needs`.
+  `with: version, is_release`, `secrets: inherit`), and `ios` is appended to both
+  `system-tests.needs` and `publish.needs`.
+- `v3-system-tests.yml` (spec 1 §9.7) gains, from IOS-09, job `ios-app-tests` on `macos-15`
+  (`needs: [version]`; it builds from source, so it needs no package): checkout; setup-xcode
+  `latest-stable`; `brew install xcodegen`; `xcodegen generate` in `v3/ios`; `CI=true bash
+  v3/ios/scripts/system-test.sh`; on failure, upload the `.xcresult` bundle as an artifact.
 
 ## 8. Tickets
 
@@ -261,6 +311,10 @@ The `ios` gate job and the `ios-kit-test` and `ios-build` mason suites start run
 - `v3/ios/scripts/ci.sh` (new)
 - `v3/ios/scripts/mason-build.sh` (new)
 - `v3/ios/scripts/gen-proto.sh` (new)
+- `v3/ios/scripts/coverage.sh` (new)
+- `v3/ios/scripts/system-test.sh` (new)
+- `v3/ios/coverage-floors.json` (new)
+- `v3/ios/TimelapseRenderMonitorTests/LaunchArgumentsTests.swift` (new)
 - `v3/ios/TRMKit/Package.swift` (new)
 - `v3/ios/TRMKit/Package.resolved` (new)
 - `v3/ios/TRMKit/Sources/TRMCore/Generated/trd.pb.swift` (new)
@@ -274,17 +328,26 @@ The `ios` gate job and the `ios-kit-test` and `ios-build` mason suites start run
 - `v3/ios/TimelapseRenderMonitor/Assets.xcassets/AppIcon.appiconset/Contents.json` (new)
 
 ## Approach
-1. `Package.swift` and `project.yml` per §3; the app's `App.swift` shows "Not connected".
+1. `Package.swift` and `project.yml` per §3 (including the `TimelapseRenderMonitorTests` target);
+   the app's `App.swift` shows "Not connected".
 2. Run `gen-proto.sh` once and commit `Generated/`.
-3. Makefile and scripts per §6; `.gitignore` entries already exist (TRD-00).
+3. Makefile and scripts per §6; `coverage-floors.json` with both floors at 0 (IOS-09 raises
+   them); `.gitignore` entries already exist (TRD-00).
+4. `LaunchArgumentsTests`: the parser of the §5.5 Debug launch arguments (the parser itself lives
+   in `TRMCore`, so its logic is also unit-tested there; this app-hosted test proves the app
+   target reads `ProcessInfo.arguments` through it).
 
 ## Acceptance criteria
 - A1: `swift test --package-path v3/ios/TRMKit` passes, including a test that `PROTO_SHA256` equals the SHA-256 of `v3/proto/trd/v1/trd.proto` — check: `make -C v3/ios test`.
-- A2: the simulator build succeeds unsigned — check: `bash v3/ios/scripts/mason-build.sh` prints `test ios_build ... ok`.
-- A3: the `ios` gate job is green — check: `v3-gate.yml`.
+- A2: the app and its app-hosted tests compile for the simulator unsigned — check: `bash v3/ios/scripts/mason-build.sh` prints `test ios_build ... ok`.
+- A3: the `ios` gate job is green, including `coverage.sh` — check: `v3-gate.yml`.
+- A4: `coverage.sh` reports TRMCore and TRMUI line coverage and fails when a floor is above it — check: `bash v3/ios/scripts/coverage.sh` with a temporary floors file set to 101.
+- A5: `system-test.sh` refuses to run without `CI=true` before touching any simulator — check: the refusal check at the end of `scripts/ci.sh`, in the gate's `ios` job.
+- A6: `check-makefiles.sh` passes for `v3/ios` — check: `bash v3/scripts/check-makefiles.sh`.
 
 ## Tests
-`GeneratedCodeTests` (the hash check and a `Trd_V1_Snapshot` round trip).
+`GeneratedCodeTests` (the hash check and a `Trd_V1_Snapshot` round trip); `LaunchArgumentsTests`
+(app-hosted, run by the system tests).
 
 ## CI
 `v3-gate.yml` `ios`.
@@ -315,22 +378,28 @@ token, and reports connection state like the Kotlin clients.
 - `v3/ios/TRMKit/Sources/TRMCore/Servers/TokenKeychain.swift` (new)
 - `v3/ios/TRMKit/Sources/TRMCore/Servers/ServerRegistry.swift` (new)
 - `v3/ios/TRMKit/Tests/TRMCoreTests/Fakes/FakeTrdService.swift` (new)
+- `v3/ios/TimelapseRenderMonitorTests/KeychainTests.swift` (new)
 
 ## Approach
 1. The §4.1 and §4.2 types; the Keychain access behind a protocol with an in-memory test
    implementation.
 2. `FakeTrdService` over `GRPCInProcessTransport` (§4.5).
+3. `KeychainTests` (app-hosted, system test): the real `TokenKeychain` stores, reads, replaces and
+   deletes a token with the §4.2 attributes, and a token stored for one server id is not returned
+   for another.
 
 ## Acceptance criteria
 - A1: the fingerprint check accepts the matching DER and rejects another — check: `PinnedCertificateTests` (DER fixtures generated in the test).
 - A2: `unauthenticated` gives `NeedsPairing`; API version 2 gives `Incompatible`; the back-off is 1, 2, 5, 10 s (injected clock) — check: `TrdClientTests`.
 - A3: records round-trip through `UserDefaults` and tokens through the Keychain protocol — check: `ServerStoreTests`.
+- A4: a certificate whose fingerprint changed yields `IdentityChanged` — check: `TrdClientTests`.
+- A5: the real Keychain behaves as A3 requires — check: `KeychainTests` in the `ios-app-tests` system job (after IOS-09); compiled locally by `mason-build.sh`.
 
 ## Tests
-The three test classes, against `FakeTrdService`.
+The three test classes, against `FakeTrdService`; `KeychainTests` (app-hosted).
 
 ## CI
-`v3-gate.yml` `ios`.
+`v3-gate.yml` `ios`; `v3-system-tests.yml` `ios-app-tests`.
 
 ## Out of scope
 State models (IOS-03).
@@ -404,23 +473,29 @@ address), and switches between paired servers.
 - `v3/ios/TRMKit/Sources/TRMUI/Servers/AddServerView.swift` (new)
 - `v3/ios/TRMKit/Sources/TRMUI/AppShell.swift` (new)
 - `v3/ios/TimelapseRenderMonitor/App.swift`
+- `v3/ios/TimelapseRenderMonitorTests/BonjourDiscoveryTests.swift` (new)
 
 ## Approach
-1. TXT parsing as a pure function; `NWBrowser` wrapper (not started in tests).
+1. TXT parsing as a pure function; `NWBrowser` wrapper (not started by TRMKit tests).
 2. `PairingClient` with the spec 2 §5.3 messages; Debug launch arguments of §5.5.
 3. `AppShell`: the §5.1 navigation for compact and regular widths, the server switcher, and the
    start-on-Servers rule.
+4. `BonjourDiscoveryTests` (app-hosted, system test): publishes a `_trd._tcp` service with trd's
+   TXT records from an `NWListener` inside the test and checks that `ServerDiscovery` reports it with
+   every field, then that cancelling the listener removes it.
 
 ## Acceptance criteria
 - A1: TXT parsing accepts a valid record and rejects each missing field and `api=2` — check: `DiscoveryTests`.
 - A2: pairing against the fake stores the record and token; the wrong-code and exhausted messages match spec 2 §5.3 — check: `PairingClientTests`.
 - A3: `ServersView` renders offscreen for no servers, discovered servers and paired servers — check: `ServersViewTests` (`ImageRenderer` on macOS; PNGs written to `.build/screenshots/` for review).
+- A4: the app shell starts on Servers with no paired server and on Activity with one, in both size classes — check: `AppShellTests` (model-level).
+- A5: real Bonjour discovery works inside the simulator — check: `BonjourDiscoveryTests` in the `ios-app-tests` system job (after IOS-09).
 
 ## Tests
-The three test classes.
+The test classes above; `AppShellTests`; `BonjourDiscoveryTests` (app-hosted).
 
 ## CI
-`v3-gate.yml` `ios`.
+`v3-gate.yml` `ios`; `v3-system-tests.yml` `ios-app-tests`.
 
 ## Out of scope
 Activity (IOS-05).
@@ -540,50 +615,106 @@ The three test classes.
 `v3-gate.yml` `ios`.
 
 ## Out of scope
-Release (IOS-08).
+Release (IOS-09).
 
 Depends on: TRD-GATE, IOS-05
 
 ---
 
-### IOS-08 — TestFlight release workflow and acceptance
+### IOS-08 — TRMKit contract tests against a real trd
 
 ## Goal
-A `v3.*` tag uploads a signed build to TestFlight; the iOS suite floor is raised; the owner
-accepts the app on a device.
+`TRMCore` is proven against a real `trd` from the same commit: every RPC it uses, every control,
+config editing, pinned-TLS pairing, events, thumbnails and the folder browser.
 
 ## Context
-§7; spec 1 §9.5; ReelVault `.github/workflows/ios-testflight.yml`; overview §8 (owner
-prerequisites: bundle id, App Store Connect record, secrets).
+§4.6; spec 2 §5.7 (the same scenarios in Kotlin); spec 1 §5 (`TRD_LISTENING`), §12 (sandbox),
+TRD-05 (fake tools, `rules`, `wait_for_file`); the gate's `contract` job (spec 1 §9.1) runs the
+script on macOS once it exists.
 
 ## Files
-- `v3/3-trm-ios.md` (this spec; §7)
+- `v3/3-trm-ios.md` (this spec; §4.6)
+- `v3/ios/scripts/contract-test.sh` (new)
+- `v3/ios/TRMKit/Tests/TRMCoreTests/Contract/TrdProcess.swift` (new)
+- `v3/ios/TRMKit/Tests/TRMCoreTests/Contract/ConnectionContractTests.swift` (new)
+- `v3/ios/TRMKit/Tests/TRMCoreTests/Contract/ControlsContractTests.swift` (new)
+- `v3/ios/TRMKit/Tests/TRMCoreTests/Contract/ConfigContractTests.swift` (new)
+- `v3/ios/TRMKit/Tests/TRMCoreTests/Contract/PairingContractTests.swift` (new)
+- `v3/ios/TRMKit/Tests/TRMCoreTests/Contract/EventsContractTests.swift` (new)
+
+## Approach
+1. `TrdProcess` and the scenarios of §4.6, each test starting its own daemon on its own temporary
+   tree, polling snapshots with deadlines of at most 120 s as hang guards.
+2. `contract-test.sh` per §4.6; add the `contract` target to the Makefile.
+3. Run it on the owner's Mac and in the gate.
+
+## Acceptance criteria
+- A1: every §4.6 scenario passes against a `trd` built from the same commit — check: `bash v3/ios/scripts/contract-test.sh`.
+- A2: without `TRM_E2E=1` the contract tests are skipped and `swift test` is otherwise unchanged — check: `make -C v3/ios test`.
+- A3: the gate's `contract` job (macOS, iOS entry) is green — check: `v3-gate.yml`.
+
+## Tests
+The contract test classes listed in Files.
+
+## CI
+`v3-gate.yml` `contract`.
+
+## Out of scope
+SwiftUI views (covered by their offscreen tests).
+
+Depends on: TRD-GATE, IOS-03, IOS-04
+
+---
+
+### IOS-09 — TestFlight release, simulator system tests and coverage
+
+## Goal
+A `v3.*` tag uploads a signed build to TestFlight; the app-hosted tests run on a simulator in CI;
+the coverage and suite floors are raised.
+
+## Context
+§7; spec 1 §9.5, §9.7; overview §15.3 (coverage floors); ReelVault
+`.github/workflows/ios-testflight.yml`; overview §8 (owner prerequisites: bundle id, App Store
+Connect record, secrets); §11 (test plan).
+
+## Files
+- `v3/3-trm-ios.md` (this spec; §7, §11)
 - `.github/workflows/v3-ios-build.yml` (new)
 - `.github/workflows/v3-release.yml`
+- `.github/workflows/v3-system-tests.yml`
+- `v3/ios/coverage-floors.json`
 - `.mason/mason.toml`
 
 ## Approach
-1. `v3-ios-build.yml` per §7; add the `ios` job and the `publish.needs` entry to `v3-release.yml`.
-2. A `workflow_dispatch` of `v3-release.yml` must pass the iOS job (unsigned path).
-3. Raise `ios-kit-test`'s `min_tests` to 90 % of the measured count.
-4. Owner acceptance after the first tag: install from TestFlight, pair with the Mac's `trd`
-   through the desktop app's code, and use Activity, controls and Config; record the result.
+1. `v3-ios-build.yml` per §7; add the `ios` job to `v3-release.yml` and `ios` to its
+   `system-tests.needs` and `publish.needs`; add `ios-app-tests` to `v3-system-tests.yml`.
+2. A `workflow_dispatch` of `v3-release.yml` must pass the iOS job (unsigned path), and one of
+   `v3-system-tests.yml` must pass `ios-app-tests`.
+3. Raise `coverage-floors.json` to 80 (`TRMCore`) and 40 (`TRMUI`), adding tests for whatever is
+   uncovered until `ci.sh` passes.
+4. Raise `ios-kit-test`'s `min_tests` to 90 % of the measured count.
+5. Walk the §11 test plan and add any test it names that does not exist yet, until
+   `python3 -I v3/scripts/check-test-names.py --spec 3` passes. From now on the gate's `t0` job
+   runs it for spec 3 on every batch (`--completed` recognises `v3-ios-build.yml`).
 
 ## Acceptance criteria
 - A1: the dispatch run's iOS job is green — check: the run.
-- A2: on a tag with the secrets, the build appears in TestFlight — check: App Store Connect (owner).
-- A3: the floor is raised — check: `.mason/mason.toml`.
+- A2: on a tag with the secrets, the signed archive is exported and the upload step (`xcodebuild -exportArchive` with `destination` `upload`) succeeds; that the build then installs from TestFlight is the owner's manual check M-IOS-1, outside this ticket — check: the tag's `v3-release.yml` run.
+- A3: `ios-app-tests` is green: `LaunchArgumentsTests`, `KeychainTests` and `BonjourDiscoveryTests` pass on a simulator — check: the `v3-system-tests.yml` dispatch.
+- A4: the `ios` gate job passes with coverage floors of 80 % (`TRMCore`) and 40 % (`TRMUI`) — check: the gate run.
+- A5: the `ios-kit-test` floor is raised — check: `.mason/mason.toml`.
+- A6: every test that spec 3's acceptance criteria and §11 table name exists under that name — check: `python3 -I v3/scripts/check-test-names.py --spec 3`.
 
 ## Tests
-The workflow run.
+The workflow runs; the app-hosted tests; whatever step 3 adds.
 
 ## CI
-`v3-ios-build.yml` (new), `v3-release.yml`.
+`v3-ios-build.yml` (new), `v3-release.yml`, `v3-system-tests.yml`.
 
 ## Out of scope
-App Store review submission (the owner promotes builds manually).
+App Store review submission (the owner promotes builds manually). The manual checks of §11.1.
 
-Depends on: TRD-GATE, IOS-06, IOS-07
+Depends on: TRD-GATE, IOS-06, IOS-07, IOS-08
 
 ## 9. Dependency summary
 
@@ -596,10 +727,46 @@ Depends on: TRD-GATE, IOS-06, IOS-07
 | IOS-05 | TRD-GATE, IOS-04 |
 | IOS-06 | TRD-GATE, IOS-05 |
 | IOS-07 | TRD-GATE, IOS-05 |
-| IOS-08 | TRD-GATE, IOS-06, IOS-07 |
+| IOS-08 | TRD-GATE, IOS-03, IOS-04 |
+| IOS-09 | TRD-GATE, IOS-06, IOS-07, IOS-08 |
 
 ## 10. Definition of done
 
-- Every ticket's acceptance criteria hold; the `ios` gate job is green; a `v3-release.yml` dispatch
-  passes the iOS job; a tagged build reaches TestFlight and the owner has used it against the
-  Mac's `trd`.
+- Every ticket's acceptance criteria hold; the `ios` gate job is green at the overview §15.3
+  coverage floors; the gate's `contract` job is green for iOS; `v3-system-tests.yml`
+  `ios-app-tests` is green; a `v3-release.yml` dispatch passes the iOS job; a tagged build reaches
+  TestFlight.
+- Before a release is published, the owner has run the §11.1 manual checks and recorded the
+  results on the IOS-09 issue (overview §15.4).
+
+## 11. Test plan
+
+| Area | Automated tests | Kind | Ticket | Runs in |
+|---|---|---|---|---|
+| project, package, generated API code, coverage and system-test scripts | `GeneratedCodeTests`, `check-makefiles.sh`, `coverage.sh` floor check, the `system-test.sh` refusal check in `ci.sh` | unit, static | IOS-01 | mason `ios-kit-test`, `ios-build`; gate `ios`, `t0` |
+| launch arguments in the app | `LaunchArgumentsTests` | app-hosted | IOS-01 | system `ios-app-tests` |
+| pinned TLS, client, servers, Keychain protocol | `PinnedCertificateTests`, `TrdClientTests`, `ServerStoreTests` | unit, integration | IOS-02 | mason `ios-kit-test`; gate `ios` |
+| the real Keychain | `KeychainTests` | app-hosted | IOS-02 | system `ios-app-tests` |
+| presenters, scroll rules, formatting, models | `ScrollKeeperTests`, `ActivityModelTests`, `FormatTests` (shared vectors with Kotlin), `ConfigEditorModelTests`, … | unit | IOS-03 | mason `ios-kit-test`; gate `ios` |
+| discovery parsing, pairing, Servers screen, app shell | `DiscoveryTests`, `PairingClientTests`, `ServersViewTests`, `AppShellTests` | unit, UI | IOS-04 | same |
+| real Bonjour on iOS | `BonjourDiscoveryTests` | app-hosted | IOS-04 | system `ios-app-tests` |
+| Activity screen and its scrolling | `ActivityScrollTests`, `ActivityViewTests` | UI | IOS-05 | mason `ios-kit-test`; gate `ios` |
+| controls and Details | `RowActionsTests`, `DetailsViewTests` | UI | IOS-06 | same |
+| Config editor, folder browser, Log | `ConfigViewTests`, `FolderBrowserTests`, `LogViewTests` | UI | IOS-07 | same |
+| `TRMCore` against a real trd | the contract tests of §4.6 | contract | IOS-08 | gate `contract` (macOS); `make contract` locally |
+| release pipeline | dispatch runs; the upload step on a tag | workflow | IOS-09 | `v3-release.yml`; manual M-IOS-1 |
+| coverage | floors 80 % (`TRMCore`), 40 % (`TRMUI`) | coverage | IOS-01, IOS-09 | gate `ios` |
+| every named test exists | `check-test-names.py --spec 3` | static | IOS-09 | gate `t0` on every batch once IOS-09 has landed |
+
+### 11.1 Manual checks (the owner, on an iPhone and an iPad)
+
+| ID | Steps | Expected result |
+|---|---|---|
+| M-IOS-1 | Install the build from TestFlight and open it on the home Wi-Fi. | iOS asks once for local network access; after allowing, the Servers screen lists the Mac's `trd`. |
+| M-IOS-2 | Pair with a code from the desktop app's **Pair a phone…**. | The sixth digit pairs; the app switches to Activity showing the same sequences and videos as the desktop. |
+| M-IOS-3 | Watch a render to completion. | Frame counts and progress advance; when the sequence finishes its videos appear at the top of Recently rendered with posters; the list stays at the top while it is at the top, and shows `↑ N new` when scrolled. |
+| M-IOS-4 | Use suspend, resume, stop and retry on a sandbox render (`make -C v3/trd develop`). | Each takes effect within seconds and the desktop app shows the same state. |
+| M-IOS-5 | Edit a harmless config value with the folder browser, save, then revert. | `trd` reloads it; the desktop app's Config window shows the change. |
+| M-IOS-6 | Send the app to the background for a minute and bring it back. | It reconnects and catches up without user action. |
+| M-IOS-7 | On the iPad, rotate and use the split view. | List and Details sit side by side; selection and scroll position survive rotation. |
+| M-IOS-8 | Revoke the phone in the desktop app's Devices. | The phone shows that it must be paired again. |

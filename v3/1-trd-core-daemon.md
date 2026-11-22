@@ -173,9 +173,10 @@ Client commands connect to `--address` (default `127.0.0.1:50071`, plaintext) an
 | `--lan-bind ADDR:PORT` or `off` | `0.0.0.0:50072` | LAN TLS listener; tests use `127.0.0.1:0` so no firewall prompt appears |
 | `--advertise-name NAME` | host name | mDNS instance and `ServerInfo.name` |
 | `--no-mdns` | off | do not advertise |
-| `--no-adopt` | off | do not adopt or signal processes `trd` did not start in this run, and do not re-adopt its own (tests, sandbox) |
+| `--no-adopt` | off | skip §6.11 entirely: neither re-adopt its own renders from earlier runs nor adopt foreign ones |
+| `--no-adopt-foreign` | off | re-adopt only its own renders recorded in its database (§6.11 step 1); never adopt, watch or signal a process it did not start (§6.11 step 2 skipped) |
 | `--no-fda-check` | off | skip the macOS Full Disk Access guard |
-| `--sandbox` | off | implies `--no-adopt --no-fda-check`; sets `ServerInfo.sandbox` |
+| `--sandbox` | off | implies `--no-adopt-foreign --no-fda-check`; sets `ServerInfo.sandbox` |
 | `--log-level debug|info` | `info` | |
 
 When both listeners are bound, `trd daemon` prints exactly one line to stdout and flushes it:
@@ -454,7 +455,8 @@ The engine owns the state and publishes a new `Snapshot` (revision + 1) on every
 
 ### 6.11 Re-adoption and foreign renders
 
-At start-up (unless `--no-adopt`):
+At start-up, unless `--no-adopt` (`--no-adopt-foreign`, which `--sandbox` implies, skips step 2
+only):
 
 1. For every `render_jobs` row in `running` or `suspended`: the process is alive, its start time
    matches the recorded one within 2 s, and its command line contains the partial path → adopt it
@@ -1149,11 +1151,13 @@ which also holds for the ffmpeg build.
 
 | Job | Runner(s) | Steps after checkout |
 |---|---|---|
-| `t0` | `ubuntu-24.04` | `bash v3/scripts/check-spdx.sh`; `bash v3/scripts/check-workflows.sh` |
-| `trd` | matrix `macos-15`, `ubuntu-24.04`, `windows-2022` (fail-fast off) | present if `v3/trd/Cargo.toml` exists; `Swatinem/rust-cache@v2` (`workspaces: v3/trd`); `bash v3/trd/scripts/ci.sh` (installs the pinned toolchain with `rustup show`, then `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, all with the fake tools) |
-| `kotlin` | matrix `macos-15`, `ubuntu-24.04`, `windows-2022` | present if `v3/clients/kotlin/settings.gradle.kts` exists; `actions/setup-java@v5` (temurin 21); `gradle/actions/setup-gradle@v5`; `bash v3/clients/kotlin/scripts/ci-desktop.sh` (defined in spec 2) |
-| `android` | `ubuntu-24.04` | present if `v3/clients/kotlin/android/build.gradle.kts` exists; setup-java 21; setup-gradle; `yes \| "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36" "build-tools;36.0.0"`; `bash v3/clients/kotlin/scripts/ci-android.sh` (spec 4) |
-| `ios` | `macos-15` | present if `v3/ios/project.yml` exists; `maxim-lobanov/setup-xcode@v1` (`latest-stable`); `brew install xcodegen`; `bash v3/ios/scripts/ci.sh` (spec 3) |
+| `t0` | `ubuntu-24.04` | `bash v3/scripts/check-spdx.sh`; `bash v3/scripts/check-workflows.sh`; `bash v3/scripts/check-makefiles.sh`; `bash v3/scripts/test-scripts.sh`; `python3 -I v3/scripts/check-test-names.py --completed` |
+| `trd` | matrix `macos-15`, `ubuntu-24.04`, `windows-2022` (fail-fast off) | present if `v3/trd/Cargo.toml` exists; `Swatinem/rust-cache@v2` (`workspaces: v3/trd`); `bash v3/trd/scripts/ci.sh` (installs the pinned toolchain with `rustup show`, then `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `bash scripts/test-check-system-tests.sh`, `bash scripts/check-system-tests.sh`, `cargo test --workspace --locked`, all with the fake tools) |
+| `trd-coverage` | `ubuntu-24.04` | present if `v3/trd/scripts/coverage.sh` exists; `Swatinem/rust-cache@v2`; `taiki-e/install-action@v2` (`tool: cargo-llvm-cov`); `bash v3/trd/scripts/coverage.sh` (fails when a crate is below its floor in `v3/trd/coverage-floors.toml`) |
+| `kotlin` | matrix `macos-15`, `ubuntu-24.04`, `windows-2022` | present if `v3/clients/kotlin/settings.gradle.kts` exists; `actions/setup-java@v5` (temurin 21); `gradle/actions/setup-gradle@v5`; `bash v3/clients/kotlin/scripts/ci-desktop.sh` (spec 2; includes the Kover coverage check) |
+| `android` | `ubuntu-24.04` | present if `v3/clients/kotlin/android/build.gradle.kts` exists; setup-java 21; setup-gradle; `yes \| "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36" "build-tools;36.0.0"`; `bash v3/clients/kotlin/scripts/ci-android.sh` (spec 4; includes the Kover coverage check) |
+| `ios` | `macos-15` | present if `v3/ios/project.yml` exists; `maxim-lobanov/setup-xcode@v1` (`latest-stable`); `brew install xcodegen`; `bash v3/ios/scripts/ci.sh` (spec 3; includes the coverage check) |
+| `contract` | matrix `{ubuntu-24.04, kotlin, v3/clients/kotlin/scripts/contract-test.sh}` and `{macos-15, ios, v3/ios/scripts/contract-test.sh}` (fail-fast off) | present if the entry's script exists; `Swatinem/rust-cache@v2` (`workspaces: v3/trd`); for `kotlin` setup-java 21 and setup-gradle, for `ios` setup-xcode `latest-stable`; `bash <script>` (the script builds `trd` and the fake tools itself; spec 2 §5.7, spec 3 §4.6) |
 
 - `TRD-GATE` adds one job, `trd-media` (§9.6).
 
@@ -1206,9 +1210,9 @@ A port of star's `ffmpeg-gpu.yml`:
   `is_release` is true and `APPLE_CERTIFICATE_P12_BASE64` is empty, the job fails with
   "::error::macOS release builds must be signed (Full Disk Access would not persist across
   updates)". Always delete the keychain and key at the end. Upload `release-asset-trd-macos-universal`.
-- `linux-x64` on `ubuntu-24.04` and `linux-arm64` on `ubuntu-24.04-arm`: `bash v3/trd/packaging/linux/build-deb.sh --version <v> --arch amd64|arm64 …` and the `.tar.gz`; upload `release-asset-trd-linux-x64` / `-linux-arm64`.
+- `linux-x64` on `ubuntu-24.04` and `linux-arm64` on `ubuntu-24.04-arm`: `bash v3/trd/packaging/linux/build-deb.sh --version <v> --arch amd64|arm64 …` and the `.tar.gz`; then `bash v3/trd/packaging/linux/build-deb.sh --self-check <deb>` and `bash v3/trd/packaging/linux/test-deb-in-container.sh <deb>` (TRD-25); upload `release-asset-trd-linux-x64` / `-linux-arm64`.
 - `windows-x64` on `windows-2022`: install NSIS (`choco install nsis --yes --no-progress` if
-  `makensis` is missing, then put it on `PATH`); `bash v3/trd/packaging/windows/build-installer.sh --version <v> …`; upload `release-asset-trd-windows-x64`.
+  `makensis` is missing, then put it on `PATH`); `bash v3/trd/packaging/windows/build-installer.sh --version <v> …`; then `bash v3/trd/packaging/windows/test-installer.sh <setup.exe>` (TRD-26); upload `release-asset-trd-windows-x64`.
 - Asset names: `trd-<v>-macos-universal.pkg`, `trd_<v>_amd64.deb`, `trd_<v>_arm64.deb`,
   `trd-<v>-linux-x64.tar.gz`, `trd-<v>-linux-arm64.tar.gz`, `trd-<v>-windows-x64-setup.exe`,
   `trd-<v>-windows-x64.zip`.
@@ -1226,15 +1230,22 @@ A port of star's `ffmpeg-gpu.yml`:
   3. `exiftool`: `uses: ./.github/workflows/v3-exiftool.yml`.
   4. `trd`: `needs: [version, ffmpeg, exiftool]`, `uses: ./.github/workflows/v3-trd-build.yml`,
      `with: version, is_release`, `secrets: inherit`.
-  5. `publish` (`ubuntu-24.04`): `needs: [version, trd]` (specs 2–4 append `desktop`, `ios`,
-     `android`); runs only when `is_release`; downloads every artifact matching `release-asset-*`
+  5. `system-tests` (added by TRD-29, which creates the workflow it calls): `needs: [version,
+     trd]` (specs 2–4 append `desktop`, `ios`, `android`), `uses:
+     ./.github/workflows/v3-system-tests.yml`, `with: build: false, version: <version>`,
+     `secrets: inherit` — the §9.7 system tests run against the packages built above.
+  6. `publish` (`ubuntu-24.04`): `needs: [version, trd]` plus `system-tests` once TRD-29 adds it
+     (specs 2–4 append `desktop`, `ios`, `android`); runs only when `is_release` and every needed
+     job succeeded;
+     downloads every artifact matching `release-asset-*`
      with `merge-multiple: true` into `release/`; lists them; creates the release with
      `softprops/action-gh-release@v2`: `tag_name: v<version>`, `name: Timelapse Render Daemon <version>`,
      `draft: true`, `prerelease: <prerelease>`, `generate_release_notes: true`, `files: release/*`,
      and a body with install notes (macOS: run the .pkg, then grant Full Disk Access; Linux:
      `sudo apt install ./trd_<v>_<arch>.deb` then `systemctl --user start trd`; Windows: run the
      setup; first start may ask to allow network access).
-- Specs 2–4 add their jobs; they never edit the jobs above except `publish.needs`.
+- Specs 2–4 add their jobs; they never edit the jobs above except `system-tests.needs` and
+  `publish.needs`.
 
 ### 9.6 `trd-media` gate job (TRD-GATE)
 
@@ -1244,6 +1255,42 @@ Added to `v3-gate.yml`: `needs` two jobs that call the reusable workflows
 `v3-ffmpeg-linux-x64`, `v3-exiftool-unix`) and `macos-15` (`v3-ffmpeg-macos-universal`,
 `v3-exiftool-unix`): download, `chmod +x`, set `TRD_FFMPEG_DIR`, `TRD_EXIFTOOL_DIR` and
 `TRD_E2E=1`, run `bash v3/trd/scripts/ci-media.sh`.
+
+### 9.7 `v3-system-tests.yml` — system tests (TRD-29; specs 2–4 add jobs)
+
+The tests that need real installers, service managers, multicast, packaged apps, a simulator or
+an emulator (overview §15). They run only on GitHub-hosted runners and are not part of the
+landing gate, because an agent cannot reproduce them on the owner's Mac.
+
+- Triggers: `push` to `develop` with paths `v3/**` and `.github/workflows/v3-*.yml`; `schedule`
+  `cron: '17 9 * * *'`; `workflow_dispatch` (input `build`, boolean, default `true`);
+  `workflow_call` (inputs `build`, boolean, default `true`, and `version`, string, default `""`;
+  secrets inherited).
+- `concurrency: group: v3-system-tests-${{ github.ref }}`, `cancel-in-progress: false`.
+- Watching: mason's `[watch.ci]` (§11.3) files a ticket when a run on `develop` goes red;
+  `v3-release.yml` calls this workflow with `build: false` and publishes only when it is green.
+- Jobs:
+  1. `version` (`ubuntu-24.04`): outputs `version` = `inputs.version` when non-empty, else the
+     content of `v3/VERSION`.
+  2. Build jobs, each with `if: ${{ inputs.build != false }}` (true for push and schedule, which
+     have no inputs): `ffmpeg` (`uses: ./.github/workflows/v3-ffmpeg.yml`), `exiftool`
+     (`uses: ./.github/workflows/v3-exiftool.yml`), `trd-packages` (`needs: [version, ffmpeg,
+     exiftool]`, `uses: ./.github/workflows/v3-trd-build.yml`, `with: version, is_release: false`,
+     `secrets: inherit`). With `build: false` they are skipped and the test jobs use the
+     `release-asset-*` artifacts that the calling run already uploaded.
+  3. Test jobs. Each `needs: [version, trd-packages]` and has
+     `if: ${{ !cancelled() && needs.version.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.trd-packages.result) }}`:
+
+| Job | Runner | Steps |
+|---|---|---|
+| `trd-install-macos` | `macos-15` | download `release-asset-trd-macos-universal`; `sudo installer -pkg trd-*.pkg -target /`; check that the app, its `trd`, `ffmpeg`, `ffprobe` and exiftool, and `/Library/LaunchAgents/com.timelapserender.trd.plist` exist; wait up to 60 s for `launchctl print gui/$(id -u)/com.timelapserender.trd` to report `state = running` (if `postinstall` found no console user on the runner, bootstrap the agent with `launchctl bootstrap gui/$(id -u) …` and print a warning); `trd status --plain` answers within 60 s; `codesign --verify --strict --deep` on the app; when the package is signed, `spctl --assess --type install` on it; finally boot the agent out and remove the app and plist |
+| `trd-install-linux` | matrix `ubuntu-24.04` (amd64), `ubuntu-24.04-arm` (arm64) | download the matching deb; `sudo apt-get install -y ./trd_*_<arch>.deb`; check `/usr/bin/trd version`; `sudo loginctl enable-linger "$USER"`, `export XDG_RUNTIME_DIR=/run/user/$(id -u)`, wait up to 60 s for `systemctl --user is-system-running` to answer; check `systemctl --user is-enabled trd` prints `enabled` (from `--global enable`); `systemctl --user start trd`; `trd status --plain` answers within 60 s; `systemctl --user stop trd`; `sudo apt-get remove -y trd`; check `/usr/lib/trd` is gone |
+| `trd-install-windows` | `windows-2022` | download the setup; run `trd-*-setup.exe /S`; wait up to 60 s for `schtasks /Query /TN TimelapseRenderDaemon` to succeed and `trd.exe status --plain` (from `%LOCALAPPDATA%\Programs\TimelapseRenderDaemon`) to answer; run the uninstaller with `/S`; check the task and the directory are gone |
+| `trd-live` | matrix `macos-15`, `ubuntu-24.04`, `windows-2022` | checkout; `Swatinem/rust-cache@v2`; on Linux the linger and `XDG_RUNTIME_DIR` setup above; `CI=true TRD_SERVICE_TEST=1 cargo test -p trd --test service_live -- --ignored --test-threads=1` (TRD-21); on Linux also `CI=true TRD_MDNS_TEST=1 cargo test -p trd --test mdns_live -- --ignored` (TRD-19). `--ignored` runs exactly the `system_test!` tests (TRD-05), which fail rather than skip if either variable is missing, so a green job means they really ran |
+
+- Specs 2–4 add their own build jobs (with the same `if`) and test jobs to this workflow:
+  `desktop-packages` and `desktop-selftest`, `kotlin-mdns` (DSK-13), `ios-app-tests` (IOS-09),
+  `android-emulator` (AND-06).
 
 ## 10. Packaging and autostart
 
@@ -1349,7 +1396,8 @@ acting.
 - `v3/Makefile`: overview §9 (dynamic component discovery).
 - `v3/scripts/check-spdx.sh`: checks every tracked file under `v3/`, `.mason/` and
   `.github/workflows/v3-*.yml` with the extensions of overview §10 rule 6 for both SPDX lines,
-  skipping generated files and JSON; prints offending files and exits 1.
+  skipping generated files, JSON and anything under a `fixtures/` directory (test inputs, some
+  deliberately without headers); prints offending files and exits 1.
 - `v3/scripts/check-workflows.sh`: downloads actionlint 1.7.x (newest patch, pinned by version and
   SHA-256 per platform in the script) into `v3/.tools/` (gitignored) unless present, and runs it on
   `.github/workflows/v3-*.yml`.
@@ -1373,6 +1421,57 @@ acting.
   `[workspace.package] version`, and `MARKETING_VERSION` in `v3/ios/project.yml` (without the
   pre-release suffix, which App Store Connect does not accept), when those files exist (the
   Kotlin build reads `v3/VERSION`); prints the commit and tag commands.
+- `v3/scripts/check-makefiles.sh`: for every component of overview §9 whose directory exists,
+  `make -C <dir> -n <target>` must succeed for each of `run`, `develop`, `release`, `clean`,
+  `test`, `check` and `ci` (a dry run, so nothing is built or started); it also checks `v3/Makefile`
+  the same way; prints each missing target and exits 1.
+- `v3/scripts/check-test-names.py [--spec N]… [--ticket ID]… [--completed]` (Python 3 standard
+  library, run with `python3 -I`): proves that every test the specs name exists under that name.
+  It reads `v3/<N>-*.md` for N in 1–4. A ticket's text runs from its `### <ID>` heading to the
+  next `---` line, `## <n>.` heading or `### ` ticket heading (overview §12). Names come from the
+  `check:` clause of each `- A<n>:` line under the ticket's `## Acceptance criteria`; with
+  `--spec N` (and `--completed`) also from the "Automated tests" column of that spec's test-plan
+  table (the table under its `## <n>. Test plan` heading). Three kinds of name, each found in the
+  files under `v3/` outside the build directories that `v3/.gitignore` lists:
+  - a Rust test function: a backticked `[a-z][a-z0-9_]*` token in a list introduced by the word
+    `test` or `tests` (for example "tests `missing_tool_problem`, `broken_tool_problem`"). It
+    exists when a `.rs` file under `v3/trd/` has `fn <name>(` within three lines after a
+    `#[test]` or `#[tokio::test…]` attribute, or a `system_test!(<SWITCH>, async fn <name>()`
+    line;
+  - a test class: a backticked token matching `[A-Z][A-Za-z0-9]*Tests?`, optionally followed by
+    `.<member>` (only the class is checked). It exists when a `.kt` or `.swift` file under a
+    directory named `test`, `androidTest`, `testFixtures` or ending in `Tests` declares `class`,
+    `struct` or `object` with that name;
+  - a file: each word of a backticked token that ends in `.rs`, `.kt`, `.swift`, `.sh` or `.py`
+    and contains no `*`, `<` or `$` (so both `tests/adopt.rs` and the script in
+    `bash v3/trd/scripts/ci.sh` count). It exists when some file's path relative to the
+    repository root ends with that word (so `tests/adopt.rs` matches
+    `v3/trd/crates/trd-core/tests/adopt.rs`).
+
+  `--completed` selects every spec whose final ticket has landed, recognised by a file that
+  ticket creates: spec 1 `v3/trd/scripts/ci-media.sh` (TRD-GATE), spec 2
+  `.github/workflows/v3-desktop-build.yml` (DSK-13), spec 3 `.github/workflows/v3-ios-build.yml`
+  (IOS-09), spec 4 `.github/workflows/v3-android-build.yml` (AND-06). It prints one line
+  `MISSING <ticket ID or "test plan N">: <name> (<kind>)` per absent name and exits 1, or prints
+  `TEST-NAMES-OK <number of names checked>` and exits 0 (also when nothing is selected). It
+  honours `V3_ROOT`; the repository root is the parent of `V3_ROOT`.
+- `v3/scripts/test-scripts.sh`: tests the scripts above, each against a temporary copy of the
+  files it touches (every script honours `V3_ROOT`, the directory that plays the role of `v3/`,
+  defaulting to the real one): `check-spdx.sh` flags a fixture missing a header and passes one with
+  both lines, a generated file and a JSON file; `suite.sh` prints the right placeholder for each
+  parser kind when a component is absent and runs the real command when it is present (using
+  stub components in the temporary tree); `bump-version.sh 3.1.0-beta.2` writes `3.1.0-beta.2`,
+  the Cargo version and `MARKETING_VERSION: "3.1.0"`; `check-makefiles.sh` fails for a stub
+  Makefile missing `develop` and passes for a complete one; `check-workflows.sh` fails for a
+  fixture workflow with a syntax error; `check-test-names.py`, given a fixture spec
+  `1-fixture.md` whose one ticket `TRD-01` names a Rust test, a test class and a file in its
+  acceptance criteria, whose test-plan table names another of each, and a fixture tree that
+  lacks the criteria's Rust test and the table's class and file, prints exactly those three
+  `MISSING` lines with `--spec 1` and exits 1, prints only the Rust test's line with
+  `--ticket TRD-01`, and prints `TEST-NAMES-OK 6` once the three are added; with no marker files
+  `--completed` prints `TEST-NAMES-OK 0`. It prints
+  `PASS <name>` / `FAIL <name>` lines and exits 1 on any failure. Fixtures live in
+  `v3/scripts/fixtures/`.
 - `v3/.gitignore`: `.tools/`, `ffmpeg/.work/`, `ffmpeg/dist/`, `exiftool/.work/`,
   `exiftool/dist/`, `trd/target/`, `clients/kotlin/**/build/`, `clients/kotlin/.gradle/`,
   `ios/*.xcodeproj/`, `ios/build/`, `ios/DerivedData/`.
@@ -1454,8 +1553,9 @@ next = "test"
 [step.test]
 type = "test"
 category = "testing"
-suites = ["t0-diff-check", "t0-spdx", "t0-workflows", "trd-check", "trd-test", "trd-e2e",
-          "ffmpeg-smoke", "exiftool-smoke", "kotlin-test", "android-test", "ios-kit-test", "ios-build"]
+suites = ["t0-diff-check", "t0-spdx", "t0-workflows", "t0-scripts", "t0-makefiles", "t0-mason",
+          "trd-check", "trd-test", "trd-e2e", "ffmpeg-smoke", "exiftool-smoke",
+          "kotlin-test", "android-test", "ios-kit-test", "ios-build"]
 max_rounds = 3
 on_red = "develop"
 next = "review"
@@ -1485,6 +1585,13 @@ count = 1
 when = ["development", "test_step", "batch"]
 [binding.t1]
 when = ["test_step", "batch"]
+
+# develop's own CI: a red v3-gate freezes landing until it is green again; a red run of any other
+# workflow on develop (v3-system-tests above all) becomes a ticket through mason's long-red rule.
+[watch.ci]
+enabled = true
+gate = "v3-gate"
+exclude = []
 ```
 
 Suites (each `command` is `bash v3/scripts/suite.sh <name> 2>&1`, so the commands below are what
@@ -1495,7 +1602,10 @@ Suites (each `command` is `bash v3/scripts/suite.sh <name> 2>&1`, so the command
 | `t0-diff-check` | t0 | `git diff --check $(git merge-base HEAD origin/develop) && echo T0-DIFF-OK` | regex `^T0-DIFF-OK$` | — |
 | `t0-spdx` | t0 | `bash v3/scripts/check-spdx.sh && echo T0-SPDX-OK` | regex `^T0-SPDX-OK$` | — |
 | `t0-workflows` | t0 | `bash v3/scripts/check-workflows.sh && echo T0-WORKFLOWS-OK` | regex `^T0-WORKFLOWS-OK$` | — |
-| `trd-check` | t1 | `cargo fmt --all --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` in `v3/trd`, each printed as `test trd_fmt ... ok|FAILED` / `test trd_clippy ... ok|FAILED` | regex pass `^test (.+) \.\.\. ok$`, fail `^test (.+) \.\.\. FAILED$` | compile 1 |
+| `t0-scripts` | t0 | `bash v3/scripts/test-scripts.sh` | regex pass `^PASS (.+)$`, fail `^FAIL (.+)$` | — |
+| `t0-makefiles` | t0 | `bash v3/scripts/check-makefiles.sh && echo T0-MAKEFILES-OK` | regex `^T0-MAKEFILES-OK$` | — |
+| `t0-mason` | t0 | `mason definition check && echo T0-MASON-OK` (only on the owner's Mac, where `mason` is installed; the gate has no equivalent) | regex `^T0-MASON-OK$` | — |
+| `trd-check` | t1 | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `bash scripts/test-check-system-tests.sh` and `bash scripts/check-system-tests.sh` in `v3/trd`, each printed as `test trd_fmt ... ok|FAILED` / `test trd_clippy ... ok|FAILED` / `test trd_system_test_rules_selftest ... ok|FAILED` / `test trd_system_test_rules ... ok|FAILED` | regex pass `^test (.+) \.\.\. ok$`, fail `^test (.+) \.\.\. FAILED$` | compile 1 |
 | `trd-test` | t1 | `cargo test --workspace --locked` in `v3/trd` | regex pass `^test (.+) \.\.\. ok$`, fail `^test (.+) \.\.\. FAILED$` | test-suite 1 |
 | `trd-e2e` | t1 | `TRD_E2E=1 bash v3/trd/scripts/ci-media.sh` with the tools resolved by §6.15 (on the Mac: PATH ffmpeg/exiftool until the bundled ones are built) | regex as `trd-test` | test-suite 1 |
 | `ffmpeg-smoke` | t1 | `v3/ffmpeg/build.sh` for the host's native target, then `v3/ffmpeg/smoke_test.sh --target <target> v3/ffmpeg/dist/<target>`, printing `PASS <name>` / `FAIL <name>` lines | regex pass `^\s*PASS\s+(.+)$`, fail `^\s*FAIL\s+(.+)$` | exclusive 1 |
@@ -1503,9 +1613,9 @@ Suites (each `command` is `bash v3/scripts/suite.sh <name> 2>&1`, so the command
 | `kotlin-test` | t1 | `bash v3/clients/kotlin/scripts/mason-desktop.sh` (spec 2), which writes `v3/clients/kotlin/build/mason-desktop-results.xml` | junit, `results_file` that path | test-suite 1 |
 | `android-test` | t1 | `bash v3/clients/kotlin/scripts/mason-android.sh` (spec 4), which writes `v3/clients/kotlin/build/mason-android-results.xml` | junit | test-suite 1 |
 | `ios-kit-test` | t1 | `swift test --package-path v3/ios/TRMKit` | xctest | test-suite 1 |
-| `ios-build` | t1 | `bash v3/ios/scripts/mason-build.sh` (spec 3): xcodegen + simulator build, no tests, printing `test ios_build ... ok|FAILED` | regex as `trd-test` | compile 1 |
+| `ios-build` | t1 | `bash v3/ios/scripts/mason-build.sh` (spec 3): xcodegen, then `build-for-testing` of the app and its unit-test target for the simulator (compiles, runs nothing), printing `test ios_build ... ok|FAILED` | regex as `trd-test` | compile 1 |
 
-Every suite has `min_tests = 1` until `TRD-GATE`, `DSK-12`, `IOS-08` and `AND-06` raise their
+Every suite has `min_tests = 1` until `TRD-GATE`, `DSK-13`, `IOS-09` and `AND-06` raise their
 floors to 90 % of the measured counts.
 
 Impact map:
@@ -1518,13 +1628,14 @@ Impact map:
 "v3/exiftool/**" = ["exiftool-smoke", "trd-e2e"]
 "v3/clients/kotlin/**" = ["kotlin-test", "android-test"]
 "v3/ios/**" = ["ios-kit-test", "ios-build"]
-"v3/scripts/**" = ["t0-spdx", "t0-workflows"]
+"v3/scripts/**" = ["t0-spdx", "t0-workflows", "t0-scripts", "t0-makefiles"]
 "v3/assets/**" = []
 "v3/*.md" = []
 "v3/instructions" = []
-"v3/Makefile" = []
+"v3/Makefile" = ["t0-makefiles"]
+"v3/**/Makefile" = ["t0-makefiles"]
 ".github/**" = ["t0-workflows"]
-".mason/**" = ["t0-workflows"]
+".mason/**" = ["t0-workflows", "t0-mason"]
 "CLAUDE.md" = []
 ```
 
@@ -1622,6 +1733,10 @@ restarts masond.
 - `v3/scripts/check-workflows.sh` (new)
 - `v3/scripts/suite.sh` (new)
 - `v3/scripts/bump-version.sh` (new)
+- `v3/scripts/check-makefiles.sh` (new)
+- `v3/scripts/check-test-names.py` (new)
+- `v3/scripts/test-scripts.sh` (new)
+- `v3/scripts/fixtures/README.md` (new)
 - `.github/actionlint.yaml` (new)
 - `.github/ISSUE_TEMPLATE/mason-ticket.md` (new)
 - `.github/workflows/v3-gate.yml` (new)
@@ -1630,18 +1745,24 @@ restarts masond.
 - `CLAUDE.md` (new)
 
 ## Approach
-1. Write every file of §11.1 with the content §9.1, §11.3, §11.4 and §11.5 give.
-2. Run `bash v3/scripts/check-spdx.sh`, `bash v3/scripts/check-workflows.sh` and
+1. Write every file of §11.1 with the content §9.1, §11.3, §11.4 and §11.5 give, including the
+   fixtures `test-scripts.sh` uses under `v3/scripts/fixtures/`.
+2. Run `bash v3/scripts/test-scripts.sh`, `bash v3/scripts/check-spdx.sh`,
+   `bash v3/scripts/check-workflows.sh`, `bash v3/scripts/check-makefiles.sh`,
+   `python3 -I v3/scripts/check-test-names.py --completed` and
    `bash v3/scripts/suite.sh <name>` for every suite.
 3. Push to a branch, dispatch `v3-gate.yml` on it, merge to `develop` when green.
 
 ## Acceptance criteria
 - A1: every suite in §11.3 passes with its placeholder case — check: `for s in …; do bash v3/scripts/suite.sh $s; done`.
 - A2: `v3-gate.yml` is green on `develop` with every component job skipped — check: the Actions run.
-- A3: `mason definition check` accepts `.mason/mason.toml` — check: run it in the repository.
+- A3: `mason definition check` accepts `.mason/mason.toml` — check: `mason definition check` in the repository root.
+- A4: every case in `test-scripts.sh` passes, including the deliberately broken fixtures being reported — check: `bash v3/scripts/test-scripts.sh`.
+- A5: `check-makefiles.sh` passes for `v3/Makefile` — check: `bash v3/scripts/check-makefiles.sh`.
+- A6: `check-test-names.py` reports exactly the missing names of its fixture spec, and `--completed` passes on the bootstrap tree — check: `bash v3/scripts/test-scripts.sh` (its `check-test-names` cases) and `python3 -I v3/scripts/check-test-names.py --completed`.
 
 ## Tests
-None beyond the checks above.
+`v3/scripts/test-scripts.sh` covers every script of §11.1 (cases listed there).
 
 ## CI
 `v3-gate.yml` (new).
@@ -1670,6 +1791,14 @@ Depends on: none
 - `v3/trd/rust-toolchain.toml` (new)
 - `v3/trd/Makefile` (new)
 - `v3/trd/scripts/ci.sh` (new)
+- `v3/trd/scripts/coverage.sh` (new)
+- `v3/trd/scripts/coverage.py` (new)
+- `v3/trd/scripts/test_coverage.py` (new)
+- `v3/trd/scripts/fixtures/llvm-cov.json` (new)
+- `v3/trd/scripts/check-system-tests.sh` (new)
+- `v3/trd/scripts/test-check-system-tests.sh` (new)
+- `v3/trd/scripts/fixtures/system-tests/` (new; the four fixture trees of step 8)
+- `v3/trd/coverage-floors.toml` (new)
 - `v3/trd/crates/trd-core/Cargo.toml` (new)
 - `v3/trd/crates/trd-core/src/lib.rs` (new)
 - `v3/trd/crates/trd/Cargo.toml` (new)
@@ -1692,14 +1821,48 @@ Depends on: none
    (until later tickets: `run` = `cargo run -- daemon`, `develop`/`develop-daemon` print "sandbox
    arrives with TRD-28" and exit 1, `release` = `cargo build --release`).
 6. `scripts/ci.sh`: §9.1 `trd` row, bash 3.2, `set -euo pipefail`, works under Git Bash on Windows.
+7. Coverage: `scripts/coverage.sh` first runs `python3 -I -m unittest scripts/test_coverage.py`,
+   adds the `llvm-tools-preview` component, runs
+   `cargo llvm-cov --workspace --locked --json --output-path target/llvm-cov.json` (fake tools, as
+   `cargo test`), then `python3 -I scripts/coverage.py target/llvm-cov.json coverage-floors.toml`,
+   which sums line coverage per crate from the files under `crates/<crate>/src/` (generated code
+   and `trd-testtools` excluded), prints a table and exits 1 when a crate is below its floor.
+   `coverage-floors.toml` holds `trd-core = 0` and `trd = 0` (TRD-GATE raises them, overview §15.3).
+   `make coverage` runs it.
+8. `scripts/check-system-tests.sh` (bash 3.2; honours `TRD_ROOT`, default the `v3/trd` directory
+   above the script) enforces overview §10 rules 1–2 and §15.2 for the daemon's tests by reading
+   the files under `crates/*/tests/` and `crates/trd-testtools/src/`:
+   - R1: every `crates/*/tests/*_live.rs` file (a system test target) declares its tests only
+     with `system_test!` (TRD-05): it contains at least one `system_test!(` and no line matching
+     `^[[:space:]]*#\[(tokio::)?test`;
+   - R2: no other file there contains `SysinfoProcessTable`, `MdnsSdRegistrar`, `ServiceDaemon`
+     or `SystemRunner` (the real process table, mDNS registration and service-manager runner of
+     TRD-08, TRD-19 and TRD-21);
+   - R3: every other file there that contains `"daemon"` (the argument that starts the `trd`
+     daemon) also contains `"--no-mdns"` and at least one of `"--sandbox"` and `"--no-adopt"`.
+
+   It prints `check-system-tests: <file>: R<n> <explanation>` per violation and exits 1, or
+   prints `SYSTEM-TESTS-OK` and exits 0 (also while there are no test files). Unit tests inside
+   `src/` are covered differently: the real implementations panic when used inside a unit test
+   (`assert!(!cfg!(test), …)`, TRD-08, TRD-19, TRD-21). `scripts/test-check-system-tests.sh` copies the fixture trees under
+   `scripts/fixtures/system-tests/` (`good`, `r1`, `r2`, `r3`, each holding small `.rs` files
+   under `crates/x/tests/` that are never compiled) into a temporary directory, runs the checker
+   on each with `TRD_ROOT`, expects `SYSTEM-TESTS-OK` for `good` and exit 1 naming the matching
+   rule for the others, and prints `PASS <name>` / `FAIL <name>`. `ci.sh` runs both scripts
+   before `cargo test`, and `make check` runs them too.
 
 ## Acceptance criteria
 - A1: `cargo build --workspace --locked` and `cargo test --workspace --locked` succeed — check: `make -C v3/trd test`.
 - A2: `trd version` prints `trd 3.0.0 (<platform>)` — check: `cargo run -q -p trd -- version`.
-- A3: the gate's `trd` job is green on all three runners — check: `v3-gate.yml`.
+- A3: the gate's `trd` and `trd-coverage` jobs are green — check: `v3-gate.yml`.
+- A4: `coverage.py` reports per-crate line coverage from a recorded `llvm-cov` JSON fixture and fails when a floor is above it — check: `python3 -I -m unittest v3/trd/scripts/test_coverage.py`.
+- A5: `check-makefiles.sh` passes for `v3/trd` — check: `bash v3/scripts/check-makefiles.sh`.
+- A6: `check-system-tests.sh` passes on the skeleton and names the broken rule for each bad fixture tree — check: `bash v3/trd/scripts/test-check-system-tests.sh` and `bash v3/trd/scripts/check-system-tests.sh`.
 
 ## Tests
 `trd/tests/cli.rs`: `version` output; an unimplemented subcommand exits 1.
+`v3/trd/scripts/test_coverage.py` (new): the coverage summary and floor check against a fixture.
+`v3/trd/scripts/test-check-system-tests.sh` (new): the three rules against the fixture trees.
 
 ## CI
 `v3-gate.yml` jobs `t0` and `trd`.
@@ -1840,9 +2003,11 @@ and has the §6.13 database with migrations.
 - A2: `log` sequence numbers keep increasing across a close and reopen — check: test `log_seq_survives_reopen`.
 - A3: retention deletes old history rows and log rows beyond the limits — check: test `retention`.
 - A4: paths per OS match overview §4 for a given home — check: test `dirs_per_os`.
+- A5: `log_event` writes one `tracing` record (captured by a test subscriber) and one `log` row with the same fields, and publishes the row to live subscribers — check: test `log_event_writes_both`.
+- A6: `--data-dir` and `--log-dir` override the defaults — check: test `dir_overrides`.
 
 ## Tests
-`tests/store.rs` (A1–A3), unit tests in `dirs.rs` (A4).
+`tests/store.rs` (A1–A3, A5), unit tests in `dirs.rs` (A4, A6).
 
 ## CI
 `v3-gate.yml` `trd`.
@@ -1871,6 +2036,10 @@ fake tools that let every later test run without real media tools.
 - `v3/trd/crates/trd-testtools/src/bin/fake-ffmpeg.rs` (new)
 - `v3/trd/crates/trd-testtools/src/bin/fake-ffprobe.rs` (new)
 - `v3/trd/crates/trd-testtools/src/bin/fake-exiftool.rs` (new)
+- `v3/trd/crates/trd-testtools/src/system_test.rs` (new)
+- `v3/trd/crates/trd-testtools/tests/fakes.rs` (new)
+- `v3/trd/crates/trd-testtools/tests/system_test_macro.rs` (new)
+- `v3/trd/scripts/fake-tools-dir.sh` (new)
 
 ## Approach
 1. `Tools::resolve(env, exe_path)` implementing the four-step order, the Perl wrapper for the Unix
@@ -1879,7 +2048,12 @@ fake tools that let every later test run without real media tools.
    `write_output`, `wait_for_file`, `progress_end`); answers `-version`; finds `-progress <file>`
    and the last argument; writes one progress block per frame (blocking on `wait_for_file` before
    the last frame when set, so tests can suspend deterministically); writes a small output file
-   unless told not to; exits with `exit_code`. Thumbnail invocations write a tiny JPEG.
+   unless told not to; exits with `exit_code`. Thumbnail invocations write a tiny JPEG. An output
+   argument containing a `%0Nd` pattern (an image sequence, as the sandbox generates) writes
+   `-frames:v` numbered files (default 1). The script may hold `rules`, a list of
+   `{"match": "<substring of the joined arguments>", …behaviour fields}`; the first rule whose
+   `match` occurs in the arguments supplies the behaviour, so one test can make a single
+   sequence fail (for example `{"match": "sandbox-c", "exit_code": 1, "stderr_lines": ["Invalid data found when processing input"]}`).
 3. `fake-ffprobe`: prints `width=`/`height=` from `TRD_FAKE_FFPROBE` (`{"width":..,"height":..}`).
 4. `fake-exiftool`: `-ver`; `-csv -@ argfile` prints CSV rows from `TRD_FAKE_EXIFTOOL`
    (`{"rows": {"<file name>": {"Tag": "value"}}}`); write mode returns the exit code and output
@@ -1887,14 +2061,33 @@ fake tools that let every later test run without real media tools.
 5. `lib.rs`: helpers that build a temp dir with the fakes named `ffmpeg`, `ffprobe`, `exiftool`
    (copies of the built binaries; on macOS ad-hoc signed with `/usr/bin/codesign -s -`, mason's
    rule for copied binaries).
+6. `scripts/fake-tools-dir.sh <dest>`: builds `trd-testtools` and makes the same directory at
+   `<dest>` (`.exe` names on Windows) for scripts outside cargo tests (the client contract tests,
+   the sandbox tests).
+7. `system_test.rs`, the guard for system tests (overview §15.2), re-exported from `lib.rs`:
+   - `system_test_allowed(get: impl Fn(&str) -> Option<String>, switch: &str) -> bool`: true only
+     when `get("CI")` is `Some("true")` and `get(switch)` is `Some("1")`;
+   - `require_system_test(switch: &str)`: panics with `refusing to run a system test outside CI:
+     set CI=true and <switch>=1` unless `system_test_allowed(|k| std::env::var(k).ok(), switch)`;
+   - the macro `system_test!(SWITCH, async fn name() { … })`, which expands to an `async fn name()`
+     carrying `#[tokio::test(flavor = "multi_thread")]` and
+     `#[ignore = "system test: run by v3-system-tests.yml"]` whose body calls
+     `require_system_test("SWITCH")` before anything else. Ordinary runs therefore skip system
+     tests, and `-- --ignored` without both variables fails instead of passing silently. The
+     calling crate needs `tokio` (features `macros`, `rt-multi-thread`) as a dev-dependency.
 
 ## Acceptance criteria
 - A1: resolution follows the order, including the development-tree step — check: `cargo test -p trd-core tools`.
-- A2: a missing tool yields `PROBLEM_TOOL_MISSING` listing the paths tried — check: test `missing_tool_problem`.
-- A3: the fakes behave as scripted on macOS, Linux and Windows — check: `cargo test -p trd-testtools`.
+- A2: a missing tool yields `PROBLEM_TOOL_MISSING` listing the paths tried, and a tool whose version command fails yields `PROBLEM_TOOL_BROKEN` — check: tests `missing_tool_problem`, `broken_tool_problem`.
+- A3: the fakes behave as scripted on macOS, Linux and Windows, including image-sequence outputs, the thumbnail JPEG, `wait_for_file`, and the corrupt-write output of fake-exiftool — check: `cargo test -p trd-testtools`.
+- A4: `fake-tools-dir.sh` produces a directory that `Tools::resolve` accepts through `TRD_FFMPEG_DIR` and `TRD_EXIFTOOL_DIR` — check: test `fake_tools_dir_resolves` (runs the script into a temp dir).
+- A5: `system_test_allowed` is true only for `CI=true` together with the switch set to `1`: unset, empty, `false`, `1` for `CI`, or `true`, `0` for the switch all give false — check: test `system_test_guard_matrix`.
+- A6: `require_system_test` panics with the refusal when the switch is unset — check: test `require_system_test_refuses` (`#[should_panic]`, with a switch name that is never set).
+- A7: a `system_test!` test is ignored by an ordinary run: `tests/system_test_macro.rs` declares `system_test!(TRD_TESTTOOLS_NEVER_SET, async fn sample_system_test() {})`, which would fail the run through its guard if it were not ignored — check: test `sample_system_test` is listed as ignored by `cargo test -p trd-testtools`, which passes.
 
 ## Tests
-`tools.rs` unit tests with temp trees; `trd-testtools/tests/fakes.rs`.
+`tools.rs` unit tests with temp trees; `trd-testtools/tests/fakes.rs` (A3, A4); `system_test.rs`
+unit tests (A5, A6); `trd-testtools/tests/system_test_macro.rs` (A7).
 
 ## CI
 `v3-gate.yml` `trd`.
@@ -1935,6 +2128,10 @@ sizes exactly as §6.3 says, without ever blocking on a slow path.
 - A2: a path whose listing hangs is reported unreachable while the others are scanned — check: test `slow_path_does_not_block` (fake filesystem that blocks until released).
 - A3: a backup sidecar with no count is skipped and a source entry overrides a backup one — check: tests `backup_zero_skipped`, `source_overrides_backup`.
 - A4: rate and ETA come out of injected samples — check: test `export_rate`.
+- A5: `ignore_sequence_regexes`, hidden files, non-regular files, extension case and zero-frame directories follow §6.3 — check: tests `ignore_regexes`, `hidden_and_irregular_files`, `extension_case`, `zero_frames_ignored`.
+- A6: a sequence directory whose mtime is unchanged is not listed again until 60 s pass; a raw directory not until 10 minutes pass — check: test `mtime_cache` (counting filesystem, injected clock).
+- A7: `$YEAR` source and export paths are expanded and scanned — check: test `year_paths_scanned`.
+- A8: the export size is measured in the background at most every 60 s, two at a time — check: test `export_size_measurement`.
 
 ## Tests
 `tests/scan.rs` over temp trees and a fake filesystem; no sleeps (injected clock).
@@ -1984,6 +2181,9 @@ answer and the exact ffmpeg argument vector of §6.5.
 - A2: an original-size render of a 6000×4000 sequence gets `-aspect 3/2` — check: test `original_size_aspect_from_source`.
 - A3: `[720]` on a 6000×4000 source gives 720×480 and the name suffix `_720w_` — check: test `width_only`.
 - A4: every ported Swift test passes — check: `cargo test -p trd-core`.
+- A5: output names strip both prefixes repeatedly and match the names the Perl and Swift daemons produced for the same configs (`_720p_`, `_2160p_`, `_OriRes_`, `_720w_` examples from the repository's `config.json` and `gui_config.json`) — check: test `names_match_older_daemons`.
+- A6: `already_rendered` finds the output in any expanded `master_videos` or `export_paths` directory and in queued, running or suspended jobs, and not elsewhere — check: test `already_rendered_locations`.
+- A7: a failing ffprobe gives `FAILURE_NOT_QUEUEABLE` with "could not read the frame size of <file>"; no numbered frames give `FAILURE_NOT_QUEUEABLE` with the input analysis — check: tests `probe_failure`, `no_pattern`.
 
 ## Tests
 `tests/plan.rs`; fake-ffprobe for the size probe.
@@ -2021,21 +2221,28 @@ adapted to the `-progress` key=value format).
 1. `spawn_detached(argv, log_path) -> RunningProcess { pid, start_time }` with the unix and Windows
    flags of §6.6; launch failure is a typed error.
 2. `wait(&mut RunningProcess) -> ExitInfo { code, by_signal }` for children; `is_alive(pid, start_time)`
-   for adopted ones via `sysinfo`.
+   for adopted ones, querying only that pid through `sysinfo` (it never lists other processes).
 3. `suspend`, `resume`, `terminate(grace = 10 s)` per platform (`nix` on unix; `NtSuspendProcess`,
    `NtResumeProcess`, `TerminateProcess` on Windows).
 4. `progress.rs`: incremental reader of a `-progress` file returning the latest complete block.
-5. A `ProcessTable` trait (list processes with name, args, start time) with a `sysinfo`
-   implementation and a fake for tests.
+5. A `ProcessTable` trait (list processes with name, args, start time) with the `sysinfo`
+   implementation `SysinfoProcessTable` and `FakeProcessTable` for tests.
+   `SysinfoProcessTable::new` begins with
+   `assert!(!cfg!(test), "SysinfoProcessTable lists the owner's real processes; tests use FakeProcessTable")`,
+   so no unit test can list real processes; integration tests may not name it either
+   (`check-system-tests.sh` R2, TRD-01).
 
 ## Acceptance criteria
 - A1: a fake-ffmpeg run's progress is read block by block and its exit code reported — check: `cargo test -p trd-core process`.
 - A2: suspend then resume of a fake-ffmpeg blocked on `wait_for_file` works on all three OSes — check: test `suspend_resume` (asserts process state, no timing).
 - A3: terminate ends a suspended process — check: test `terminate_suspended`.
 - A4: the child survives the parent's process group being signalled (unix) — check: test `own_process_group`.
+- A5: `SysinfoProcessTable::new` panics inside a unit test — check: test `sysinfo_table_refuses_in_unit_tests` (`#[should_panic]`, in `process.rs`).
+- A6: `FakeProcessTable` returns exactly the processes a test gives it — check: test `fake_table_lists_given_processes`.
 
 ## Tests
-`tests/process.rs` with fake-ffmpeg; deadlines only as hang guards.
+`tests/process.rs` with fake-ffmpeg; deadlines only as hang guards. `process.rs` unit tests (A5,
+A6).
 
 ## CI
 `v3-gate.yml` `trd` (all three OSes).
@@ -2208,6 +2415,13 @@ stop functions).
 - A5: global pause suspends running jobs and resume continues only those — check: test `global_pause`.
 - A6: delete-after-render waits for every variant — check: test `delete_waits_for_all_variants`.
 - A7: a failed variant is not re-queued by the next scan — check: test `failed_not_requeued`.
+- A8: queued jobs start in order of their sequence's first sighting, then the variant's position in `rendering` — check: test `promotion_order`.
+- A9: a queued job is removed when its variant leaves the config, its output appears, or its sequence is paused or disappears — check: test `unwanted_jobs_removed`.
+- A10: on success the partial file is renamed to the final name; if the final name already exists the partial is deleted and the variant counts as already rendered — check: tests `rename_on_success`, `final_name_taken`.
+- A11: an orphaned `.*.partial.mov` is deleted at start-up and by the 10-minute sweep, but never one a live job owns — check: test `stale_partial_sweep`.
+- A12: only the newest 200 render logs are kept; progress files are deleted when a job ends — check: test `render_log_retention`.
+- A13: a non-zero ffmpeg exit stores a diagnosed failure with the log tail, and a repeat of the same failure increments `occurrences` instead of adding a card — check: test `failure_recorded_and_merged`.
+- A14: every control of overview §6.9 writes one INFO log entry naming the action and target, and a control that does not apply returns `FAILED_PRECONDITION` — check: test `controls_logged_and_validated`.
 
 ## Tests
 `tests/queue.rs` with fake tools and temp trees, driven tick by tick (no sleeps).
@@ -2242,16 +2456,18 @@ ffmpeg renders, never signalling anything it was not asked to.
 1. `readopt(store, process_table)`: the three outcomes of §6.11 step 1.
 2. `adopt_foreign(process_table)`: parse arguments, skip `.partial.mov` outputs and outputs already
    owned, create adopted jobs; completion by output existence.
-3. Everything takes the `ProcessTable` trait; `--no-adopt` skips both.
+3. Everything takes the `ProcessTable` trait; `--no-adopt` skips both, and `--no-adopt-foreign`
+   (implied by `--sandbox`) skips `adopt_foreign` only.
 
 ## Acceptance criteria
 - A1: a job row whose process is alive with a matching start time is adopted with its progress — check: test `readopt_alive`.
 - A2: a dead process whose progress ends with `progress=end` and a non-empty partial is finished as a success — check: test `readopt_finished_while_down`.
 - A3: a pid reused by another process (start time differs) is not adopted — check: test `pid_reuse`.
-- A4: the fake process table is the only one tests use; no test reads the real process list — check: review of `tests/adopt.rs`.
+- A4: with `--no-adopt-foreign`, a job of its own is re-adopted while a foreign ffmpeg in the same table is neither adopted nor signalled — check: test `no_adopt_foreign_keeps_own`.
+- A5: the tests use only `FakeProcessTable` — check: `bash v3/trd/scripts/check-system-tests.sh` (R2: no test file names `SysinfoProcessTable`) and test `sysinfo_table_refuses_in_unit_tests` (TRD-08).
 
 ## Tests
-`tests/adopt.rs` with the fake process table.
+`tests/adopt.rs` with `FakeProcessTable`.
 
 ## CI
 `v3-gate.yml` `trd`.
@@ -2288,6 +2504,10 @@ Recently rendered on first start.
 ## Acceptance criteria
 - A1: a finished render's thumbnail is written and `has_thumbnail` set — check: test `thumbnail_written` (fake ffmpeg).
 - A2: a Swift `render_history.json` fixture imports once, skipping entries older than the window — check: test `import_once`.
+- A3: at most two thumbnails are made at once; a failing ffmpeg leaves `has_thumbnail = false` and logs a warning — check: tests `thumbnail_concurrency`, `thumbnail_failure`.
+- A4: an imported row without a thumbnail gets one on demand when its file exists, and none when it does not — check: test `thumbnail_on_demand`.
+- A5: history retention deletes the thumbnails of the rows it removes — check: test `thumbnail_retention`.
+- A6: imported rows get variant fields parsed from file names that match §6.5 and keep empty fields otherwise — check: test `import_parses_names`.
 
 ## Tests
 `tests/thumbs.rs`.
@@ -2368,6 +2588,12 @@ publishes the §6.10 `Snapshot` on every change.
 - A2: the ordering table holds for a mixed set of sequences — check: test `ordering`.
 - A3: with Full Disk Access missing no path is listed and the phase is WAITING_FOR_DISK_ACCESS — check: test `fda_blocks_scanning` (fake guard and a filesystem that fails the test if touched).
 - A4: a config edit triggers a rescan and an `EVENT_CONFIG_RELOADED` — check: test `config_reload_event`.
+- A5: every phase of §6.10 is reached in a scripted run (starting, no config, waiting for disk access, idle, exporting, rendering, paused) — check: test `phases`.
+- A6: each problem kind appears with its stable id and keeps its `since_ms` while it persists, then disappears when resolved — check: test `problems_lifecycle`.
+- A7: `counts`, `recently_rendered_total` and `revision` (strictly increasing, one step per change) are correct — check: test `snapshot_counters`.
+- A8: a count mismatch shows `STAGE_COUNT_MISMATCH` with the §6.10 note and never renders — check: test `count_mismatch`.
+- A9: `file_exists` of a recently rendered row is rechecked at most every 60 s — check: test `file_exists_cache` (injected clock).
+- A10: an adopted foreign render is left alone (§6.11 step 3): a fake-ffmpeg that the test itself started, listed in `FakeProcessTable` as a foreign render, is still running and not suspended after a global pause, a config reload that no longer covers its folder, and engine shutdown; only an explicit `StopRender` on its job ends it — check: test `foreign_render_left_alone`.
 
 ## Tests
 `tests/engine.rs`.
@@ -2455,7 +2681,8 @@ Paired devices can use the full API over pinned TLS on the LAN; nothing else can
 - A5: the fingerprint is unchanged across restarts — check: test `stable_identity`.
 
 ## Tests
-`tests/lan.rs` (never binds a non-loopback address).
+`tests/lan.rs`: the daemon runs with `--no-adopt --no-fda-check --no-mdns`, temporary
+directories and port 0, and never binds a non-loopback address.
 
 ## CI
 `v3-gate.yml` `trd`.
@@ -2476,23 +2703,37 @@ Depends on: TRD-17
 §8.4; ReelVault `discovery.rs`.
 
 ## Files
-- `v3/1-trd-core-daemon.md` (this spec; §8.4)
+- `v3/1-trd-core-daemon.md` (this spec; §8.4, §9.7)
 - `v3/trd/crates/trd/src/mdns.rs`
+- `v3/trd/crates/trd/tests/mdns_live.rs` (new)
 
 ## Approach
 1. Build `ServiceInfo` (instance sanitizing, host, port, addresses, TXT) in a pure function.
 2. Register with `mdns-sd`, re-register on address changes (checked every 30 s), unregister on
    shutdown, raise `PROBLEM_MDNS_FAILED` on errors. Off with `--no-mdns` or `--lan-bind off`.
+   Registration goes through a `Registrar` trait: `MdnsSdRegistrar` is the only code that creates
+   an `mdns_sd::ServiceDaemon`, and its `new` begins with
+   `assert!(!cfg!(test), "MdnsSdRegistrar uses real multicast; tests use FakeRegistrar")`; unit
+   tests use `FakeRegistrar`, which records registrations. The address source is a trait too, so
+   the re-registration logic is testable with a fake.
+3. `tests/mdns_live.rs` (system test, overview §15.2), declared with
+   `system_test!(TRD_MDNS_TEST, …)` (TRD-05): starts the `trd` binary with
+   `--sandbox --port 0 --lan-bind 127.0.0.1:0` (mDNS on), browses `_trd._tcp.local.` with an
+   `mdns-sd` browser in the test, and checks the instance name and every TXT record against
+   `GetServerInfo`; then stops `trd` and checks the service is removed within 30 s.
 
 ## Acceptance criteria
 - A1: the pure builder produces the §8.4 instance name, port and TXT records — check: unit tests.
-- A2: no test registers a real mDNS service (multicast could raise a macOS prompt) — check: review.
+- A2: an address change re-registers once with the new addresses; an unchanged set does not — check: unit test with the fake address source.
+- A3: real multicast happens only in the system test (it could raise a macOS prompt on the owner's Mac): `tests/mdns_live.rs` uses only `system_test!`, no other test names `MdnsSdRegistrar` or `ServiceDaemon`, and every other test that starts the daemon passes `--no-mdns` — check: `bash v3/trd/scripts/check-system-tests.sh` (R1–R3) and test `registrar_refuses_in_unit_tests` (`#[should_panic]`).
+- A4: the live test passes on the Linux runner — check: the `trd-live` job of `v3-system-tests.yml` (after TRD-29).
 
 ## Tests
-Unit tests of the builder.
+Unit tests of the builder, the re-registration logic and `registrar_refuses_in_unit_tests`;
+`tests/mdns_live.rs` (system test).
 
 ## CI
-`v3-gate.yml` `trd`.
+`v3-gate.yml` `trd` (the live test is ignored there); `v3-system-tests.yml` `trd-live`.
 
 ## Out of scope
 Client discovery.
@@ -2527,14 +2768,19 @@ when `log_in_color` and stdout is a terminal, never with `--plain`).
    line with bar, frames and path; indented variant lines with bar, frames, fps and ETA), recently
    rendered (time, relative time, file name, variant label, frames, duration, size, export path;
    newest 10). `--watch` redraws on the alternate screen at most twice a second.
+3. The tests run every client command through one helper, `client(address, args)`, which always
+   passes `--address` with the test daemon's port: a client command without it would reach
+   `127.0.0.1:50071`, the owner's installed `trd` (overview §10 rule 3).
 
 ## Acceptance criteria
 - A1: `trd status --plain` for a fixture snapshot equals a golden text — check: `cargo test -p trd cli_client`.
 - A2: each control subcommand changes the daemon's state, and `trd pair --json` prints the §5 object — check: tests against a daemon on port 0.
 - A3: `trd scan --once` lists complete sequences and the files it would render — check: test over a temp tree.
+- A4: the tests' client helper never falls back to the default address: with nothing listening on the port it is given, a client command exits 2 with "trd is not running on 127.0.0.1:<that port>" — check: test `client_uses_test_address`.
 
 ## Tests
-`tests/cli_client.rs`.
+`tests/cli_client.rs`: the daemon runs with `--sandbox --no-mdns --lan-bind off`, temporary
+directories and port 0.
 
 ## CI
 `v3-gate.yml` `trd`.
@@ -2563,24 +2809,37 @@ Depends on: TRD-18
 - `v3/trd/packaging/macos/com.timelapserender.trd.plist` (new)
 - `v3/trd/packaging/linux/trd.service` (new)
 - `v3/trd/packaging/windows/task.xml.in` (new)
+- `v3/trd/crates/trd/tests/service_live.rs` (new)
 
 ## Approach
 1. The three templates as files (also used by TRD-24–26), rendered with the binary path and
    optional `--config`.
 2. `Service` trait with install, uninstall, status, restart; one implementation per OS taking a
-   home directory and a `CommandRunner` (real or recording); `--dry-run` prints.
+   home directory and a `CommandRunner`: `SystemRunner` runs the commands, and its `run` begins
+   with `assert!(!cfg!(test), "SystemRunner runs real service-manager commands; tests use RecordingRunner")`;
+   `RecordingRunner` records them and returns scripted results. `--dry-run` prints the files and
+   commands through the same code path with a `RecordingRunner`.
 3. `trd service` subcommands wired in `cli.rs`.
+4. `tests/service_live.rs` (system test, overview §15.2), declared with
+   `system_test!(TRD_SERVICE_TEST, …)` (TRD-05). On the runner it installs the
+   service for the runner's user with the test's `trd` binary and a temporary `--config`, waits
+   up to 60 s for `trd service status` to report running and for a loopback `GetServerInfo` to
+   answer, runs `trd service restart` and waits again (a new pid), uninstalls, and checks that
+   the plist, unit or task is gone and nothing answers on the loopback port.
 
 ## Acceptance criteria
 - A1: install on each OS writes the expected file into a temporary home and issues the expected commands — check: `cargo test -p trd service` (recording runner).
-- A2: the rendered plist, unit and task XML equal golden files — check: tests.
-- A3: no test runs `launchctl`, `systemctl` or `schtasks` for real — check: review.
+- A2: the rendered plist, unit and task XML equal golden files; the task XML is UTF-16 LE with a BOM — check: tests.
+- A3: `launchctl`, `systemctl` and `schtasks` run for real only in the system test: `tests/service_live.rs` uses only `system_test!` and no other test names `SystemRunner` — check: `bash v3/trd/scripts/check-system-tests.sh` (R1, R2) and test `system_runner_refuses_in_unit_tests` (`#[should_panic]`).
+- A4: `--dry-run` prints the files and commands and changes nothing — check: test `dry_run_changes_nothing` (a unit test whose `RecordingRunner` and temporary home show that no command ran and no file was written).
+- A5: the live test passes on the macOS, Linux and Windows runners — check: the `trd-live` job of `v3-system-tests.yml` (after TRD-29).
 
 ## Tests
-Unit tests per OS module (all compiled on every OS; run behind `cfg` only where they need the OS).
+Unit tests per OS module (all compiled on every OS; run behind `cfg` only where they need the OS),
+including `system_runner_refuses_in_unit_tests`; `tests/service_live.rs` (system test).
 
 ## CI
-`v3-gate.yml` `trd`.
+`v3-gate.yml` `trd` (the live test is ignored there); `v3-system-tests.yml` `trd-live`.
 
 ## Out of scope
 Installers (TRD-24–26).
@@ -2625,7 +2884,10 @@ Overview D6; §9.2; star's `ffmpeg/README.md`, `build.sh`, `lib/common.sh`, `lib
    has 48 frames, the expected size, SAR 1:1 and DAR 3:2 (original size), `yuv422p10le` /
    `yuv444p10le` / `yuv420p`, `color_range=pc`, `color_primaries=bt709`, a `tmcd` stream, and that
    the `-progress` file ends with `progress=end`; decode each with `-f null -`; extract a JPEG
-   thumbnail with §6.16's command; hardware encoders reported, not failed, without `--hw`.
+   thumbnail with §6.16's command; hardware encoders reported, not failed, without `--hw`; and a
+   `buildinfo` case: `BUILDINFO.txt` beside the binaries names FFmpeg 9.0.2 (the version in
+   `versions.env`) and this repository's recipe URL, and `ffmpeg -version` reports the
+   `--extra-version=trd` suffix.
 3. `Makefile`: `release` = `./build.sh` (native target), `clean` = remove `.work` and `dist`,
    `run` and `develop` = build the native target then smoke-test it, `test` = smoke test of the
    native build (building it first when missing), `check` = `bash -n` on every script, `ci` =
@@ -2635,7 +2897,7 @@ Overview D6; §9.2; star's `ffmpeg/README.md`, `build.sh`, `lib/common.sh`, `lib
 ## Acceptance criteria
 - A1: `./v3/ffmpeg/build.sh` builds the native target on the owner's Mac and the smoke test passes — check: `ffmpeg-smoke` suite.
 - A2: `v3-ffmpeg.yml` is green for macos-universal, linux-x64, linux-arm64 and windows-x64 — check: a `workflow_dispatch` run.
-- A3: BUILDINFO.txt names FFmpeg 9.0.2 and this repository's recipe — check: artifact contents.
+- A3: BUILDINFO.txt names FFmpeg 9.0.2 and this repository's recipe, and the binaries carry the `trd` version suffix — check: the smoke test's `buildinfo` case, in the `ffmpeg-smoke` suite and in every `v3-ffmpeg.yml` target.
 
 ## Tests
 The smoke test.
@@ -2733,6 +2995,7 @@ LaunchAgent and starts `trd`; the shared icon exists for every client.
 - `v3/trd/packaging/macos/preinstall` (new)
 - `v3/trd/packaging/macos/postinstall` (new)
 - `v3/trd/packaging/macos/build-pkg.sh` (new)
+- `v3/trd/packaging/macos/test-scripts.sh` (new)
 
 ## Approach
 1. Icons: `make_icon.swift --variant trd|monitor` draws, offscreen with CoreGraphics (nothing on
@@ -2756,10 +3019,13 @@ LaunchAgent and starts `trd`; the shared icon exists for every client.
 - A1: an unsigned local build produces a `.pkg` whose payload has the app with `trd`, `ffmpeg`, `ffprobe`, exiftool, licences and the LaunchAgent — check: `pkgutil --payload-files`.
 - A2: `BundleIsRelocatable` is false in the component plist — check: script output.
 - A3: in CI with secrets, the notarization result is `Accepted` and the pkg is stapled — check: TRD-27's dispatch run.
+- A4: the `preinstall` and `postinstall` scripts do nothing and exit 0 when there is no console user, and issue exactly the §10.1 `launchctl` commands when there is one — check: `bash v3/trd/packaging/macos/test-scripts.sh` (runs both scripts with a stub `launchctl`, `stat` and `id` on `PATH`).
+- A5: the package installs on a runner, the LaunchAgent runs `trd`, `trd status` answers and the installed app verifies with `codesign` — check: the `trd-install-macos` job of `v3-system-tests.yml` (after TRD-29).
 
 ## Tests
 `build-pkg.sh --self-check` validates the assembled bundle (paths, `lipo -archs` of every Mach-O,
-plist keys) and runs in `ci.sh` on macOS.
+plist keys) and runs in `ci.sh` on macOS; `v3/trd/packaging/macos/test-scripts.sh` (new) tests the
+install scripts with stubs; the `trd-install-macos` system test installs the package for real.
 
 ## CI
 Used by `v3-trd-build.yml` (TRD-27).
@@ -2782,6 +3048,7 @@ Depends on: TRD-21, TRD-22, TRD-23
 ## Files
 - `v3/1-trd-core-daemon.md` (this spec; §10.2)
 - `v3/trd/packaging/linux/build-deb.sh` (new)
+- `v3/trd/packaging/linux/test-deb-in-container.sh` (new)
 - `v3/trd/packaging/linux/postinst` (new)
 - `v3/trd/packaging/linux/prerm` (new)
 
@@ -2790,13 +3057,24 @@ Depends on: TRD-21, TRD-22, TRD-23
    §10.2 fields; `postinst` and `prerm`; `dpkg-deb --build --root-owner-group`.
 2. The `.tar.gz` with `INSTALL.txt`.
 3. `make release` on Linux calls it.
+4. `build-deb.sh --self-check <deb>`: compares `dpkg-deb --contents` with the §10.2 path list and
+   `dpkg-deb --field <deb> Depends` with the §10.2 dependencies, printing each difference and
+   exiting 1 on any.
+5. `test-deb-in-container.sh <deb>`: `docker run --rm` of a clean `ubuntu:24.04` with the deb
+   mounted read-only, which runs `apt-get update`, `apt-get install -y <deb>`,
+   `/usr/bin/trd version`, then `trd daemon --sandbox --no-mdns --lan-bind off` in the
+   background with a temporary `--config`, `--data-dir` and `--log-dir`, and waits up to 60 s
+   for `trd status --plain` to answer; exits non-zero when any step fails. Both run in
+   `v3-trd-build.yml`'s Linux jobs (§9.4); the container needs Docker, which the owner's Mac
+   need not have.
 
 ## Acceptance criteria
-- A1: `dpkg-deb --contents` lists every §10.2 path and `dpkg-deb --field` shows the dependencies — check: script self-check in CI.
-- A2: installing the deb in a clean `ubuntu:24.04` container and running `/usr/bin/trd version` works — check: CI step in TRD-27.
+- A1: `dpkg-deb --contents` lists every §10.2 path and `dpkg-deb --field` shows the dependencies — check: `build-deb.sh --self-check`, run by `v3-trd-build.yml` (TRD-27) on amd64 and arm64.
+- A2: installing the deb in a clean `ubuntu:24.04` container and running `/usr/bin/trd version` works, and `trd daemon --sandbox --no-mdns --lan-bind off` started in the container answers `trd status --plain` — check: `test-deb-in-container.sh`, run by `v3-trd-build.yml` (TRD-27) on amd64 and arm64.
+- A3: on a runner the installed unit is enabled for user sessions, `systemctl --user start trd` starts it, `trd status` answers, and removing the package removes `/usr/lib/trd` and disables the unit — check: the `trd-install-linux` job of `v3-system-tests.yml` on amd64 and arm64 (after TRD-29).
 
 ## Tests
-The self-check.
+`build-deb.sh --self-check`; `test-deb-in-container.sh`; the `trd-install-linux` system test.
 
 ## CI
 Used by `v3-trd-build.yml`.
@@ -2819,6 +3097,7 @@ Depends on: TRD-21, TRD-22, TRD-23
 ## Files
 - `v3/1-trd-core-daemon.md` (this spec; §10.3)
 - `v3/trd/packaging/windows/build-installer.sh` (new)
+- `v3/trd/packaging/windows/test-installer.sh` (new)
 - `v3/trd/packaging/windows/trd.nsi` (new)
 
 ## Approach
@@ -2826,12 +3105,18 @@ Depends on: TRD-21, TRD-22, TRD-23
    `trd.exe service install` and `schtasks /Run`; the uninstaller runs `service uninstall` and
    removes files.
 2. `build-installer.sh` stages files, runs `makensis` with version defines, and zips.
+3. `test-installer.sh <setup.exe>` (Git Bash, CI only: it refuses to run unless `CI=true`): runs
+   the installer with `/S` and `LOCALAPPDATA` set to a temporary directory, runs the installed
+   `trd.exe version`, runs the uninstaller with `/S`, and checks that the install directory and
+   the `TimelapseRenderDaemon` task are gone; exits non-zero when any step fails. It runs in
+   `v3-trd-build.yml`'s Windows job (§9.4).
 
 ## Acceptance criteria
-- A1: the installer installs silently (`/S`) into a temporary `LOCALAPPDATA` on the CI runner, `trd.exe version` runs, and the uninstaller removes it — check: CI step in TRD-27.
+- A1: the installer installs silently (`/S`) into a temporary `LOCALAPPDATA` on the CI runner, `trd.exe version` runs, and the uninstaller removes it — check: `test-installer.sh`, run by `v3-trd-build.yml` (TRD-27).
+- A2: after a silent install the `TimelapseRenderDaemon` task exists and has started `trdw.exe`, `trd.exe status --plain` answers, and the silent uninstall removes the task and the directory — check: the `trd-install-windows` job of `v3-system-tests.yml` (after TRD-29).
 
 ## Tests
-The CI step.
+`test-installer.sh`; the `trd-install-windows` system test.
 
 ## CI
 Used by `v3-trd-build.yml`.
@@ -2899,6 +3184,7 @@ owner and for the clients' `develop` targets.
 - `v3/1-trd-core-daemon.md` (this spec; §12)
 - `v3/trd/sandbox/sandbox.py` (new)
 - `v3/trd/sandbox/README.md` (new)
+- `v3/trd/crates/trd/tests/sandbox.rs` (new)
 - `v3/trd/Makefile`
 
 ## Approach
@@ -2910,10 +3196,13 @@ owner and for the clients' `develop` targets.
 
 ## Acceptance criteria
 - A1: `sandbox.py init` creates every §12 sequence and config — check: `python3 -I v3/trd/sandbox/sandbox.py init --check` (validates the tree).
-- A2: `make develop-daemon` starts `trd` on 50081/50082 and `trd status --address 127.0.0.1:50081` shows sequence B rendering within a minute — check: manual run by the owner, and the e2e of TRD-GATE uses the same tree on port 0.
+- A2: with the fake tools, `init --dir <tmp>` builds a tree that passes `--check`, `drip --dir <tmp> --fps 1000` completes sequence A's 60 frames, `path --dir <tmp>` prints `<tmp>`, and `init --reset` recreates the tree — check: `cargo test -p trd --test sandbox`.
+- A3: a `trd` started on that tree with `--sandbox`, the fake tools, port 0, `--lan-bind 127.0.0.1:0` and `--no-mdns` renders sequence B's three variants, fails sequence C, never shows D or E, and deletes G after rendering — check: `cargo test -p trd --test sandbox` (deadline 120 s as a hang guard, polling the snapshot).
+- A4: the `develop`, `develop-daemon` and `run` targets exist and dry-run cleanly — check: `bash v3/scripts/check-makefiles.sh`.
 
 ## Tests
-`init --check`.
+`v3/trd/crates/trd/tests/sandbox.rs` (new) for A2 and A3; `init --check`. Running `make develop`
+interactively is the owner's manual check M-TRD-9 (§16).
 
 ## CI
 None beyond the gate.
@@ -2925,19 +3214,68 @@ Depends on: TRD-20, TRD-21
 
 ---
 
-### TRD-GATE — End-to-end acceptance, media CI job and API freeze
+### TRD-29 — System tests workflow for the daemon
 
 ## Goal
-`trd` is proven end to end with real ffmpeg and exiftool, the media job guards it in CI, the suite
-floors are raised, and API version 1 is frozen for the clients.
+Every part of `trd` that only a real machine can exercise (the three installers, the per-user
+service managers and mDNS) is tested on GitHub-hosted runners on every push to `develop`, nightly,
+and inside every release run before it publishes.
 
 ## Context
-Every section of this spec; §9.6; §12 (the sandbox tree, reused on port 0).
+§9.7, §9.5 (the `system-tests` job), §11.3 (`[watch.ci]` files a ticket when a run on `develop`
+goes red), overview §15. The live tests come from TRD-19 and TRD-21; the packages from TRD-24–27.
 
 ## Files
-- `v3/1-trd-core-daemon.md` (this spec; §9.6, §12)
+- `v3/1-trd-core-daemon.md` (this spec; §9.5, §9.7)
+- `.github/workflows/v3-system-tests.yml` (new)
+- `.github/workflows/v3-release.yml`
+- `v3/trd/scripts/wait-for-trd.sh` (new)
+- `v3/trd/scripts/test-wait-for-trd.sh` (new)
+
+## Approach
+1. `v3-system-tests.yml` with the triggers, the `version` job, the build jobs and the four daemon
+   test jobs of §9.7.
+2. `scripts/wait-for-trd.sh [--trd PATH] [--address A] [--timeout S]` polls `trd status --plain`
+   until it answers, exiting non-zero after the timeout (every install job uses it; bash 3.2;
+   works in Git Bash).
+3. Add the `system-tests` job to `v3-release.yml` and `system-tests` to `publish.needs` (§9.5).
+4. Dispatch `v3-system-tests.yml` and fix until green; dispatch `v3-release.yml` and check that its
+   `system-tests` job tests that run's own packages.
+
+## Acceptance criteria
+- A1: a dispatch of `v3-system-tests.yml` is green with all four daemon jobs on every runner of their matrices — check: the run.
+- A2: in a dispatch of `v3-release.yml`, the called system tests skip their build jobs and test the packages that run built — check: the run's job graph.
+- A3: `wait-for-trd.sh` exits 0 once a stub `trd` answers and non-zero after the timeout when it never does — check: `bash v3/trd/scripts/test-wait-for-trd.sh` (stub `trd` first on `PATH`).
+
+## Tests
+The workflow run; `v3/trd/scripts/test-wait-for-trd.sh`.
+
+## CI
+`v3-system-tests.yml` (new), `v3-release.yml`.
+
+## Out of scope
+Client system tests (specs 2–4 add their jobs).
+
+Depends on: TRD-19, TRD-21, TRD-27
+
+---
+
+### TRD-GATE — End-to-end acceptance, media CI job, coverage and API freeze
+
+## Goal
+`trd` is proven end to end with real ffmpeg and exiftool, the media job guards it in CI, the
+coverage and suite floors are raised, the system tests are green, and API version 1 is frozen for
+the clients.
+
+## Context
+Every section of this spec; §9.6; §12 (the sandbox tree, reused on port 0); §16 (test plan);
+overview §15.3 (coverage floors).
+
+## Files
+- `v3/1-trd-core-daemon.md` (this spec; §9.6, §12, §16)
 - `v3/trd/scripts/ci-media.sh` (new)
 - `v3/trd/crates/trd/tests/e2e.rs` (new)
+- `v3/trd/coverage-floors.toml`
 - `.github/workflows/v3-gate.yml`
 - `.mason/mason.toml`
 - `v3/proto/README.md`
@@ -2960,29 +3298,40 @@ Every section of this spec; §9.6; §12 (the sandbox tree, reused on port 0).
      `RetryVariant` renders it;
    - `UpdateConfig` adding a variant makes it render for already-rendered sequences;
    - pairing over the LAN listener with the pinned fingerprint, then `WatchSnapshots` with the token;
-   - stopping `trd` mid-render and starting it again re-adopts the render and finishes it.
+   - stopping `trd` mid-render and starting it again with the same flags and data directory
+     re-adopts the render and finishes it (`--sandbox` implies only `--no-adopt-foreign`, so
+     `trd` re-adopts renders from its own database and never looks at the owner's).
 2. `ci-media.sh`: `cargo test -p trd --test e2e` with `TRD_E2E=1` and the real-tool tests of TRD-10.
 3. Add the `trd-media` job to `v3-gate.yml` (§9.6).
 4. Raise `min_tests` of `trd-test`, `trd-check` and `trd-e2e` in `.mason/mason.toml` to 90 % of
    the measured counts.
-5. `v3/proto/README.md`: "API version 1 is frozen as of <date>; changes need `api_version` 2 and
+5. Raise `v3/trd/coverage-floors.toml` to `trd-core = 80` and `trd = 60` (overview §15.3), adding
+   tests for whatever is uncovered until the gate's `trd-coverage` job passes.
+6. Walk the §16 test plan and add any test it names that does not exist yet, until
+   `python3 -I v3/scripts/check-test-names.py --spec 1` passes. From now on the gate's `t0` job
+   runs it for spec 1 on every batch (`--completed` recognises `ci-media.sh`).
+7. `v3/proto/README.md`: "API version 1 is frozen as of <date>; changes need `api_version` 2 and
    a new proto package `trd.v2`."
 
 ## Acceptance criteria
 - A1: every check in step 1 passes on the owner's Mac and in `trd-media` on Linux and macOS — check: `bash v3/scripts/suite.sh trd-e2e` and the gate run.
-- A2: `v3-release.yml` dispatch is green — check: the run.
+- A2: `v3-release.yml` dispatch is green, including its `system-tests` job — check: the run.
 - A3: the suite floors are raised — check: `.mason/mason.toml`.
+- A4: the gate's `trd-coverage` job passes with floors of 80 % (`trd-core`) and 60 % (`trd`) — check: the gate run.
+- A5: `v3-system-tests.yml` is green on `develop` — check: the latest run.
+- A6: every test that spec 1's acceptance criteria and §16 table name exists under that name — check: `python3 -I v3/scripts/check-test-names.py --spec 1`.
+- A7: the re-adoption check of step 1 re-adopts only the e2e daemon's own render: a fake-ffmpeg started by the test (not by `trd`) with foreign-render arguments is never listed in the snapshot — check: test `e2e_ignores_foreign_renders` in `tests/e2e.rs`.
 
 ## Tests
-`tests/e2e.rs`.
+`tests/e2e.rs`; whatever step 5 adds.
 
 ## CI
 `v3-gate.yml` (adds `trd-media`).
 
 ## Out of scope
-Client code.
+Client code. The manual checks of §16.1 (the owner runs them before the first release).
 
-Depends on: TRD-01, TRD-02, TRD-03, TRD-04, TRD-05, TRD-06, TRD-07, TRD-08, TRD-09, TRD-10, TRD-11, TRD-12, TRD-13, TRD-14, TRD-15, TRD-16, TRD-17, TRD-18, TRD-19, TRD-20, TRD-21, TRD-22, TRD-23, TRD-24, TRD-25, TRD-26, TRD-27, TRD-28
+Depends on: TRD-01, TRD-02, TRD-03, TRD-04, TRD-05, TRD-06, TRD-07, TRD-08, TRD-09, TRD-10, TRD-11, TRD-12, TRD-13, TRD-14, TRD-15, TRD-16, TRD-17, TRD-18, TRD-19, TRD-20, TRD-21, TRD-22, TRD-23, TRD-24, TRD-25, TRD-26, TRD-27, TRD-28, TRD-29
 
 ## 14. Dependency summary
 
@@ -3017,6 +3366,7 @@ Depends on: TRD-01, TRD-02, TRD-03, TRD-04, TRD-05, TRD-06, TRD-07, TRD-08, TRD-
 | TRD-26 | 21, 22, 23 |
 | TRD-27 | 24, 25, 26 |
 | TRD-28 | 20, 21 |
+| TRD-29 | 19, 21, 27 |
 | TRD-GATE | every ticket above except TRD-00 |
 
 TRD-22 and TRD-23 can start at once, in parallel with the Rust work.
@@ -3024,6 +3374,65 @@ TRD-22 and TRD-23 can start at once, in parallel with the Rust work.
 ## 15. Definition of done
 
 - Every ticket's acceptance criteria hold and `TRD-GATE` has landed on `develop`.
-- `v3-gate.yml` is green on `develop`, including `trd-media`.
+- `v3-gate.yml` is green on `develop`, including `trd-media`, `trd-coverage` (at the overview
+  §15.3 floors) and `t0`.
+- `v3-system-tests.yml` is green on `develop`.
 - A dispatch of `v3-release.yml` is green; the owner can tag `v3.0.0-alpha.1` to get a draft
   release with the macOS, Linux and Windows `trd` packages.
+- Before that release is published, the owner has run the §16.1 manual checks and recorded the
+  results on the TRD-GATE issue (overview §15.4).
+
+## 16. Test plan
+
+Every area of `trd`, the tests that verify it, and where they run. "Same" means the row above:
+the mason `trd-test` suite on the owner's Mac and the gate's `trd` job on macOS, Linux and Windows.
+
+| Area | Automated tests | Kind | Ticket | Runs in |
+|---|---|---|---|---|
+| bootstrap scripts, Makefile contract, workflows, mason config, test-name checker | `test-scripts.sh`, `check-makefiles.sh`, `check-test-names.py`, actionlint, `mason definition check` | static | TRD-00 | mason `t0-*`; gate `t0` (all but `mason definition check`) |
+| CLI skeleton, coverage tooling, system-test rules | `tests/cli.rs`, `test_coverage.py`, `test-check-system-tests.sh`, `check-system-tests.sh` | unit, static | TRD-01 | `trd-test`, gate `trd`; gate `trd-coverage` |
+| API definition | `proto_matches_spec.rs`, prost round trip | unit | TRD-02 | same |
+| config and codec table | `tests/config.rs`, including the repository's real configs | unit | TRD-03 | same |
+| directories, logging, database | `tests/store.rs`, `dirs.rs` tests | unit | TRD-04 | same |
+| tool resolution, fake tools, system-test guard | `tools.rs` tests, `tests/fakes.rs`, `system_test.rs` tests, `tests/system_test_macro.rs` | unit | TRD-05 | same |
+| scanner | `tests/scan.rs` | unit | TRD-06 | same |
+| render planning | `tests/plan.rs`: golden argument vectors, the Swift tests, names of the earlier daemons | unit | TRD-07 | same |
+| process runner, process tables | `tests/process.rs`; `process.rs` tests | integration, unit | TRD-08 | same (three OSes) |
+| EXIF collection | `tests/exif.rs` | unit | TRD-09 | same |
+| XMP embedding | `tests/xmp.rs`; the real-exiftool test under `TRD_E2E` | unit, e2e | TRD-10 | same; mason `trd-e2e`, gate `trd-media` |
+| failure diagnosis | `tests/diagnosis.rs` | unit | TRD-11 | same |
+| queue, completion pipeline, controls | `tests/queue.rs` | integration | TRD-12 | same |
+| re-adoption, `--no-adopt-foreign` | `tests/adopt.rs` with `FakeProcessTable`; `check-system-tests.sh` R2 | unit, static | TRD-13 | same |
+| thumbnails, Swift history import | `tests/thumbs.rs` | unit | TRD-14 | same |
+| Full Disk Access guard | `fda.rs` tests; `fda_blocks_scanning` (TRD-16) | unit, integration | TRD-15 | same; manual M-TRD-2, M-TRD-3 |
+| engine, snapshots, problems | `tests/engine.rs` | integration | TRD-16 | same |
+| gRPC server | `tests/server.rs`, every RPC | integration | TRD-17 | same |
+| LAN listener, TLS, pairing | `tests/lan.rs` | integration | TRD-18 | same |
+| mDNS | builder, re-registration and `registrar_refuses_in_unit_tests` tests; `check-system-tests.sh`; `tests/mdns_live.rs` | unit, static, system | TRD-19 | same; system `trd-live` (Linux); manual M-TRD-8 |
+| CLI commands, `trd status` | `tests/cli_client.rs` | integration | TRD-20 | same |
+| service install | per-OS tests with `RecordingRunner`, `system_runner_refuses_in_unit_tests`; `check-system-tests.sh`; `tests/service_live.rs` | unit, static, system | TRD-21 | same; system `trd-live` (three OSes); manual M-TRD-6 |
+| ffmpeg build | `v3/ffmpeg/smoke_test.sh` | smoke | TRD-22 | mason `ffmpeg-smoke`; `v3-ffmpeg.yml` (four targets) |
+| exiftool bundle | `v3/exiftool/smoke_test.sh` | smoke | TRD-23 | mason `exiftool-smoke`; `v3-exiftool.yml` (three OSes) |
+| macOS package | `build-pkg.sh --self-check`, `packaging/macos/test-scripts.sh`; a real install | packaging, system | TRD-24 | `ci.sh` on macOS; system `trd-install-macos`; manual M-TRD-1, M-TRD-5 |
+| Linux package | `build-deb.sh --self-check`, `test-deb-in-container.sh`; a real install with systemd | packaging, system | TRD-25 | `v3-trd-build.yml`; system `trd-install-linux` (amd64, arm64) |
+| Windows installer | `test-installer.sh`; a real install with the task | packaging, system | TRD-26 | `v3-trd-build.yml`; system `trd-install-windows` |
+| build and release workflows | dispatch runs; `test-release-version.sh` | workflow | TRD-27 | `v3-release.yml` dispatch |
+| sandbox | `tests/sandbox.rs` with the fake tools | integration | TRD-28 | same; manual M-TRD-9 |
+| system tests workflow | its dispatch run; `test-wait-for-trd.sh` | system | TRD-29 | `v3-system-tests.yml` |
+| the whole daemon with real tools | `tests/e2e.rs` | e2e | TRD-GATE | mason `trd-e2e`; gate `trd-media` (Linux, macOS) |
+| coverage | `coverage.sh` with floors 80 % (`trd-core`) and 60 % (`trd`) | coverage | TRD-01, TRD-GATE | gate `trd-coverage` |
+| every named test exists | `check-test-names.py --spec 1` | static | TRD-GATE | gate `t0` on every batch once TRD-GATE has landed |
+
+### 16.1 Manual checks (the owner, on the Mac)
+
+| ID | Steps | Expected result |
+|---|---|---|
+| M-TRD-1 | Install the release `.pkg` from the draft release. | Gatekeeper opens it without a warning; the installer finishes; `trd status` answers within a minute; macOS asks at most once to allow incoming connections and local network access, while the installer is still open. |
+| M-TRD-2 | Before granting Full Disk Access, run `trd status`. | Phase `WAITING_FOR_DISK_ACCESS`, the "Full Disk Access is needed" problem, no sequences listed, and no permission prompt. |
+| M-TRD-3 | Grant Full Disk Access to `/Applications/Timelapse Render Daemon.app`, wait 30 s. | Scanning starts; sequences on `/Volumes/*` and `/mammoth` appear; no permission prompt appears then or later. |
+| M-TRD-4 | Let a real LRTimelapse export finish with the real config. | The configured variants render with the same names the Swift and Perl daemons used (`_720w_`, `_OriRes_`, `_2160p_` …); `ffprobe` reports DAR 3:2 for the original-size render; `exiftool -XMP:all` shows the camera fields. |
+| M-TRD-5 | Install a newer `.pkg` while a render is running. | The render continues and finishes; the log shows it was re-adopted; the video plays to the end. |
+| M-TRD-6 | Log out and in (or restart the Mac). | `trd` runs again without any prompt; Full Disk Access is still granted. |
+| M-TRD-7 | Start `trd` for the first time on the Mac where the Swift GUI has run. | Recently rendered lists the Swift daemon's renders of the last 30 days. |
+| M-TRD-8 | Run `dns-sd -B _trd._tcp`, then `dns-sd -L <name> _trd._tcp`. | The service appears with the §8.4 TXT records and port 50072. |
+| M-TRD-9 | Run `make -C v3/trd develop`. | The sandbox starts on 50081/50082; sequence B renders within a minute, C fails, A fills as frames drip in and renders when complete; `trd status --address 127.0.0.1:50081 --watch` shows it all with new entries at the top. |

@@ -69,6 +69,7 @@ Versions (`gradle/libs.versions.toml`), starting set:
 | kotlinx-coroutines (`core`, `swing`, `android`, `test`) | 1.10.2 |
 | jmdns | 3.5.9 |
 | JUnit | 4.13.2 |
+| Kover (`org.jetbrains.kotlinx.kover`) | newest 0.9.x |
 | AndroidX libraries (spec 4 §3) | newest stable on the day of DSK-01 |
 
 If this set fails to build `:desktop` or (later) `:android`, raise Kotlin, Compose Multiplatform,
@@ -178,7 +179,36 @@ All behaviour that does not draw pixels, shared by desktop and Android.
 
 `core/src/testFixtures`: `FakeTrdService` (a grpc-java in-process implementation of every RPC,
 driven by scripted snapshots, log entries and configs, recording every call) and snapshot
-builders. Desktop and Android tests use them; no test talks to a real `trd`.
+builders. Desktop and Android unit, integration and UI tests use them; only the contract tests
+(§5.7) talk to a real `trd`.
+
+### 5.7 Contract tests
+
+The `:core` contract tests (package `com.timelapserender.monitor.core.contract`, skipped unless
+`TRM_E2E=1`) run the real client classes against a real `trd` from the same commit:
+
+- `TrdProcess` (test helper) creates a sandbox tree in a temporary directory with
+  `python3 -I v3/trd/sandbox/sandbox.py init --dir <tmp>`, starts `$TRM_TRD_BIN daemon --sandbox
+  --config <tmp>/config.json --data-dir <tmp>/data --log-dir <tmp>/logs --port 0 --lan-bind
+  127.0.0.1:0 --no-mdns` with `TRD_FFMPEG_DIR` and `TRD_EXIFTOOL_DIR` set to `$TRM_FAKE_TOOLS_DIR`
+  and a `TRD_FAKE_FFMPEG` script chosen per test (spec 1 TRD-05: `rules`, `wait_for_file`), reads
+  `TRD_LISTENING`, and stops the daemon after the test.
+- Scenarios (one test each): loopback connection and `api_version` 1; a sequence moving through
+  its stages into Recently rendered as seen through `ActivityPresenter`; every control of overview
+  §6.9 (a render held by `wait_for_file` so suspend, resume and stop are deterministic) with its
+  effect on the snapshot and on `config.json`; `ConfigEditorModel` load, validation, save and a
+  revision conflict caused by editing the file underneath; `UpdateCodecs`; pairing with
+  `StartPairing` on loopback then `PairingClient` over the TLS listener with the real certificate,
+  followed by `WatchSnapshots` with the token, a wrong code, the attempt limit and revocation
+  (`NeedsPairing`); `EventWatcher` receiving `EVENT_SEQUENCE_FINISHED` and `EVENT_RENDER_FAILED`;
+  `ThumbnailCache` fetching a real thumbnail; `DirectoryBrowserModel` listing the sandbox; and
+  `LogModel` paging.
+- `scripts/contract-test.sh`: when `TRM_TRD_BIN` is unset it builds `trd` and the fake tools
+  (`cargo build -p trd --locked --manifest-path v3/trd/Cargo.toml`, `bash
+  v3/trd/scripts/fake-tools-dir.sh <tmp>`), sets the variables, and runs
+  `./gradlew --no-daemon :core:test --tests 'com.timelapserender.monitor.core.contract.*'` with
+  `TRM_E2E=1`. It is safe on the owner's Mac (temporary directories, port 0, LAN on `127.0.0.1`,
+  no mDNS) and is what the gate's `contract` job runs on Linux.
 
 ## 6. The desktop app
 
@@ -291,17 +321,24 @@ Warning, Error; default Info), search, Copy selected lines.
 | `test` | `./gradlew :proto:build :core:test :desktop:test` |
 | `check` | `./gradlew :proto:compileKotlin :core:compileKotlin :desktop:compileKotlin` (warnings are errors) |
 | `ci` | `bash scripts/ci-desktop.sh` |
+| `coverage` | `./gradlew :core:koverVerify :desktop:koverVerify` (HTML reports under `build/reports/kover`) |
+| `contract` | `bash scripts/contract-test.sh` (§5.7) |
 
-`scripts/ci-desktop.sh`: `./gradlew --no-daemon --console=plain :proto:build :core:test :desktop:test`
-with `-Djava.awt.headless=true` for tests. `scripts/mason-desktop.sh`: the same with `JAVA_HOME`
-from the environment, then merges every `*/build/test-results/test/TEST-*.xml` into
-`build/mason-desktop-results.xml` (one `<testsuites>` root), keeping Gradle's exit code.
+`scripts/ci-desktop.sh`: `./gradlew --no-daemon --console=plain :proto:build :core:test :desktop:test
+:core:koverVerify :desktop:koverVerify` with `-Djava.awt.headless=true` for tests (Kover rules in
+each module's build file hold the line-coverage floors of overview §15.3; 0 until DSK-13), then,
+from DSK-04 on, `bash scripts/check-system-tests.sh skipped`.
+`scripts/mason-desktop.sh`: the tests only, with `JAVA_HOME` from the environment, then merges
+every `*/build/test-results/test/TEST-*.xml` into `build/mason-desktop-results.xml` (one
+`<testsuites>` root), keeping Gradle's exit code; from DSK-04 on it also records
+`check-system-tests.sh skipped` there as the test case `check_system_tests_skipped`. `scripts/contract-test.sh`: §5.7.
 
 ## 8. GitHub Actions
 
 - `v3-gate.yml` job `kotlin` (defined by TRD-00) starts running `scripts/ci-desktop.sh` as soon
-  as DSK-01 lands; nothing here edits it.
-- `v3-desktop-build.yml` (DSK-12), `workflow_call` with inputs `version` and `is_release`,
+  as DSK-01 lands, and job `contract` starts running `scripts/contract-test.sh` as soon as
+  DSK-12 lands; nothing here edits the gate.
+- `v3-desktop-build.yml` (DSK-13), `workflow_call` with inputs `version` and `is_release`,
   secrets inherited. Matrix:
 
 | Target | Runner | Gradle task | Asset |
@@ -323,7 +360,26 @@ from the environment, then merges every `*/build/test-results/test/TEST-*.xml` i
   certificate fails ("macOS release builds must be signed"); rename to the asset name; upload
   artifact `release-asset-desktop-<target>`; always delete the keychain and key.
 - `v3-release.yml` gains job `desktop` (`needs: [version]`, `uses: ./.github/workflows/v3-desktop-build.yml`,
-  `with: version, is_release`, `secrets: inherit`), and `desktop` is appended to `publish.needs`.
+  `with: version, is_release`, `secrets: inherit`), and `desktop` is appended to both
+  `system-tests.needs` and `publish.needs`.
+- `v3-system-tests.yml` (spec 1 §9.7) gains, from DSK-13:
+  - `desktop-packages`: `if: ${{ inputs.build != false }}`, `needs: [version]`, `uses:
+    ./.github/workflows/v3-desktop-build.yml`, `with: version, is_release: false`, `secrets:
+    inherit`;
+  - `desktop-selftest`: matrix `macos-arm64` on `macos-15`, `macos-x64` on `macos-15-intel`,
+    `linux-x64` on `ubuntu-24.04`, `windows-x64` on `windows-2022`; `needs: [version,
+    desktop-packages]` with the spec 1 §9.7 `if` pattern (on `desktop-packages`); downloads
+    `release-asset-desktop-<target>` and runs the packaged app's self-test (§9): macOS
+    `hdiutil attach`, then the app's `Contents/MacOS/` launcher with `--self-test --self-test-output
+    $RUNNER_TEMP/selftest.txt`, then `codesign --verify --strict --deep` on the mounted app; Linux
+    `sudo apt-get install -y ./timelapse-render-monitor_*_amd64.deb`, then the launcher found under
+    `/opt/timelapse-render-monitor/bin/` with the same flags, then `sudo apt-get remove -y
+    timelapse-render-monitor`; Windows `msiexec /i <msi> /qn`, then the launcher under
+    `C:\Program Files\Timelapse Render Monitor\` with the same flags, then `msiexec /x <msi> /qn`;
+    each passes when the output file reads `SELF-TEST OK`;
+  - `kotlin-mdns`: `ubuntu-24.04`, `needs: [version]`; checkout, setup-java 21, setup-gradle,
+    `CI=true TRM_MDNS_TEST=1 ./gradlew -p v3/clients/kotlin --no-daemon :core:test --tests
+    '*JmdnsLiveTest*'`, then `bash v3/clients/kotlin/scripts/check-system-tests.sh ran` (DSK-04).
 - `macos-15-intel` is GitHub's last Intel macOS image (announced for retirement in 2027); when it
   is retired, the x86_64 `.dmg` stops being built and that job is removed.
 
@@ -336,8 +392,15 @@ from the environment, then merges every `*/build/test-results/test/TEST-*.xml` i
   `description = "Watches and controls the Timelapse Render Daemon"`; macOS `bundleID =
   "com.timelapserender.monitor"`, icon `v3/assets/icon/monitor.icns`; Windows icon
   `v3/assets/icon/monitor.ico`, `menu = true`, `shortcut = true`, `upgradeUuid` a fixed UUID chosen
-  in DSK-12 and never changed; Linux icon `v3/assets/icon/monitor-512.png`,
+  in DSK-13 and never changed; Linux icon `v3/assets/icon/monitor-512.png`,
   `packageName = "timelapse-render-monitor"`.
+- Self-test: `--self-test [--self-test-output FILE] [--server host:port]` is handled first in
+  `main`, before any window or AWT use: it sets `java.awt.headless=true`, loads every screen class,
+  renders the Activity screen for a built-in sample snapshot with `ImageComposeScene` to a PNG in
+  the temporary directory, decodes a sample poster, and, when `--server` is given, calls
+  `GetServerInfo`; it writes `SELF-TEST OK` (or `SELF-TEST FAILED: <reason>`) to the output file or
+  stdout and exits 0 or 1. It proves the packaged runtime has every JDK module, native library
+  and resource the app needs.
 - macOS signing when `TRM_SIGN_IDENTITY` is set: `signing { sign.set(true); identity.set(…) }`,
   `entitlementsFile` and `runtimeEntitlementsFile` = `desktop/packaging/macos-entitlements.plist`
   with `com.apple.security.cs.allow-jit`, `com.apple.security.cs.allow-unsigned-executable-memory`
@@ -384,12 +447,17 @@ and the `kotlin-test` mason suite start running once `settings.gradle.kts` and
 2. `:proto` per §4 (it generates and compiles here); `:core` with `java-test-fixtures`, coroutines,
    grpc-okhttp and jmdns; `:desktop` as a Compose Desktop application whose `Main.kt` opens a window
    titled "Timelapse Render Monitor" saying "Not connected".
-3. Makefile and both scripts per §7.
+3. Kover applied to `:core` and `:desktop`, excluding generated code and test fixtures, with a
+   `koverVerify` rule per module whose minimum line coverage starts at 0 (DSK-13 raises it to the
+   overview §15.3 floors).
+4. Makefile and both scripts per §7.
 
 ## Acceptance criteria
 - A1: `make -C v3/clients/kotlin test` succeeds and the generated `TrdServiceGrpcKt` class exists — check: the command and a test in `:core` that references `TrdServiceGrpcKt.TrdServiceCoroutineStub`.
-- A2: the `kotlin` gate job is green on all three runners — check: `v3-gate.yml`.
+- A2: the `kotlin` gate job is green on all three runners, including `koverVerify` — check: `v3-gate.yml`.
 - A3: `bash v3/scripts/suite.sh kotlin-test` writes `build/mason-desktop-results.xml` with at least one passing case — check: the command.
+- A4: `make -C v3/clients/kotlin coverage` produces a Kover report for both modules — check: the command.
+- A5: `check-makefiles.sh` passes for `v3/clients/kotlin` — check: `bash v3/scripts/check-makefiles.sh`.
 
 ## Tests
 One `:core` test referencing the generated stub; one `:desktop` test that composes the start screen offscreen.
@@ -509,22 +577,55 @@ Depends on: TRD-GATE, DSK-02
 - `v3/clients/kotlin/core/src/main/kotlin/com/timelapserender/monitor/core/discovery/ServerDiscovery.kt` (new)
 - `v3/clients/kotlin/core/src/main/kotlin/com/timelapserender/monitor/core/discovery/JmdnsDiscovery.kt` (new)
 - `v3/clients/kotlin/core/src/main/kotlin/com/timelapserender/monitor/core/pairing/PairingClient.kt` (new)
+- `v3/clients/kotlin/core/src/test/kotlin/com/timelapserender/monitor/core/discovery/JmdnsLiveTest.kt` (new)
+- `v3/clients/kotlin/core/src/testFixtures/kotlin/com/timelapserender/monitor/core/testing/SystemTests.kt` (new)
+- `v3/clients/kotlin/core/src/test/kotlin/com/timelapserender/monitor/core/testing/SystemTestsTest.kt` (new)
+- `v3/clients/kotlin/scripts/check-system-tests.sh` (new)
+- `v3/clients/kotlin/scripts/ci-desktop.sh`
+- `v3/clients/kotlin/scripts/mason-desktop.sh`
 
 ## Approach
 1. The interface, a pure `parseTxt(map) -> DiscoveredServer?` (rejects missing `id`, `fp` or
    `port`, and `api` other than `1`), and `JmdnsDiscovery`.
 2. `PairingClient` with the messages of §5.3.
+3. `SystemTests` in `:core`'s test fixtures (overview §15.2): `allowed(env: (String) -> String?,
+   switch: String): Boolean` is true only when `env("CI")` is `"true"` and `env(switch)` is `"1"`.
+4. `JmdnsLiveTest` (system test): its `@Before` calls
+   `assumeTrue(SystemTests.allowed(System::getenv, "TRM_MDNS_TEST"))` before anything else, and
+   it creates every jmdns instance after that (none in fields or `@BeforeClass`), so without both
+   variables each case is reported skipped and nothing touches the network. With them it registers
+   a `_trd._tcp` service with trd's TXT records through a second jmdns instance and checks that
+   `JmdnsDiscovery` reports it with every field, then that unregistering removes it.
+5. `scripts/check-system-tests.sh skipped|ran` (bash 3.2; paths relative to `v3/clients/kotlin`)
+   reads `core/build/test-results/test/TEST-com.timelapserender.monitor.core.discovery.JmdnsLiveTest.xml`:
+   - `skipped` (run by `ci-desktop.sh` after the tests, so in the gate's `kotlin` job, where
+     `CI=true` but `TRM_MDNS_TEST` is unset): the file exists with `tests` ≥ 1 and `skipped`
+     equal to `tests`, and no file under `core/src/test`, `desktop/src/test`, `android/src/test`
+     or `android/src/androidTest` other than `JmdnsLiveTest.kt` contains `JmDNS` or
+     `JmdnsDiscovery` (only the system test may reach real multicast);
+   - `ran` (run by the `kotlin-mdns` system job, §8): `tests` ≥ 1 and `skipped`, `failures` and
+     `errors` all 0, so a job that lost its switch fails instead of passing on skipped cases.
+
+   It prints `SYSTEM-TESTS-OK` or each problem, exiting 1 on any. `ci-desktop.sh` gains the
+   `skipped` call as its last step, and `mason-desktop.sh` runs it after the tests and adds the
+   result to its merged results file as the test case `check_system_tests_skipped` (with a
+   `<failure>` holding the script's output when it fails), so mason's `kotlin-test` suite
+   enforces it too.
 
 ## Acceptance criteria
 - A1: TXT parsing accepts a valid record and rejects each missing field — check: `DiscoveryTest`.
 - A2: pairing against `FakeTrdService` over TLS stores a working record; a wrong code and an exhausted code give the §5.3 messages — check: `PairingClientTest`.
-- A3: no test opens a multicast socket — check: review (jmdns is not started in tests).
+- A3: `SystemTests.allowed` is true only for `CI=true` together with the switch `1`: unset, empty, `false` or `1` for `CI`, and unset or `0` for the switch, all give false — check: `SystemTestsTest`.
+- A4: ordinary runs report every `JmdnsLiveTest` case skipped, and no other test reaches jmdns — check: `bash v3/clients/kotlin/scripts/check-system-tests.sh skipped` after `make -C v3/clients/kotlin test`, and the gate's `kotlin` job (through `ci-desktop.sh`).
+- A5: the live test passes on the Linux runner and really ran — check: the `kotlin-mdns` job of `v3-system-tests.yml` (after DSK-13), which ends with `check-system-tests.sh ran`.
 
 ## Tests
-`DiscoveryTest`, `PairingClientTest`.
+`DiscoveryTest`, `PairingClientTest`, `SystemTestsTest`, `JmdnsLiveTest` (system test);
+`check-system-tests.sh` over the test reports.
 
 ## CI
-`v3-gate.yml` `kotlin`.
+`v3-gate.yml` `kotlin` (the live test skips itself there, and `check-system-tests.sh skipped`
+proves it); `v3-system-tests.yml` `kotlin-mdns`.
 
 ## Out of scope
 The pairing UI.
@@ -800,56 +901,117 @@ Unit tests with a fake tray; no real system tray in tests.
 `v3-gate.yml` `kotlin`.
 
 ## Out of scope
-Packaging (DSK-12).
+Packaging (DSK-13).
 
 Depends on: TRD-GATE, DSK-05
 
 ---
 
-### DSK-12 — Desktop packaging, signing, release workflow and acceptance
+### DSK-12 — Kotlin contract tests against a real trd
+
+## Goal
+The shared Kotlin client code is proven against a real `trd` from the same commit: every RPC it
+uses, every control, config editing, pairing over pinned TLS, events, thumbnails and the folder
+browser.
+
+## Context
+§5.7 (helper, scenarios, script); spec 1 §5 (`TRD_LISTENING`), §12 (sandbox), TRD-05 (fake tools,
+`rules`, `wait_for_file`); the gate's `contract` job (spec 1 §9.1) runs the script once it exists.
+
+## Files
+- `v3/2-trm-desktop.md` (this spec; §5.7)
+- `v3/clients/kotlin/scripts/contract-test.sh` (new)
+- `v3/clients/kotlin/core/src/test/kotlin/com/timelapserender/monitor/core/contract/TrdProcess.kt` (new)
+- `v3/clients/kotlin/core/src/test/kotlin/com/timelapserender/monitor/core/contract/ConnectionContractTest.kt` (new)
+- `v3/clients/kotlin/core/src/test/kotlin/com/timelapserender/monitor/core/contract/ControlsContractTest.kt` (new)
+- `v3/clients/kotlin/core/src/test/kotlin/com/timelapserender/monitor/core/contract/ConfigContractTest.kt` (new)
+- `v3/clients/kotlin/core/src/test/kotlin/com/timelapserender/monitor/core/contract/PairingContractTest.kt` (new)
+- `v3/clients/kotlin/core/src/test/kotlin/com/timelapserender/monitor/core/contract/EventsContractTest.kt` (new)
+
+## Approach
+1. `TrdProcess` and the scenarios of §5.7, each test starting its own daemon on its own temporary
+   tree, with deadlines of at most 120 s only as hang guards (snapshots are polled, never slept
+   for).
+2. `contract-test.sh` per §5.7; add the `contract` target to the Makefile.
+3. Run it on the owner's Mac and in the gate.
+
+## Acceptance criteria
+- A1: every §5.7 scenario passes against a `trd` built from the same commit — check: `bash v3/clients/kotlin/scripts/contract-test.sh`.
+- A2: without `TRM_E2E=1` the contract tests are skipped and the ordinary test run is unchanged — check: `make -C v3/clients/kotlin test`.
+- A3: the gate's `contract` job (Linux, Kotlin entry) is green — check: `v3-gate.yml`.
+
+## Tests
+The contract test classes listed in Files.
+
+## CI
+`v3-gate.yml` `contract`.
+
+## Out of scope
+Desktop UI (covered by its offscreen tests); Android (spec 4 reuses `:core`, so these tests cover
+its shared code).
+
+Depends on: TRD-GATE, DSK-03, DSK-04
+
+---
+
+### DSK-13 — Desktop packaging, signing, release, system tests and coverage
 
 ## Goal
 Tags produce a signed, notarized macOS `.dmg` for each architecture, a Linux `.deb` and a Windows
-`.msi`, attached to the draft release; the desktop suite floors are raised.
+`.msi`, attached to the draft release; each package is installed and self-tested on its OS; the
+coverage and suite floors are raised.
 
 ## Context
-§8, §9; spec 1 §9.5 (release orchestrator); star `star-desktop/build.gradle.kts` and
-`kotlin-client.yml` `macos-signed` (§2).
+§8, §9 (packaging and the self-test); spec 1 §9.5 (release orchestrator), §9.7 (system tests);
+overview §15.3 (coverage floors); star `star-desktop/build.gradle.kts` and `kotlin-client.yml`
+`macos-signed` (§2); §13 (test plan).
 
 ## Files
-- `v3/2-trm-desktop.md` (this spec; §8, §9)
+- `v3/2-trm-desktop.md` (this spec; §8, §9, §13)
 - `v3/clients/kotlin/desktop/build.gradle.kts`
+- `v3/clients/kotlin/core/build.gradle.kts`
+- `v3/clients/kotlin/desktop/src/main/kotlin/com/timelapserender/monitor/desktop/Main.kt`
+- `v3/clients/kotlin/desktop/src/main/kotlin/com/timelapserender/monitor/desktop/SelfTest.kt` (new)
 - `v3/clients/kotlin/desktop/packaging/macos-entitlements.plist` (new)
 - `.github/workflows/v3-desktop-build.yml` (new)
 - `.github/workflows/v3-release.yml`
+- `.github/workflows/v3-system-tests.yml`
 - `.mason/mason.toml`
 
 ## Approach
-1. `nativeDistributions` and signing per §9; `-Ptrm.version`.
-2. `v3-desktop-build.yml` per §8; add the `desktop` job and `publish.needs` entry to
-   `v3-release.yml`.
-3. Run a `workflow_dispatch` of `v3-release.yml`; fix until green.
-4. Raise `kotlin-test`'s `min_tests` in `.mason/mason.toml` to 90 % of the measured count.
-5. Acceptance by the owner on the Mac: install the `.dmg` from the dispatch artifacts, run it
-   against the installed `trd` and against `make develop`; record the result in the PR
-   description.
+1. `nativeDistributions` and signing per §9; `-Ptrm.version`; the self-test of §9 in `SelfTest.kt`,
+   called first from `main`.
+2. `v3-desktop-build.yml` per §8; add the `desktop` job to `v3-release.yml` and `desktop` to its
+   `system-tests.needs` and `publish.needs`; add `desktop-packages`, `desktop-selftest` and
+   `kotlin-mdns` to `v3-system-tests.yml` (§8).
+3. Run `workflow_dispatch` of `v3-system-tests.yml` and of `v3-release.yml`; fix until green.
+4. Raise the Kover rules to 80 % (`:core`) and 50 % (`:desktop`) line coverage, adding tests for
+   whatever is uncovered until `ci-desktop.sh` passes.
+5. Raise `kotlin-test`'s `min_tests` in `.mason/mason.toml` to 90 % of the measured count.
+6. Walk the §13 test plan and add any test it names that does not exist yet, until
+   `python3 -I v3/scripts/check-test-names.py --spec 2` passes. From now on the gate's `t0` job
+   runs it for spec 2 on every batch (`--completed` recognises `v3-desktop-build.yml`).
 
 ## Acceptance criteria
 - A1: the dispatch run produces the four §8 assets as `release-asset-desktop-*` artifacts — check: the run.
 - A2: with signing secrets, both `.dmg`s are notarized and stapled (`xcrun stapler validate` passes) — check: the run log.
-- A3: the `.msi` installs silently on the Windows runner and its launcher exists — check: a CI step `msiexec /i … /qn` followed by a file existence check.
-- A4: `kotlin-test`'s floor is raised — check: `.mason/mason.toml`.
+- A3: `desktop-selftest` passes on all four targets: each package installs (or mounts), its launcher prints `SELF-TEST OK`, and it uninstalls — check: the `v3-system-tests.yml` dispatch.
+- A4: `--self-test` reports `SELF-TEST FAILED` and exits 1 when a screen class cannot be loaded — check: `SelfTestTest` (injects a failing class loader).
+- A5: the `kotlin-mdns` job passes — check: the same dispatch.
+- A6: `koverVerify` passes at 80 % (`:core`) and 50 % (`:desktop`) — check: the gate's `kotlin` job.
+- A7: `kotlin-test`'s `min_tests` floor is raised — check: `.mason/mason.toml`.
+- A8: every test that spec 2's acceptance criteria and §13 table name exists under that name — check: `python3 -I v3/scripts/check-test-names.py --spec 2`.
 
 ## Tests
-The CI steps above.
+`SelfTestTest`; the `desktop-selftest` and `kotlin-mdns` system tests; whatever step 4 adds.
 
 ## CI
-`v3-desktop-build.yml` (new), `v3-release.yml`.
+`v3-desktop-build.yml` (new), `v3-release.yml`, `v3-system-tests.yml`.
 
 ## Out of scope
-Android packaging (spec 4).
+Android packaging (spec 4). The manual checks of §13.1 (the owner runs them before a release).
 
-Depends on: TRD-GATE, DSK-06, DSK-07, DSK-08, DSK-09, DSK-10, DSK-11
+Depends on: TRD-GATE, DSK-06, DSK-07, DSK-08, DSK-09, DSK-10, DSK-11, DSK-12
 
 ## 11. Dependency summary
 
@@ -866,14 +1028,50 @@ Depends on: TRD-GATE, DSK-06, DSK-07, DSK-08, DSK-09, DSK-10, DSK-11
 | DSK-09 | TRD-GATE, DSK-05 |
 | DSK-10 | TRD-GATE, DSK-05, DSK-08 |
 | DSK-11 | TRD-GATE, DSK-05 |
-| DSK-12 | TRD-GATE, DSK-06, DSK-07, DSK-08, DSK-09, DSK-10, DSK-11 |
+| DSK-12 | TRD-GATE, DSK-03, DSK-04 |
+| DSK-13 | TRD-GATE, DSK-06, DSK-07, DSK-08, DSK-09, DSK-10, DSK-11, DSK-12 |
 
 Android (spec 4) depends on DSK-01, DSK-02, DSK-03 and DSK-04.
 
 ## 12. Definition of done
 
 - Every ticket's acceptance criteria hold.
-- `v3-gate.yml` `kotlin` is green on all three runners; a `v3-release.yml` dispatch produces the
-  desktop assets.
-- On the owner's Mac, the app installed from the `.dmg` shows the installed `trd`'s activity, can
-  pair a phone, and edits the config.
+- `v3-gate.yml` `kotlin` (with the Kover floors of overview §15.3) is green on all three runners,
+  and its `contract` job is green for Kotlin.
+- `v3-system-tests.yml` `desktop-selftest` and `kotlin-mdns` are green; a `v3-release.yml`
+  dispatch produces the desktop assets.
+- Before a release is published, the owner has run the §13.1 manual checks and recorded the
+  results on the DSK-13 issue (overview §15.4).
+
+## 13. Test plan
+
+| Area | Automated tests | Kind | Ticket | Runs in |
+|---|---|---|---|---|
+| build skeleton, generated API code, coverage tooling | stub reference test, start-screen test, `check-makefiles.sh` | unit, static | DSK-01 | mason `kotlin-test`; gate `kotlin` (three OSes), `t0` |
+| connection, pinned TLS, tokens, servers | `PinnedTlsTest`, `TrdClientTest`, `ServerStoreTest` | unit, integration | DSK-02 | same |
+| presenters, scroll rules, formatting, editor and browser models, events | one test class per model (`ScrollKeeperTest`, `ActivityPresenterTest`, `FormatTest`, `ConfigEditorModelTest`, `EventWatcherTest`, …) | unit | DSK-03 | same |
+| discovery, pairing, the system-test guard | `DiscoveryTest`, `PairingClientTest`, `SystemTestsTest`, `check-system-tests.sh` (`skipped`); `JmdnsLiveTest` with `check-system-tests.sh` (`ran`) | unit, static, system | DSK-04 | same; system `kotlin-mdns` |
+| app shell, connection screens, starting trd | `NotRunningScreenTest`, `TopBarTest`, `AppStateTest` | UI | DSK-05 | same |
+| Activity view and its scrolling | `ActivityListTest`, `ActivityScrollTest` | UI | DSK-06 | same |
+| controls, Details, opening files | `RowActionsTest`, `FileOpenerTest`, `DetailsPaneTest` | UI | DSK-07 | same |
+| Config window | `ConfigWindowTest`, `CodecEditorTest` | UI | DSK-08 | same |
+| Log window | `LogWindowTest` | UI | DSK-09 | same |
+| Devices, first-run setup, pairing a desktop | `DevicesDialogTest`, `FirstRunSetupTest` | UI | DSK-10 | same |
+| tray, notifications, preferences | `NotifierTest`, `AppStateTest` | unit | DSK-11 | same |
+| `:core` against a real trd | the contract tests of §5.7 | contract | DSK-12 | gate `contract` (Linux); `make contract` locally |
+| packages and the packaged app | `SelfTestTest`; `desktop-selftest` on four targets; notarization and stapling | unit, system, packaging | DSK-13 | gate `kotlin`; system `desktop-selftest`; `v3-desktop-build.yml` |
+| coverage | Kover floors 80 % (`:core`), 50 % (`:desktop`) | coverage | DSK-01, DSK-13 | gate `kotlin` |
+| every named test exists | `check-test-names.py --spec 2` | static | DSK-13 | gate `t0` on every batch once DSK-13 has landed |
+
+### 13.1 Manual checks (the owner)
+
+| ID | Steps | Expected result |
+|---|---|---|
+| M-DSK-1 | Download the macOS x86_64 `.dmg` from the draft release on the iMac Pro and open the app. | Gatekeeper opens it without a warning; the window shows the installed `trd`'s activity within seconds. |
+| M-DSK-2 | Watch a real export and render to completion. | The sequence card's frame count and estimate advance; at completion its variant rows render; when the last one finishes the card leaves In progress and its videos appear at the top of Recently rendered with posters; the list never jumps away from the top while it is at the top. |
+| M-DSK-3 | Scroll down Recently rendered while a render runs. | The rows under the cursor stay put; the `↑ N new` pill counts new rows; clicking it returns to the top. |
+| M-DSK-4 | Close the window, let a sequence finish, then let a render fail (sandbox sequence C). | The app stays in the menu bar; one notification for the finished sequence and one for the failure; the tray dot turns red while the failure is listed. |
+| M-DSK-5 | Use Open and Reveal on a rendered video. | The video opens in the default player; Finder shows it selected. |
+| M-DSK-6 | Edit a harmless config value, save, check `config.json`, then revert. | The file changes as edited and keeps its other keys; `trd` reloads it (log entry). |
+| M-DSK-7 | **Pair a phone…** with the iOS or Android app. | The code pairs the phone; the phone appears under paired devices; **Revoke** disconnects it. |
+| M-DSK-8 | On a fresh install where Full Disk Access is not yet granted, follow the first-run setup. | **Open Privacy settings** opens the Full Disk Access pane, **Show trd in Finder** selects the app; after granting, the step completes by itself. |
