@@ -1,0 +1,5 @@
+# Build output of the trd workspace (cargo target directory, llvm-cov reports).
+/target/
+
+# Python bytecode of the trd scripts.
+__pycache__/

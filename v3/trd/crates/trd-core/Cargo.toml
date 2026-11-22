@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+#
+# All daemon logic, without networking: trd-core must not depend on tonic, rustls or mdns-sd.
+
+[package]
+name = "trd-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
