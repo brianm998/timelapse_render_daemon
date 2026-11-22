@@ -1,0 +1,68 @@
+
+I want to develop another iteration of the timelapse render daemon.
+
+Look at ~/git/reelvault for an example of the technologies to use:
+
+ 1. core daemon written in rust
+ 2. compose client for desktop/android
+ 3. swift iOS client
+ 4. CI on github with actions to make a release
+
+the core daemon should launch automatically on startup, and work without any of the monitor clients.
+
+the core daemon should use mDNS to advertise
+
+the mobiles can get access via a running desktop client.
+
+the basic functionality should match the original perl script and also the newer swift version in rewrite/
+
+The UI in the rewrite isn't great.
+
+The user should see what sequences are waiting to render, and their progress, and below that should be videos that have recently rendered, so that the user can easily see recent progress.  The perl script does this, but in the swift rewrite when a video has rendered it goes to a different view.
+
+The rewrite also has a problem of ending up scrolled down to far so new entries aren't seen.
+
+We need to re-think this UI, for both desktop, and also mobile, which is new.
+
+First steps are to look at this repo, and understand the functionality of this software.
+At a high level it:
+ - knows the workspace and backup locations for timelapse image sequences and videos
+ - knows the frame length of each video
+ - can watch for when new output images are produced for an image sequence
+ - is able to collect metadata from raw sequence images to embed in the video
+ - knows when and how to render a video from an output sequence
+ - shows the user what image sequences are progressing towards being renderable
+ - shows the user what videos are currently being rendered
+ - shows the user what videos have been rendered
+ - allows for configuration of all parameters it needs, file locations
+ - has its own ffmpeg bundled
+
+Look at ~/git/nighttime_timelapse_airplane_remover for ffmpeg bundling with github CI
+
+This third version (second rewrite) will exist here in v3/ along with the other builds for now.
+
+write Makefiles for all components that support 'run', 'develop', 'release', and 'clean' for each target.
+
+This will all be developed via mason (~/git/mason).
+
+That means that we will integrate this project with mason, and then release a hoard of github issues at it to progress according to the plan you will write.
+
+I want you to write a sequence of unambiguous .md files that other agents can consume to produce mason tickets for this project that will implement each section of this new piece of work.
+
+Required output files from you:
+ 1. specification for the core rust daemon (trd) timelapse render daemon
+ 2. specification for the kotlin compose desktop client (timelapse render monitor)
+ 3. specification for the iOS client (timelapse render monitor)
+ 4. specification for the Android client (timelapse render monitor)
+
+These output files should all be written into v3/ in this repo, and committed.
+
+Each specification should be clear and provide a set of instructions and describe dependencies between them.  All tasks from output files 2-4 depend upon all tasks from output file 1.
+
+All output files should describe in detail exactly how the github actions are going to work for each step.
+
+Step #1 needs to have ffmpeg embedded via CI on github, compiled so it supports everything we need it to have.
+
+The clients should all have access to the same information, but with different UIs.
+
+Ask me any questions you may have before you write the specifications so that they are no remaining questions and all further agents can proceed with out asking any more questions.
