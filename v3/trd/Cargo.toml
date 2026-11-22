@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+#
+# Workspace of the trd daemon (spec 1 §4). Members declare only the dependencies their code uses;
+# every dependency named by §4 is pinned here so later tickets add it with `workspace = true`.
+
+[workspace]
+resolver = "3"
+members = [
+    "crates/trd-proto",
+    "crates/trd-core",
+    "crates/trd",
+    "crates/trd-testtools",
+]
+
+[workspace.package]
+version = "3.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace.dependencies]
+# async
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+futures = "0.3"
+# gRPC (build: tonic-prost-build and protoc-bin-vendored, no system protoc)
+tonic = "0.14"
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+prost = "0.14"
+protoc-bin-vendored = "3"
+# TLS: ring only, aws-lc-rs needs CMake and NASM on Windows
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+sha2 = "0.10"
+hex = "0.4"
+# mDNS
+mdns-sd = "0.11"
+# storage
+rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite_migration = "1"
+# data
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+csv = "1"
+regex = "1"
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"
+# CLI and logs
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tracing-appender = "0.2"
+crossterm = "0.28"
+# processes
+sysinfo = "0.33"
+nix = { version = "0.29", features = ["signal", "process"] }
+windows-sys = "0.59"
+libc = "0.2"
+# misc
+dirs = "5"
+rand = "0.8"
+anyhow = "1"
+thiserror = "2"
+# dev
+tempfile = "3"
+assert_matches = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
