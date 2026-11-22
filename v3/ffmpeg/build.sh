@@ -67,6 +67,10 @@ while [ "$#" -gt 0 ]; do
 done
 
 detect_host
+# On macOS, Apple's own tools (strings, lipo, ar, ...) must win over package managers' copies:
+# MacPorts' strings cannot read the Mach-O objects the toolchain writes, and x264's endian test
+# (and the universal lipo step) fail with them.  FFMPEG_BUILD_PATH, if given, still goes first.
+if [ "$HOST_OS" = macos ]; then export PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"; fi
 [ -z "${FFMPEG_BUILD_PATH:-}" ] || export PATH="$FFMPEG_BUILD_PATH:$PATH"
 
 if [ -z "$REQUESTED" ]; then REQUESTED="$(native_target)"; fi
