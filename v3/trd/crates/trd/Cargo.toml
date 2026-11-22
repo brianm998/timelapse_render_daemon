@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+#
+# The trd and trdw binaries: command line, gRPC server, TLS, pairing, mDNS and service install.
+
+[package]
+name = "trd"
+default-run = "trd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+clap.workspace = true
+trd-core = { path = "../trd-core" }
