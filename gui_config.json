@@ -1,6 +1,7 @@
 {
   "backup_paths" : [
-    "\/mammoth\/Photos\/timelapses\/$YEAR",
+      "\/mnt\/mammoth\/Photos\/timelapses\/$YEAR",
+      "\/mnt\/trunk\/Photos\/timelapses\/$YEAR"
   ],
   "delete_sequence_after_render_regexes" : [
     "-merge$"
@@ -53,6 +54,7 @@
     "ARW",
     "ORF"
   ],
+  "recent_render_history_days" : 30,
   "rendering" : [
     {
       "codec" : "h264",
