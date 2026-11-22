@@ -109,7 +109,7 @@ if [ -n "$TARGET" ]; then
     esac
     for tool in "$FFMPEG" "$FFPROBE"; do
         if [ "$TARGET_OS" = macos ]; then
-            have=$(lipo -archs "$tool" 2>&1)
+            have=$(/usr/bin/lipo -archs "$tool" 2>&1)
             [ "$have" = "$want" ] && pass "${tool##*/} is $have" || fail "${tool##*/} architectures" "want '$want', have '$have'"
         else
             desc=$(file -b "$tool")
@@ -214,7 +214,7 @@ trd_render() {
 # check_render <name> <width> <height> <pix_fmt>: what every trd output must be
 check_render() {
     local name=$1 w=$2 h=$3 pix=$4
-    local f="$WORK/out_$name.mov" tags thumb half dur
+    local f="$WORK/out_$name.mov" tags thumb half dur have_pix
     if [ ! -f "$f" ]; then
         fail "$name: output exists" "no file, so the other checks for it cannot run"
         return 0
@@ -223,11 +223,16 @@ check_render() {
     expect "$name: ${w}x${h}" "${w}x${h}" "$(probe "$f" v:0 width)x$(probe "$f" v:0 height)"
     expect "$name: SAR 1:1" 1:1 "$(probe "$f" v:0 sample_aspect_ratio)"
     expect "$name: DAR 3:2" 3:2 "$(probe "$f" v:0 display_aspect_ratio)"
-    expect "$name: pix_fmt $pix" "$pix" "$(probe "$f" v:0 pix_fmt)"
+    # FFmpeg's H.264 and HEVC decoders report a full-range 4:2:0 stream as the legacy "yuvj420p";
+    # the stream itself is yuv420p with color_range=pc, which the next check confirms.
+    have_pix=$(probe "$f" v:0 pix_fmt)
+    case "$have_pix" in yuvj*) have_pix="yuv${have_pix#yuvj}" ;; esac
+    expect "$name: pix_fmt $pix" "$pix" "$have_pix"
     expect "$name: color_range pc" pc "$(probe "$f" v:0 color_range)"
     expect "$name: color_primaries bt709" bt709 "$(probe "$f" v:0 color_primaries)"
 
-    tags=$("$FFPROBE" -v error -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "$f")
+    # the timecode track has no decoder, so ffprobe names it only by its tag (codec_name=unknown)
+    tags=$("$FFPROBE" -v error -show_entries stream=codec_tag_string -of default=noprint_wrappers=1:nokey=1 "$f")
     if printf '%s\n' "$tags" | grep -q -x tmcd; then pass "$name: tmcd stream"; else fail "$name: tmcd stream" "streams: $(printf '%s ' $tags)"; fi
 
     if grep -q -x 'progress=end' "$WORK/progress_$name.txt" 2>/dev/null; then
