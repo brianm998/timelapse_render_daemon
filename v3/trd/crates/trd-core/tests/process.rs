@@ -275,8 +275,10 @@ mod process {
         let mut report = None;
         for line in BufReader::new(stdout).lines() {
             let line = line.expect("a line from the helper");
-            if let Some(rest) = line.strip_prefix(HELPER_MARK) {
-                report = Some(rest.to_owned());
+            // libtest prints "test process::own_process_group ... " without a newline under
+            // --nocapture, so the marker can land mid-line.
+            if let Some(index) = line.find(HELPER_MARK) {
+                report = Some(line[index + HELPER_MARK.len()..].to_owned());
                 break;
             }
         }
