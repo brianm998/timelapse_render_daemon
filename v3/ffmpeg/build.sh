@@ -1,0 +1,244 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+#
+# Builds the ffmpeg and ffprobe trd ships: static, GPL, with hardware acceleration enabled.
+# See v3/ffmpeg/README.md for what is in them and why.
+#
+#   ./build.sh [options] [target]
+#
+# target is one of: macos-arm64 macos-x64 macos-universal linux-x64 linux-arm64 windows-x64
+# and defaults to this machine's native one: on a Mac the single-architecture slice of the CPU
+# it runs on (macos-arm64 or macos-x64), so a local build is one slice; ask for macos-universal
+# for the shipping binary.  A target builds only on a machine of its own OS; the macOS slices
+# are the exception, an arm64 Mac builds both.
+#
+#   --out DIR       where the finished binaries go (default: v3/ffmpeg/dist), as DIR/<target>/
+#   --work DIR      sources, per-target build trees and logs (default: v3/ffmpeg/.work)
+#   --install       also make sure the result is in v3/ffmpeg/dist/<target>, where the smoke
+#                   test, the Makefile and the packaging look for it
+#   --jobs N        parallel make jobs (default: every core)
+#   --verbose       stream the build logs instead of keeping them in files
+#   --print-native  print this machine's native target and exit (the Makefile asks for it)
+#
+# Environment:
+#   FFMPEG_BUILD_PATH   directories to put first on PATH, for build tools (nasm, pkg-config,
+#                       meson, ninja) that are not installed system-wide
+#
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=versions.env
+. "$HERE/versions.env"
+# shellcheck source=lib/common.sh
+. "$HERE/lib/common.sh"
+# shellcheck source=lib/targets.sh
+. "$HERE/lib/targets.sh"
+# shellcheck source=lib/deps.sh
+. "$HERE/lib/deps.sh"
+
+WORK="$HERE/.work"
+OUT="$HERE/dist"
+INSTALL=0
+JOBS="$(cpu_count)"
+REQUESTED=""
+
+usage() { sed -n '5,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+# native_target: this machine's target name, once detect_host has run.
+native_target() {
+    if [ "$HOST_OS" = macos ]; then echo "macos-$HOST_ARCH"; else echo "$HOST_OS-$HOST_ARCH"; fi
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --out)     OUT="$2"; shift 2 ;;
+        --work)    WORK="$2"; shift 2 ;;
+        --jobs)    JOBS="$2"; shift 2 ;;
+        --install) INSTALL=1; shift ;;
+        --verbose) export FFMPEG_BUILD_VERBOSE=1; shift ;;
+        --print-native) detect_host; native_target; exit 0 ;;
+        -h|--help) usage 0 ;;
+        -*)        echo "unknown option: $1" >&2; usage 1 ;;
+        *)         [ -z "$REQUESTED" ] || die "only one target at a time"; REQUESTED="$1"; shift ;;
+    esac
+done
+
+detect_host
+# On macOS, Apple's own tools (strings, lipo, ar, ...) must win over package managers' copies:
+# MacPorts' strings cannot read the Mach-O objects the toolchain writes, and x264's endian test
+# (and the universal lipo step) fail with them.  FFMPEG_BUILD_PATH, if given, still goes first.
+if [ "$HOST_OS" = macos ]; then export PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"; fi
+[ -z "${FFMPEG_BUILD_PATH:-}" ] || export PATH="$FFMPEG_BUILD_PATH:$PATH"
+
+if [ -z "$REQUESTED" ]; then REQUESTED="$(native_target)"; fi
+
+mkdir -p "$WORK"
+WORK="$(cd "$WORK" && pwd)"
+SRC_DIR="$WORK/src"
+LOG_DIR="$WORK/logs"
+mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd)"
+
+# ── prerequisites ────────────────────────────────────────────────────────────
+
+preflight() {
+    local hint
+    case "$HOST_OS" in
+        macos)   hint="brew install nasm pkgconf meson ninja cmake" ;;
+        linux)   hint="sudo apt-get install build-essential nasm pkg-config cmake meson ninja-build git curl xz-utils" ;;
+        windows) hint="in an MSYS2 MINGW64 shell: pacman -S base-devel git curl xz diffutils mingw-w64-x86_64-toolchain mingw-w64-x86_64-nasm mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-meson mingw-w64-x86_64-pkgconf" ;;
+    esac
+    need_cmd git   "$hint"
+    need_cmd curl  "$hint"
+    need_cmd make  "$hint"
+    need_cmd cmake "$hint"
+    need_cmd meson "$hint"
+    need_cmd ninja "$hint"
+    command -v pkg-config >/dev/null 2>&1 || command -v pkgconf >/dev/null 2>&1 \
+        || die "pkg-config (or pkgconf) not found in PATH. $hint"
+    # nasm assembles the x86 SIMD in x264, x265, dav1d, SVT-AV1, libvpx and FFmpeg; without it
+    # they fall back to C and the encoder is several times slower.  Only x64 targets need it.
+    local want_nasm=0
+    case "$REQUESTED" in
+        *x64|macos-universal) want_nasm=1 ;;
+    esac
+    if [ "$want_nasm" = 1 ]; then need_cmd nasm "$hint"; fi
+}
+
+# ── one target ───────────────────────────────────────────────────────────────
+
+# The libraries FFmpeg links, and the steps that stamp them (the ones the ffmpeg step depends on).
+build_dependencies() {
+    DEP_STEPS=""
+    run_step x264   build_x264   "$X264_COMMIT"
+    run_step x265   build_x265   "$X265_SHA256"
+    DEP_STEPS="x264 x265"
+    run_step dav1d  build_dav1d  "$DAV1D_SHA256"
+    run_step svtav1 build_svtav1 "$SVTAV1_COMMIT"
+    run_step libvpx build_libvpx "$LIBVPX_COMMIT"
+    DEP_STEPS="${DEP_STEPS:+$DEP_STEPS }dav1d svtav1 libvpx"
+
+    # the GPU headers this target's FFmpeg is configured with (see targets.sh)
+    case "$T_OS" in
+        linux|windows)
+            run_step nvcodec build_nvcodec_headers "$NVCODEC_COMMIT"
+            run_step vulkan  build_vulkan_headers  "$VULKAN_HEADERS_COMMIT"
+            DEP_STEPS="$DEP_STEPS nvcodec vulkan"
+            ;;
+    esac
+    if [ "$T_OS" = windows ]; then
+        run_step amf build_amf_headers "$AMF_COMMIT"
+        DEP_STEPS="$DEP_STEPS amf"
+    fi
+}
+
+build_target() {
+    set_target "$1"
+    log "target $TARGET  (host $HOST_OS-$HOST_ARCH, $JOBS jobs)"
+    log "work:   $WORK/$TARGET"
+
+    build_dependencies
+    # its own prefix, so that FFmpeg's installed headers never sit on the include path of the
+    # next FFmpeg build (an upgrade would otherwise compile against the old version's)
+    FFMPEG_PREFIX="$PREFIX-ffmpeg"
+    FFMPEG_BUILD=ffmpeg
+    run_step ffmpeg build_ffmpeg "$FFMPEG_SHA256" "$(stamps_digest $DEP_STEPS)" "${FFMPEG_ARGS[*]}"
+
+    package_target
+}
+
+# strip_and_sign <file>
+strip_and_sign() {
+    case "$T_OS" in
+        macos)
+            strip -x "$1"
+            # Stripping and lipo both invalidate the signature, and an arm64 binary with no
+            # valid signature is killed on launch.  Ad hoc is enough to run it locally; the
+            # packaging re-signs it with the Developer ID.
+            codesign --force --sign - "$1"
+            ;;
+        linux)   strip --strip-unneeded "$1" ;;
+        windows) strip --strip-all "$1" ;;
+    esac
+}
+
+package_target() {
+    local dest="$OUT/$TARGET" tool
+    rm -rf "$dest"
+    mkdir -p "$dest"
+    for tool in ffmpeg ffprobe; do
+        cp "$FFMPEG_PREFIX/bin/$tool$T_EXE" "$dest/$tool$T_EXE"
+        strip_and_sign "$dest/$tool$T_EXE"
+    done
+    write_license_files "$dest" "$BUILD_DIR/$FFMPEG_BUILD/config.h"
+    log "built $dest"
+}
+
+write_license_files() { # <dest> <config.h>
+    local dest=$1 config_h=$2
+    cp "$SRC_DIR/ffmpeg/COPYING.GPLv2" "$dest/LICENSE-ffmpeg.txt"
+    {
+        echo "FFmpeg $FFMPEG_VERSION, built for $TARGET by trd's v3/ffmpeg/build.sh"
+        echo
+        echo "configuration:"
+        # the paths of the machine it was built on mean nothing to a reader
+        sed -n 's/^#define FFMPEG_CONFIGURATION "\(.*\)"$/  \1/p' "$config_h" | sed "s|$WORK|<work>|g"
+        echo
+        echo "This binary is licensed under the GNU GPL (see LICENSE-ffmpeg.txt) because it"
+        echo "contains x264 and x265.  The complete corresponding source is public:"
+        echo "  FFmpeg      $FFMPEG_VERSION   $FFMPEG_URL"
+        echo "  x264        $X264_COMMIT   $X264_URL"
+        echo "  x265        $X265_VERSION   $X265_URL"
+        echo "  dav1d       $DAV1D_VERSION   $DAV1D_URL"
+        echo "  SVT-AV1     $SVTAV1_VERSION   $SVTAV1_URL @ $SVTAV1_COMMIT"
+        echo "  libvpx      $LIBVPX_VERSION   $LIBVPX_URL @ $LIBVPX_COMMIT"
+        echo "and the build recipe is v3/ffmpeg/ in $RECIPE_URL"
+    } > "$dest/BUILDINFO.txt"
+}
+
+# ── macOS universal: arm64 + x64 slices, joined ──────────────────────────────
+
+build_universal() {
+    build_target macos-arm64
+    build_target macos-x64
+
+    local dest="$OUT/macos-universal" tool
+    rm -rf "$dest"
+    mkdir -p "$dest"
+    for tool in ffmpeg ffprobe; do
+        lipo -create "$OUT/macos-arm64/$tool" "$OUT/macos-x64/$tool" -output "$dest/$tool"
+        codesign --force --sign - "$dest/$tool"
+        log "$tool: $(lipo -archs "$dest/$tool")"
+    done
+    cp "$OUT/macos-arm64/LICENSE-ffmpeg.txt" "$dest/"
+    # the slices are built alike, so one description covers both; only the heading differs
+    sed '1s/built for macos-arm64/built for macos-universal (an arm64 and an x86_64 slice)/' \
+        "$OUT/macos-arm64/BUILDINFO.txt" > "$dest/BUILDINFO.txt"
+    log "built $dest"
+}
+
+# ── go ───────────────────────────────────────────────────────────────────────
+
+preflight
+
+case "$REQUESTED" in
+    macos-universal)
+        [ "$HOST_OS" = macos ] || die "macos-universal can only be built on a Mac"
+        build_universal
+        ;;
+    *)
+        build_target "$REQUESTED"
+        ;;
+esac
+
+if [ "$INSTALL" = 1 ]; then
+    dest="$HERE/dist/$REQUESTED"
+    if [ "$OUT/$REQUESTED" != "$dest" ]; then
+        mkdir -p "$dest"
+        cp "$OUT/$REQUESTED"/* "$dest/"
+    fi
+    log "installed into $dest"
+fi
