@@ -1,0 +1,513 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Timelapse Render Daemon contributors
+//
+// The trd API, version 1. Timestamps are milliseconds since the Unix epoch (UTC); sizes are bytes;
+// a signed numeric field documented as "-1 = unknown" uses -1 for unknown.
+syntax = "proto3";
+
+package trd.v1;
+
+option java_multiple_files = true;
+option java_package = "com.timelapserender.trd.v1";
+
+service TrdService {
+  // Callable without a token on both listeners.
+  rpc GetServerInfo(GetServerInfoRequest) returns (ServerInfo);
+  rpc Pair(PairRequest) returns (PairResponse);
+
+  // State.
+  rpc GetSnapshot(GetSnapshotRequest) returns (Snapshot);
+  rpc WatchSnapshots(WatchSnapshotsRequest) returns (stream Snapshot);
+  rpc ListRenderedVideos(ListRenderedVideosRequest) returns (ListRenderedVideosResponse);
+  rpc GetThumbnail(GetThumbnailRequest) returns (Thumbnail);
+  rpc GetRenderDetails(GetRenderDetailsRequest) returns (RenderDetails);
+  rpc ListLog(ListLogRequest) returns (ListLogResponse);
+  rpc WatchLog(WatchLogRequest) returns (stream LogEntry);
+
+  // Controls.
+  rpc SetGlobalPause(SetGlobalPauseRequest) returns (Ack);
+  rpc PauseSequence(SequenceRef) returns (Ack);
+  rpc ResumeSequence(SequenceRef) returns (Ack);
+  rpc PauseVariant(VariantRef) returns (Ack);
+  rpc ResumeVariant(VariantRef) returns (Ack);
+  rpc SuspendRender(RenderRef) returns (Ack);
+  rpc ResumeRender(RenderRef) returns (Ack);
+  rpc StopRender(RenderRef) returns (Ack);
+  rpc RetryVariant(VariantRef) returns (Ack);
+  rpc DismissFailure(FailureRef) returns (Ack);
+  rpc DismissAllFailures(DismissAllFailuresRequest) returns (Ack);
+  rpc RescanNow(RescanNowRequest) returns (Ack);
+
+  // Configuration.
+  rpc GetConfig(GetConfigRequest) returns (ConfigState);
+  rpc ValidateConfig(ValidateConfigRequest) returns (ValidateConfigResponse);
+  rpc UpdateConfig(UpdateConfigRequest) returns (ConfigState);
+  rpc UpdateCodecs(UpdateCodecsRequest) returns (ConfigState);
+  rpc SetConfigPath(SetConfigPathRequest) returns (ConfigState);
+  rpc ListDirectory(ListDirectoryRequest) returns (ListDirectoryResponse);
+
+  // Devices: loopback listener only (PERMISSION_DENIED on the LAN listener).
+  rpc StartPairing(StartPairingRequest) returns (StartPairingResponse);
+  rpc ListPairedDevices(ListPairedDevicesRequest) returns (ListPairedDevicesResponse);
+  rpc RevokeDevice(RevokeDeviceRequest) returns (Ack);
+}
+
+message Ack {}
+message SequenceRef { string sequence_name = 1; }                       // export directory name
+message VariantRef { string sequence_name = 1; string variant_key = 2; }
+message RenderRef { string render_id = 1; }
+message FailureRef { string failure_id = 1; }
+
+// ── server info and pairing ─────────────────────────────────────────────────
+
+message GetServerInfoRequest {}
+
+message ToolInfo {
+  string name = 1;          // "ffmpeg", "ffprobe", "exiftool"
+  string path = 2;
+  string version = 3;
+  bool available = 4;
+  string problem = 5;
+}
+
+message ServerInfo {
+  string server_id = 1;                  // stable UUID
+  string name = 2;                       // advertised name
+  string version = 3;                    // e.g. "3.0.0"
+  uint32 api_version = 4;                // 1
+  string platform = 5;                   // "macos-universal" | "linux-x64" | "linux-arm64" | "windows-x64"
+  string cert_fingerprint_sha256 = 6;    // lowercase hex of the TLS certificate's DER
+  uint32 lan_port = 7;                   // 0 when the LAN listener is off
+  bool caller_is_local = 8;              // the call came through the loopback listener
+  bool caller_is_paired = 9;             // a LAN call carried a valid token
+  repeated ToolInfo tools = 10;
+  bool sandbox = 11;
+}
+
+enum DevicePlatform {
+  DEVICE_PLATFORM_UNSPECIFIED = 0;
+  DEVICE_PLATFORM_IOS = 1;
+  DEVICE_PLATFORM_ANDROID = 2;
+  DEVICE_PLATFORM_DESKTOP = 3;
+}
+
+message PairRequest { string code = 1; string device_name = 2; DevicePlatform platform = 3; }
+message PairResponse { string token = 1; string device_id = 2; string server_id = 3; string server_name = 4; }
+
+message StartPairingRequest {}
+message StartPairingResponse {
+  string code = 1;                       // 6 digits
+  int64 expires_at_ms = 2;
+  string server_id = 3;
+  string server_name = 4;
+  string cert_fingerprint_sha256 = 5;
+  uint32 lan_port = 6;
+  repeated string lan_addresses = 7;     // non-loopback IPv4 addresses
+}
+
+message ListPairedDevicesRequest {}
+message PairedDevice {
+  string device_id = 1;
+  string name = 2;
+  DevicePlatform platform = 3;
+  int64 paired_at_ms = 4;
+  int64 last_seen_ms = 5;
+}
+message ListPairedDevicesResponse { repeated PairedDevice devices = 1; }
+message RevokeDeviceRequest { string device_id = 1; }
+
+// ── snapshots ───────────────────────────────────────────────────────────────
+
+message GetSnapshotRequest {}
+message WatchSnapshotsRequest { uint32 max_per_second = 1; }   // 0 = 4; clamped to 1..10
+
+enum Phase {
+  PHASE_UNSPECIFIED = 0;
+  PHASE_STARTING = 1;
+  PHASE_NO_CONFIG = 2;
+  PHASE_WAITING_FOR_DISK_ACCESS = 3;
+  PHASE_IDLE = 4;
+  PHASE_EXPORTING = 5;
+  PHASE_RENDERING = 6;
+  PHASE_PAUSED = 7;
+}
+
+message Snapshot {
+  uint64 revision = 1;
+  int64 generated_at_ms = 2;
+  Phase phase = 3;
+  bool global_pause = 4;
+  repeated Problem problems = 5;                 // errors first, then by id
+  repeated FailureCard failures = 6;             // newest first
+  repeated SequenceCard in_progress = 7;         // display order
+  repeated RenderedVideo recently_rendered = 8;  // newest first, at most 30
+  uint32 recently_rendered_total = 9;
+  Counts counts = 10;
+  int64 last_scan_completed_ms = 11;             // 0 before the first scan
+  uint32 last_scan_duration_ms = 12;
+  string config_path = 13;
+}
+
+message Counts {
+  uint32 rendering = 1;
+  uint32 suspended = 2;
+  uint32 queued = 3;
+  uint32 exporting = 4;
+  uint32 paused_sequences = 5;
+  uint32 failures = 6;
+  uint32 rendered_last_24h = 7;
+}
+
+enum Severity {
+  SEVERITY_UNSPECIFIED = 0;
+  SEVERITY_WARNING = 1;
+  SEVERITY_ERROR = 2;
+}
+
+enum ProblemKind {
+  PROBLEM_KIND_UNSPECIFIED = 0;
+  PROBLEM_FULL_DISK_ACCESS_MISSING = 1;
+  PROBLEM_TOOL_MISSING = 2;
+  PROBLEM_TOOL_BROKEN = 3;
+  PROBLEM_CONFIG_MISSING = 4;
+  PROBLEM_CONFIG_INVALID = 5;
+  PROBLEM_CONFIG_ISSUES = 6;
+  PROBLEM_UNKNOWN_CODEC = 7;
+  PROBLEM_PATH_UNREACHABLE = 8;
+  PROBLEM_LAN_LISTENER_FAILED = 9;
+  PROBLEM_MDNS_FAILED = 10;
+}
+
+message Problem {
+  string id = 1;
+  Severity severity = 2;
+  ProblemKind kind = 3;
+  string title = 4;
+  string detail = 5;
+  string fix = 6;
+  repeated string paths = 7;
+  int64 since_ms = 8;
+}
+
+enum Stage {
+  STAGE_UNSPECIFIED = 0;
+  STAGE_EXPORTING = 1;
+  STAGE_COUNT_MISMATCH = 2;
+  STAGE_COLLECTING_METADATA = 3;
+  STAGE_QUEUED = 4;
+  STAGE_RENDERING = 5;
+  STAGE_BLOCKED = 6;            // complete, but every remaining variant is paused, failed or has an unknown codec
+  STAGE_PAUSED = 7;             // the whole sequence is paused
+}
+
+enum VariantStatus {
+  VARIANT_STATUS_UNSPECIFIED = 0;
+  VARIANT_WAITING = 1;          // the sequence is not complete
+  VARIANT_ALREADY_RENDERED = 2; // the output existed before trd rendered it
+  VARIANT_QUEUED = 3;
+  VARIANT_RUNNING = 4;
+  VARIANT_SUSPENDED = 5;
+  VARIANT_DONE = 6;             // rendered by trd since the sequence became complete
+  VARIANT_FAILED = 7;
+  VARIANT_PAUSED = 8;           // the variant or its sequence is paused (by the user or automatically)
+  VARIANT_UNKNOWN_CODEC = 9;
+}
+
+message VariantRow {
+  string variant_key = 1;
+  string codec = 2;
+  string resolution_label = 3;  // "OriRes", "720w", "2160p"
+  uint32 frame_rate = 4;
+  string output_filename = 5;
+  string output_path = 6;
+  VariantStatus status = 7;
+  string render_id = 8;         // set for QUEUED, RUNNING, SUSPENDED, DONE, FAILED
+  uint32 frame = 9;
+  uint32 total_frames = 10;
+  double fps = 11;
+  int64 eta_seconds = 12;       // -1 = unknown
+  bool progress_known = 13;
+  bool adopted = 14;
+  int64 size_bytes = 15;        // DONE / ALREADY_RENDERED: file size; RUNNING / SUSPENDED: partial size; else -1
+  string message = 16;
+  string failure_id = 17;       // set for FAILED
+}
+
+message SequenceCard {
+  string id = 1;                       // "<export_path>/<name>"
+  string name = 2;                     // export directory name
+  string export_path = 3;
+  string raw_sequence_name = 4;
+  string raw_sequence_location = 5;    // the source_paths or backup_paths entry
+  bool raw_from_backup = 6;
+  uint32 expected_frames = 7;
+  uint32 exported_frames = 8;
+  Stage stage = 9;
+  bool paused = 10;
+  double export_frames_per_minute = 11;  // 0 = unknown
+  int64 export_eta_seconds = 12;         // -1 = unknown
+  int64 export_size_bytes = 13;          // -1 = unknown
+  int64 first_seen_ms = 14;
+  int64 last_frame_ms = 15;
+  repeated VariantRow variants = 16;     // in the config's rendering order
+  string note = 17;
+}
+
+enum RenderedSource {
+  RENDERED_SOURCE_UNSPECIFIED = 0;
+  RENDERED_SOURCE_TRD = 1;
+  RENDERED_SOURCE_ADOPTED = 2;
+  RENDERED_SOURCE_IMPORTED = 3;
+}
+
+message RenderedVideo {
+  string id = 1;
+  int64 rendered_at_ms = 2;
+  string sequence_name = 3;
+  string export_path = 4;
+  string output_filename = 5;
+  string output_path = 6;
+  string variant_key = 7;
+  string codec = 8;
+  string resolution_label = 9;
+  uint32 frame_rate = 10;
+  uint32 frame_count = 11;
+  int64 size_bytes = 12;
+  uint32 width = 13;
+  uint32 height = 14;
+  double duration_seconds = 15;
+  int64 render_seconds = 16;    // -1 = unknown
+  bool has_thumbnail = 17;
+  bool file_exists = 18;
+  bool xmp_embedded = 19;
+  RenderedSource source = 20;
+}
+
+enum FailureKind {
+  FAILURE_KIND_UNSPECIFIED = 0;
+  FAILURE_INPUT_FRAMES_NOT_FOUND = 1;
+  FAILURE_INPUT_UNREADABLE = 2;
+  FAILURE_SOURCE_FRAME_UNREADABLE = 3;
+  FAILURE_FFMPEG_REJECTED_ARGUMENTS = 4;
+  FAILURE_OUTPUT_NOT_WRITABLE = 5;
+  FAILURE_DISK_FULL = 6;
+  FAILURE_TERMINATED_BY_SIGNAL = 7;
+  FAILURE_PRODUCED_NO_OUTPUT = 8;
+  FAILURE_STRUCTURAL_CORRUPTION = 9;
+  FAILURE_LAUNCH_FAILED = 10;
+  FAILURE_NOT_QUEUEABLE = 11;
+  FAILURE_UNKNOWN = 12;
+}
+
+message FailureCard {
+  string id = 1;
+  int64 first_seen_ms = 2;
+  int64 last_seen_ms = 3;
+  string sequence_name = 4;
+  string export_path = 5;
+  string output_filename = 6;
+  string output_path = 7;
+  string variant_key = 8;
+  FailureKind kind = 9;
+  string kind_label = 10;
+  string summary = 11;
+  string detail = 12;
+  bool has_exit_code = 13;
+  int32 exit_code = 14;
+  string command_line = 15;
+  repeated string tool_output = 16;     // at most 20 significant lines
+  uint32 occurrences = 17;
+  bool variant_auto_paused = 18;
+  string render_id = 19;
+}
+
+// ── history, thumbnails, details ────────────────────────────────────────────
+
+message ListRenderedVideosRequest {
+  uint32 limit = 1;             // 0 = 100; at most 500
+  string before_id = 2;         // "" = start from the newest; else rows older than this one
+  string search = 3;            // case-insensitive substring of sequence_name or output_filename
+}
+message ListRenderedVideosResponse { repeated RenderedVideo videos = 1; bool more = 2; }
+
+message GetThumbnailRequest { string rendered_video_id = 1; }
+message Thumbnail { bytes jpeg = 1; uint32 width = 2; uint32 height = 3; }
+
+message GetRenderDetailsRequest {
+  oneof target {
+    string render_id = 1;
+    string rendered_video_id = 2;
+    string failure_id = 3;
+  }
+}
+
+message RenderDetails {
+  string render_id = 1;
+  string sequence_name = 2;
+  string export_path = 3;
+  string variant_key = 4;
+  string input_pattern = 5;
+  int32 start_number = 6;       // -1 when not passed
+  uint32 total_frames = 7;
+  string output_path = 8;
+  string partial_path = 9;
+  string command_line = 10;
+  repeated string log_tail = 11;  // last 200 lines of the render log
+  int64 started_at_ms = 12;       // 0 = not started
+  int64 finished_at_ms = 13;      // 0 = not finished
+  int32 pid = 14;                 // 0 = not running
+  bool adopted = 15;
+  VariantStatus status = 16;
+}
+
+// ── log ─────────────────────────────────────────────────────────────────────
+
+enum LogLevel {
+  LOG_LEVEL_UNSPECIFIED = 0;
+  LOG_DEBUG = 1;
+  LOG_INFO = 2;
+  LOG_WARN = 3;
+  LOG_ERROR = 4;
+}
+
+enum EventKind {
+  EVENT_NONE = 0;
+  EVENT_SEQUENCE_READY = 1;
+  EVENT_RENDER_STARTED = 2;
+  EVENT_RENDER_FINISHED = 3;
+  EVENT_SEQUENCE_FINISHED = 4;
+  EVENT_RENDER_FAILED = 5;
+  EVENT_SEQUENCE_DELETED = 6;
+  EVENT_CONFIG_RELOADED = 7;
+}
+
+message LogEntry {
+  uint64 seq = 1;               // monotonic, persisted across restarts
+  int64 at_ms = 2;
+  LogLevel level = 3;
+  string subject = 4;
+  string message = 5;
+  EventKind event = 6;
+  string sequence_name = 7;
+  string output_filename = 8;
+  string rendered_video_id = 9;
+  string failure_id = 10;
+  uint32 video_count = 11;      // EVENT_SEQUENCE_FINISHED
+  int64 total_bytes = 12;       // EVENT_SEQUENCE_FINISHED
+}
+
+message ListLogRequest {
+  uint64 before_seq = 1;        // 0 = newest
+  uint32 limit = 2;             // 0 = 200; at most 1000
+  LogLevel min_level = 3;       // UNSPECIFIED = INFO
+}
+message ListLogResponse { repeated LogEntry entries = 1; bool more = 2; }   // newest first
+
+message WatchLogRequest {
+  uint64 after_seq = 1;         // stored rows with seq > after_seq first (oldest first), then live
+  LogLevel min_level = 2;       // UNSPECIFIED = INFO
+}
+
+// ── controls ────────────────────────────────────────────────────────────────
+
+message SetGlobalPauseRequest { bool paused = 1; }
+message DismissAllFailuresRequest {}
+message RescanNowRequest {}
+
+// ── configuration ───────────────────────────────────────────────────────────
+
+message GetConfigRequest {}
+
+message MaxProcesses { uint32 ffmpeg = 1; uint32 exiftool = 2; }
+
+message RenderVariant {
+  string codec = 1;
+  uint32 frame_rate = 2;
+  repeated uint32 resolution = 3;   // [] original size, [W] width, [W, H] exact size
+  string variant_key = 4;           // output only
+  string example_filename = 5;      // output only: the name for a sequence "LRT_example"
+}
+
+message PausedVariant { string sequence_name = 1; string variant_key = 2; }
+
+message Config {
+  repeated string export_paths = 1;
+  repeated string source_paths = 2;
+  repeated string backup_paths = 3;
+  repeated string master_videos = 4;
+  MaxProcesses max_processes = 5;
+  uint32 max_concurrent_renders = 6;          // JSON key "max_cuncurrent_renders"
+  string image_name_prefix = 7;
+  string image_sequence_dirname_prefix = 8;
+  repeated string raw_types = 9;
+  repeated string image_extensions = 10;
+  repeated RenderVariant rendering = 11;
+  bool log_in_color = 12;
+  double sleep_time_seconds = 13;
+  double scan_interval_seconds = 14;
+  uint32 progress_bar_width = 15;
+  repeated string ignore_sequence_regexes = 16;
+  repeated string delete_sequence_after_render_regexes = 17;
+  repeated string paused_sequence_names = 18;
+  repeated PausedVariant paused_variants = 19;
+  uint32 recent_render_history_days = 20;
+  string render_history_path = 21;            // "" = absent
+}
+
+message CodecFfmpeg {
+  string codec = 1;
+  string pixel_format = 2;
+  string color_range = 3;
+  bool has_profile = 4;
+  string profile = 5;
+  repeated string extra_args = 6;
+}
+message CodecFilename { string pixel_format = 1; string codec = 2; string quality = 3; }
+message VideoCodec { string name = 1; CodecFfmpeg ffmpeg = 2; CodecFilename filename = 3; }
+
+enum IssueSeverity {
+  ISSUE_SEVERITY_UNSPECIFIED = 0;
+  ISSUE_WARNING = 1;
+  ISSUE_ERROR = 2;
+}
+message ConfigIssue { IssueSeverity severity = 1; string field = 2; string message = 3; }
+
+enum ConfigPathSource {
+  CONFIG_PATH_SOURCE_UNSPECIFIED = 0;
+  CONFIG_PATH_FLAG = 1;
+  CONFIG_PATH_SETTING = 2;
+  CONFIG_PATH_DEFAULT = 3;
+}
+
+message ConfigState {
+  string path = 1;
+  ConfigPathSource path_source = 2;
+  bool exists = 3;
+  Config config = 4;                 // with defaults applied
+  string revision = 5;               // lowercase hex SHA-256 of the file's bytes; "" when !exists
+  repeated ConfigIssue issues = 6;
+  repeated VideoCodec codecs = 7;    // sorted by name
+  string codecs_path = 8;            // "" = built-in table
+  string codecs_revision = 9;        // SHA-256 of video_codecs.json; "" = built-in
+  string raw_json = 10;
+  int64 loaded_at_ms = 11;
+}
+
+message ValidateConfigRequest { Config config = 1; repeated VideoCodec codecs = 2; }   // codecs empty = current table
+message ValidateConfigResponse { repeated ConfigIssue issues = 1; repeated RenderVariant rendering = 2; }
+message UpdateConfigRequest { Config config = 1; string expected_revision = 2; }
+message UpdateCodecsRequest { repeated VideoCodec codecs = 1; string expected_revision = 2; }
+message SetConfigPathRequest { string path = 1; bool create_if_missing = 2; }
+
+message ListDirectoryRequest {
+  string path = 1;              // "" = the roots
+  bool include_files = 2;
+  bool show_hidden = 3;
+}
+message DirEntry { string name = 1; string path = 2; bool is_dir = 3; int64 size_bytes = 4; int64 modified_ms = 5; }
+message ListDirectoryResponse {
+  string path = 1;
+  string parent = 2;            // "" at a root
+  repeated DirEntry entries = 3;  // directories first, then by name
+  repeated string roots = 4;    // macOS: "/", every /Volumes/* and the home directory; Linux: "/" and home; Windows: every drive and home
+}
