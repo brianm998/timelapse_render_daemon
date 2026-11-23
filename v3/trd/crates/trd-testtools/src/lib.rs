@@ -10,7 +10,6 @@ pub mod system_test;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde_json::{Map, Value};
 
@@ -81,6 +80,8 @@ pub fn make_tools_dir(bin_dir: &Path, dest: &Path) -> io::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn sign_ad_hoc(path: &Path) -> io::Result<()> {
+    use std::process::Command;
+
     let status = Command::new("/usr/bin/codesign")
         .args(["-s", "-", "-f"])
         .arg(path)
