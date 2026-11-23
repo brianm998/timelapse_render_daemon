@@ -21,9 +21,7 @@ use tempfile::TempDir;
 use trd_core::history_import::{
     ImportReport, ImportStatus, SOURCE_IMPORTED, default_history_path, import_swift_history,
 };
-#[cfg(unix)]
-use trd_core::store::LogLevel;
-use trd_core::store::{DAY_MS, RenderedVideo, Store};
+use trd_core::store::{DAY_MS, LogLevel, RenderedVideo, Store};
 use trd_core::thumbs::{
     Runner, THUMBNAILS_DIR, Thumbnailer, ensure_thumbnail, prune_history, thumbnail_args,
 };
@@ -514,7 +512,7 @@ fn thumbnail_args_match_spec() {
 #[test]
 fn thumbnail_args_first_frame_without_duration() {
     // An imported row has no duration, so its poster frame is the first frame (a deliberate
-    // deviation from duration/2, recorded in §6.16 and on thumbnail_args).
+    // deviation from duration/2, recorded in docs/decisions/1009 and on thumbnail_args).
     let args = thumbnail_args(
         Path::new("/d/render.mov"),
         0.0,
@@ -531,4 +529,212 @@ fn default_history_path_is_macos_only() {
         Some(home.join("Library/Application Support/TimelapseRenderDaemon/render_history.json"))
     );
     assert_eq!(default_history_path(&home, "linux"), None);
+}
+
+#[test]
+fn thumbnail_no_file_is_failure() {
+    // ffmpeg exits 0 but writes nothing: the row gets no thumbnail and a WARN row is logged.
+    let tmp = TempDir::new().expect("a temporary directory");
+    let store = open_store(tmp.path());
+    let data = tmp.path().join("data");
+    let render = video(tmp.path(), "render-empty", NOW);
+    fs::write(&render.output_path, b"render").expect("the rendered file");
+    store.put_rendered_video(&render).expect("store the row");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&calls);
+    let runner: Runner = Box::new(move |_args| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    });
+    let thumbnailer = Thumbnailer::new(&data, runner);
+
+    assert!(!thumbnailer.make(&store, &render, NOW).expect("make"));
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "ffmpeg ran once");
+    assert!(!thumbnailer.path_for("render-empty").exists());
+    let stored = store
+        .rendered_video("render-empty")
+        .expect("read the row")
+        .expect("the row exists");
+    assert_eq!(stored.thumbnail_path, None, "has_thumbnail stays false");
+
+    let rows = store.log_rows_after(0).expect("the log");
+    let warning = rows
+        .iter()
+        .find(|row| row.fields.event.as_deref() == Some("thumbnail_failed"))
+        .expect("a thumbnail_failed row");
+    assert_eq!(warning.level, LogLevel::Warn);
+    assert!(
+        warning.message.contains("wrote no file"),
+        "{}",
+        warning.message
+    );
+}
+
+#[test]
+fn thumbnail_on_demand_regenerates_missing_file() {
+    let tmp = TempDir::new().expect("a temporary directory");
+    let store = open_store(tmp.path());
+    let data = tmp.path().join("data");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let thumbnailer = Thumbnailer::new(&data, writing_runner(Arc::clone(&calls)));
+
+    // The row records a thumbnail whose file has since been deleted; its render file exists.
+    let mut render = video(tmp.path(), "imported-c", NOW);
+    fs::write(&render.output_path, b"render").expect("the rendered file");
+    let gone = thumbnailer.path_for("imported-c");
+    render.thumbnail_path = Some(gone.to_string_lossy().into_owned());
+    store.put_rendered_video(&render).expect("store the row");
+    assert!(!gone.exists());
+
+    let made = ensure_thumbnail(&store, &thumbnailer, "imported-c", NOW).expect("ensure");
+    assert_eq!(made, Some(gone.clone()));
+    assert!(gone.is_file(), "the thumbnail is written again");
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "ffmpeg ran once");
+
+    // Now the file exists: a later call returns it and runs nothing.
+    let again = ensure_thumbnail(&store, &thumbnailer, "imported-c", NOW).expect("ensure");
+    assert_eq!(again, Some(gone));
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "no second run");
+}
+
+#[test]
+fn thumbnail_delete_failed_warns() {
+    let tmp = TempDir::new().expect("a temporary directory");
+    let store = open_store(tmp.path());
+    let data = tmp.path().join("data");
+    let thumbs = data.join(THUMBNAILS_DIR);
+    fs::create_dir_all(&thumbs).expect("the thumbnails folder");
+
+    // A thumbnail path under a regular file: deleting it fails with something other than NotFound.
+    let blocker = tmp.path().join("not-a-folder");
+    fs::write(&blocker, b"file").expect("the blocking file");
+    let mut stuck = video(tmp.path(), "stuck", NOW - 31 * DAY_MS);
+    stuck.thumbnail_path = Some(blocker.join("stuck.jpg").to_string_lossy().into_owned());
+    store.put_rendered_video(&stuck).expect("store the row");
+
+    // A second expired row whose thumbnail can be deleted: the failure above does not stop it.
+    let mut removable = video(tmp.path(), "removable", NOW - 31 * DAY_MS);
+    let thumb = thumbs.join("removable.jpg");
+    fs::write(&thumb, b"jpeg").expect("the thumbnail");
+    removable.thumbnail_path = Some(thumb.to_string_lossy().into_owned());
+    store.put_rendered_video(&removable).expect("store the row");
+
+    let deleted = prune_history(&store, NOW, 30).expect("retention");
+    assert_eq!(deleted, 1, "only the deletable file counts");
+    assert!(!thumb.exists());
+    assert!(
+        store.rendered_videos().expect("rows").is_empty(),
+        "both expired rows are removed"
+    );
+
+    let rows = store.log_rows_after(0).expect("the log");
+    let warning = rows
+        .iter()
+        .find(|row| row.fields.event.as_deref() == Some("thumbnail_delete_failed"))
+        .expect("a thumbnail_delete_failed row");
+    assert_eq!(warning.level, LogLevel::Warn);
+    assert!(warning.message.contains("stuck.jpg"), "{}", warning.message);
+}
+
+#[test]
+fn import_unreadable_retries() {
+    let tmp = TempDir::new().expect("a temporary directory");
+    let store = open_store(tmp.path());
+    let path = tmp.path().join("render_history.json");
+
+    // Not JSON: a WARN row, and the setting stays unset.
+    fs::write(&path, "not json").expect("the history file");
+    assert_eq!(
+        import_swift_history(&path, &store, 30, NOW).expect("import"),
+        ImportStatus::Unreadable
+    );
+    assert!(!store.swift_history_imported().expect("setting"));
+    assert!(store.rendered_videos().expect("rows").is_empty());
+    let rows = store.log_rows_after(0).expect("the log");
+    let warning = rows
+        .iter()
+        .find(|row| row.fields.event.as_deref() == Some("history_import_failed"))
+        .expect("a history_import_failed row");
+    assert_eq!(warning.level, LogLevel::Warn);
+
+    // JSON that is not an array: unreadable too.
+    fs::write(&path, r#"{"timestamp": "2023-11-14T22:00:00Z"}"#).expect("the history file");
+    assert_eq!(
+        import_swift_history(&path, &store, 30, NOW).expect("import"),
+        ImportStatus::Unreadable
+    );
+
+    // A folder where the file should be: it cannot be read either.
+    fs::remove_file(&path).expect("remove the file");
+    fs::create_dir(&path).expect("a folder in its place");
+    assert_eq!(
+        import_swift_history(&path, &store, 30, NOW).expect("import"),
+        ImportStatus::Unreadable
+    );
+    assert!(!store.swift_history_imported().expect("setting"));
+
+    // Once the file is readable, a later start imports it.
+    fs::remove_dir(&path).expect("remove the folder");
+    fs::write(&path, history_fixture()).expect("the history file");
+    assert_eq!(
+        import_swift_history(&path, &store, 30, NOW).expect("import"),
+        ImportStatus::Imported(ImportReport {
+            imported: 2,
+            too_old: 1,
+            invalid: 1,
+        })
+    );
+    assert!(store.swift_history_imported().expect("setting"));
+}
+
+#[test]
+fn retention_keeps_row_at_cutoff() {
+    // The cutoff is 30 days before NOW: 2023-10-15T22:13:20Z. Rows dated exactly at it are kept
+    // by both the import and the prune; one millisecond older is dropped by both.
+    let cutoff = NOW - 30 * DAY_MS;
+    assert_eq!(cutoff, 1_697_408_000_000);
+
+    let tmp = TempDir::new().expect("a temporary directory");
+    let store = open_store(tmp.path());
+    let path = tmp.path().join("render_history.json");
+    let entries = json!([
+        history_entry("2023-10-15T22:13:20Z", "seq-a", "at-cutoff.mov"),
+        history_entry("2023-10-15T22:13:19.999Z", "seq-a", "before-cutoff.mov"),
+    ]);
+    fs::write(&path, entries.to_string()).expect("the history file");
+    assert_eq!(
+        import_swift_history(&path, &store, 30, NOW).expect("import"),
+        ImportStatus::Imported(ImportReport {
+            imported: 1,
+            too_old: 1,
+            invalid: 0,
+        })
+    );
+    let imported = store.rendered_videos().expect("rows");
+    assert_eq!(imported.len(), 1);
+    assert_eq!(imported[0].output_filename, "at-cutoff.mov");
+    assert_eq!(imported[0].rendered_at, cutoff);
+
+    let prune_store_dir = TempDir::new().expect("a temporary directory");
+    let prune_store = open_store(prune_store_dir.path());
+    let kept = video(prune_store_dir.path(), "at-cutoff", cutoff);
+    let dropped = video(prune_store_dir.path(), "before-cutoff", cutoff - 1);
+    prune_store
+        .put_rendered_video(&kept)
+        .expect("store the row");
+    prune_store
+        .put_rendered_video(&dropped)
+        .expect("store the row");
+    assert_eq!(
+        prune_history(&prune_store, NOW, 30).expect("retention"),
+        0,
+        "no thumbnail file was there to delete"
+    );
+    let ids: Vec<String> = prune_store
+        .rendered_videos()
+        .expect("list the rows")
+        .into_iter()
+        .map(|row| row.id)
+        .collect();
+    assert_eq!(ids, ["at-cutoff"]);
 }

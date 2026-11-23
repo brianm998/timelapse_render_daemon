@@ -543,10 +543,6 @@ After a render (and for adopted renders that succeed), run
 at most 2 at a time. A failure is logged and leaves `has_thumbnail = false`. `GetThumbnail` for an
 imported row without a thumbnail generates it on demand when the file exists.
 
-Deliberate deviation: a row whose `duration_seconds` is unknown (0, as imported rows have, since
-the Swift history carries no duration and no ffprobe is run for it) uses `-ss 0` (the first frame)
-in place of `<duration/2>`.
-
 ### 6.17 Importing the Swift render history
 
 Once (setting `swift_history_imported`), read the Swift history file — `render_history_path` from

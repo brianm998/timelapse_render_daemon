@@ -104,8 +104,9 @@ pub enum ImportStatus {
     Imported(ImportReport),
 }
 
-/// Imports the Swift history at `path` into `store`, once per database. Entries dated at or before
-/// `now_ms - retention_days` are skipped, as the Swift daemon pruned them.
+/// Imports the Swift history at `path` into `store`, once per database. Entries dated before
+/// `now_ms - retention_days` are skipped, as the Swift daemon pruned them; an entry dated exactly
+/// at that cutoff is kept, as `Store::prune_with` keeps it.
 ///
 /// Each row's id is derived from its output path, so a repeated import would replace rather than
 /// duplicate the rows.
@@ -145,7 +146,8 @@ pub fn import_swift_history(
             report.invalid += 1;
             continue;
         };
-        if rendered_at <= cutoff {
+        // The same rule as `Store::prune_with`: a row at exactly the cutoff is kept.
+        if rendered_at < cutoff {
             report.too_old += 1;
             continue;
         }

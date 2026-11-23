@@ -84,7 +84,8 @@ impl Drop for SlotGuard<'_> {
 ///
 /// A deliberate deviation from §6.16: when the duration is unknown (0, as imported rows have, since
 /// the Swift history carries none and no ffprobe is run for it) the midpoint is 0, so the poster
-/// frame is the first frame. Recorded in §6.16 of the spec.
+/// frame is the first frame. Recorded in `docs/decisions/1009-poster-frame-first-frame.md` (owner
+/// to confirm).
 pub fn thumbnail_args(input: &Path, duration_seconds: f64, output: &Path) -> Vec<String> {
     let midpoint = if duration_seconds.is_finite() && duration_seconds > 0.0 {
         duration_seconds / 2.0
