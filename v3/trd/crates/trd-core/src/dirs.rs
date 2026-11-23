@@ -76,9 +76,14 @@ pub struct Dirs {
     pub logs: PathBuf,
 }
 
-/// Returns the variable's value when it is an absolute path.
+/// Returns the variable's value when it is an absolute POSIX path (it starts with `/`).
+///
+/// The XDG rules apply to the Linux layout, so the test is the POSIX one whatever host runs the
+/// code. `Path::is_absolute` would reject `/xdg/config` on Windows and make the tests host-dependent.
 fn absolute(value: &Option<PathBuf>) -> Option<&Path> {
-    value.as_deref().filter(|p| p.is_absolute())
+    value
+        .as_deref()
+        .filter(|p| p.to_string_lossy().starts_with('/'))
 }
 
 impl Dirs {
