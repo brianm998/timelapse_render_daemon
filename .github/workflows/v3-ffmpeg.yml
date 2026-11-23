@@ -1,0 +1,204 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+#
+# Builds and smoke-tests the ffmpeg and ffprobe trd ships, for every platform (v3/ffmpeg; spec 1
+# §9.2). A port of star's ffmpeg-gpu.yml. Each target uploads v3-ffmpeg-<target> holding ffmpeg
+# (ffmpeg.exe on Windows), ffprobe, LICENSE-ffmpeg.txt and BUILDINFO.txt.
+#
+# Called with `uses:` by v3-release.yml (TRD-27), which passes no `platforms` and so builds all.
+
+name: v3 FFmpeg
+
+on:
+  workflow_call:
+    inputs:
+      platforms:
+        description: 'Which to build: any of "macos linux windows", space separated'
+        type: string
+        default: 'macos linux windows'
+  workflow_dispatch:
+  push:
+    branches: [develop]
+    paths:
+      - 'v3/ffmpeg/**'
+      - '.github/workflows/v3-ffmpeg.yml'
+  pull_request:
+    branches: [develop]
+    paths:
+      - 'v3/ffmpeg/**'
+      - '.github/workflows/v3-ffmpeg.yml'
+
+concurrency:
+  group: v3-ffmpeg-${{ github.ref }}-${{ inputs.platforms }}
+  # only pull_request runs are cancelled by a newer push; a develop run always finishes
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ─── macOS: one universal binary, both slices built on the arm64 runner ─────────
+  macos:
+    name: macOS universal (macos-15)
+    if: ${{ !inputs.platforms || contains(inputs.platforms, 'macos') }}
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Cache the built binaries
+        id: cache
+        uses: actions/cache@v5
+        with:
+          path: v3/ffmpeg/dist/macos-universal
+          key: v3-ffmpeg-macos-universal-${{ hashFiles('v3/ffmpeg/versions.env', 'v3/ffmpeg/build.sh', 'v3/ffmpeg/lib/**') }}
+
+      - name: Install build tools
+        if: steps.cache.outputs.cache-hit != 'true'
+        # nasm assembles the x86 SIMD in the x86_64 slice; meson and ninja build dav1d.
+        run: brew install nasm pkgconf meson ninja cmake
+
+      - name: Build (arm64 + x86_64, joined)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: ./v3/ffmpeg/build.sh macos-universal
+
+      # The arm64 slice runs here.  VideoToolbox in a CI virtual machine may have no media
+      # engine behind it, so the hardware checks report rather than fail (no --hw).
+      - name: Smoke test
+        run: ./v3/ffmpeg/smoke_test.sh --target macos-universal v3/ffmpeg/dist/macos-universal
+
+      # The x86_64 slice, under Rosetta, if the runner has it.  Not fatal: a runner without
+      # Rosetta says nothing about the binary.
+      - name: Smoke test the x86_64 slice under Rosetta
+        continue-on-error: true
+        run: |
+          mkdir x64
+          for tool in ffmpeg ffprobe; do
+            /usr/bin/lipo -thin x86_64 "v3/ffmpeg/dist/macos-universal/$tool" -output "x64/$tool"
+            /usr/bin/codesign --force --sign - "x64/$tool"
+          done
+          cp v3/ffmpeg/dist/macos-universal/BUILDINFO.txt x64/
+          arch -x86_64 x64/ffmpeg -hide_banner -version | head -n 1
+          arch -x86_64 ./v3/ffmpeg/smoke_test.sh --target macos-x64 x64
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: v3-ffmpeg-macos-universal
+          path: v3/ffmpeg/dist/macos-universal
+          if-no-files-found: error
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: v3-ffmpeg-macos-universal-logs
+          path: v3/ffmpeg/.work/logs
+          if-no-files-found: ignore
+
+  # ─── Linux: x64 and arm64, both always (the repository is public) ───────────────
+  linux:
+    name: Linux ${{ matrix.target }}
+    if: ${{ !inputs.platforms || contains(inputs.platforms, 'linux') }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Cache the built binaries
+        id: cache
+        uses: actions/cache@v5
+        with:
+          path: v3/ffmpeg/dist/${{ matrix.target }}
+          key: v3-ffmpeg-${{ matrix.target }}-${{ hashFiles('v3/ffmpeg/versions.env', 'v3/ffmpeg/build.sh', 'v3/ffmpeg/lib/**') }}
+
+      - name: Install build tools
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential nasm pkg-config cmake meson ninja-build git curl xz-utils ca-certificates zlib1g-dev
+
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: ./v3/ffmpeg/build.sh ${{ matrix.target }}
+
+      # No GPU here: NVENC and the other hardware encoders are checked to be built in, and
+      # their start-up reports instead of failing.
+      - name: Smoke test
+        run: ./v3/ffmpeg/smoke_test.sh --target ${{ matrix.target }} v3/ffmpeg/dist/${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: v3-ffmpeg-${{ matrix.target }}
+          path: v3/ffmpeg/dist/${{ matrix.target }}
+          if-no-files-found: error
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: v3-ffmpeg-${{ matrix.target }}-logs
+          path: v3/ffmpeg/.work/logs
+          if-no-files-found: ignore
+
+  # ─── Windows: MSYS2 MINGW64, gcc, fully static ──────────────────────────────────
+  # Only a cache miss builds, so MSYS2 is set up only then; a hit runs the smoke test under Git Bash.
+  windows:
+    name: Windows windows-x64
+    if: ${{ !inputs.platforms || contains(inputs.platforms, 'windows') }}
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Cache the built binaries
+        id: cache
+        uses: actions/cache@v5
+        with:
+          path: v3/ffmpeg/dist/windows-x64
+          key: v3-ffmpeg-windows-x64-${{ hashFiles('v3/ffmpeg/versions.env', 'v3/ffmpeg/build.sh', 'v3/ffmpeg/lib/**') }}
+
+      - name: Set up MSYS2
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          # mingw-w64 supplies the Direct3D 11/12, DXVA2 and Media Foundation headers.
+          install: >-
+            base-devel git curl xz diffutils file
+            mingw-w64-x86_64-toolchain mingw-w64-x86_64-nasm mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja mingw-w64-x86_64-meson mingw-w64-x86_64-pkgconf
+
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: ./v3/ffmpeg/build.sh windows-x64
+
+      - name: Smoke test
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: ./v3/ffmpeg/smoke_test.sh --target windows-x64 v3/ffmpeg/dist/windows-x64
+
+      # On a cache hit MSYS2 is not set up, so the job's default `msys2` shell does not exist.
+      - name: Smoke test (cached binaries)
+        if: steps.cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: ./v3/ffmpeg/smoke_test.sh --target windows-x64 v3/ffmpeg/dist/windows-x64
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: v3-ffmpeg-windows-x64
+          path: v3/ffmpeg/dist/windows-x64
+          if-no-files-found: error
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: v3-ffmpeg-windows-x64-logs
+          path: v3/ffmpeg/.work/logs
+          if-no-files-found: ignore
