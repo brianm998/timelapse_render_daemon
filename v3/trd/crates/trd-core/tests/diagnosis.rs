@@ -133,10 +133,156 @@ mod diagnosis {
             expected: 5,
             found: 4,
         }));
-        assert!(!report.problems.contains(&Problem::SuffixMismatch {
-            expected: ".tiff".to_owned(),
-            found: ".tiff".to_owned(),
-        }));
+        // The suffix matches, so the list is exactly the two mismatches above.
+        assert_eq!(
+            report.problems,
+            vec![
+                Problem::PrefixMismatch {
+                    expected: "LRT_".to_owned(),
+                    found: "image_".to_owned(),
+                },
+                Problem::DigitWidthMismatch {
+                    expected: 5,
+                    found: 4,
+                },
+            ]
+        );
+    }
+
+    /// Only the suffix differs: the files are `.png` where the pattern expects `.tiff`.
+    #[test]
+    fn analyze_input_sequence_reports_suffix_mismatch() {
+        let dir = new_dir();
+        make_frames(dir.path(), "LRT_", 5, ".png", 1, 3);
+        let png = vec!["png".to_owned()];
+
+        let report = analyze_input_sequence(dir.path().to_str().unwrap(), "LRT_", 5, ".tiff", &png);
+        assert_eq!(
+            report.problems,
+            vec![Problem::SuffixMismatch {
+                expected: ".tiff".to_owned(),
+                found: ".png".to_owned(),
+            }]
+        );
+        let text = describe(&report, dir.path().to_str().unwrap(), "LRT_%05d.tiff");
+        assert!(
+            text.contains("- SUFFIX: files end in \".png\" but the pattern expects \".tiff\""),
+            "{text}"
+        );
+    }
+
+    /// Correctly named and numbered from 0, so the probe range is enough and ffmpeg should find
+    /// the frames: nothing in the directory explains the failure.
+    #[test]
+    fn analyze_input_sequence_reports_unexplained() {
+        let dir = new_dir();
+        make_frames(dir.path(), "LRT_", 5, ".tiff", 0, 3);
+        let dir_text = dir.path().to_str().unwrap();
+
+        let report = analyze_input_sequence(dir_text, "LRT_", 5, ".tiff", &extensions());
+        assert_eq!(report.problems, vec![Problem::Unexplained]);
+        let text = describe(&report, dir_text, "LRT_%05d.tiff");
+        assert!(
+            text.contains("could not work out how the files on disk differ"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn analyze_input_sequence_reports_empty_directory() {
+        let dir = new_dir();
+        let dir_text = dir.path().to_str().unwrap();
+
+        let report = analyze_input_sequence(dir_text, "LRT_", 5, ".tiff", &extensions());
+        assert_eq!(report.problems, vec![Problem::DirectoryEmpty]);
+        let text = describe(&report, dir_text, "LRT_%05d.tiff");
+        assert!(text.contains("- that directory is empty"), "{text}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn analyze_input_sequence_reports_unreadable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        /// Restores the directory's permissions on drop so the temporary directory can be removed
+        /// even when an assertion fails.
+        struct Restore(std::path::PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+            }
+        }
+
+        let dir = new_dir();
+        let locked = dir.path().join("locked");
+        fs::create_dir(&locked).unwrap();
+        make_frames(&locked, "LRT_", 5, ".tiff", 1, 3);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let _restore = Restore(locked.clone());
+        let locked_text = locked.to_str().unwrap();
+
+        let report = analyze_input_sequence(locked_text, "LRT_", 5, ".tiff", &extensions());
+        assert_eq!(report.problems, vec![Problem::DirectoryUnreadable]);
+        let text = describe(&report, locked_text, "LRT_%05d.tiff");
+        assert!(text.contains("could not be listed"), "{text}");
+
+        // diagnose() turns an unreadable input directory into InputUnreadable.
+        let output = lines(&[
+            "Could find no file or sequence with path 'x/LRT_%05d.tiff' and index in the range 0-4",
+        ]);
+        let d = diagnose(
+            &plan_for(locked_text),
+            Some(254),
+            true,
+            &output,
+            &extensions(),
+            false,
+        );
+        assert_eq!(d.kind, FailureKind::InputUnreadable);
+        assert_eq!(
+            d.summary,
+            format!("the input directory could not be read: {locked_text}")
+        );
+    }
+
+    #[test]
+    fn describe_explains_a_missing_directory() {
+        let report = analyze_input_sequence(
+            "/definitely/not/here-missing",
+            "LRT_",
+            5,
+            ".tiff",
+            &extensions(),
+        );
+        let text = describe(&report, "/definitely/not/here-missing", "LRT_%05d.tiff");
+        assert!(text.contains("that directory does not exist"), "{text}");
+    }
+
+    #[test]
+    fn diagnose_reports_empty_input_directory() {
+        let dir = new_dir();
+        let dir_text = dir.path().to_str().unwrap();
+        let output = lines(&[
+            "Could find no file or sequence with path 'x/LRT_%05d.tiff' and index in the range 0-4",
+        ]);
+        let d = diagnose(
+            &plan_for(dir_text),
+            Some(254),
+            true,
+            &output,
+            &extensions(),
+            false,
+        );
+        assert_eq!(d.kind, FailureKind::InputFramesNotFound);
+        assert_eq!(
+            d.summary,
+            format!("there are no images to render in {dir_text}")
+        );
+        assert!(
+            d.detail
+                .expect("a detail")
+                .contains("that directory is empty")
+        );
     }
 
     #[test]
@@ -289,6 +435,167 @@ mod diagnosis {
         let plan = plan_for("/tmp");
         let d = diagnose(&plan, Some(0), true, &[], &extensions(), false);
         assert_eq!(d.kind, FailureKind::ProducedNoOutput);
+    }
+
+    #[test]
+    fn significant_lines_keeps_progress_line_whose_fps_does_not_parse() {
+        let raw = lines(&["frame=    5 fps=1.2.3 q=-0.0", "frame=    6 fps=0.0 q=-0.0"]);
+        // The second line parses both captures, so it is progress and dropped; the first has an
+        // fps that is not a number, so it is not a progress line and is kept.
+        assert_eq!(
+            significant_lines(&raw),
+            lines(&["frame=    5 fps=1.2.3 q=-0.0"])
+        );
+    }
+
+    #[test]
+    fn diagnose_reports_permission_denied_on_the_output() {
+        let plan = plan_for("/tmp");
+        let output = lines(&["/tmp/out.mov: Permission denied"]);
+        let d = diagnose(&plan, Some(1), true, &output, &extensions(), false);
+        assert_eq!(d.kind, FailureKind::OutputNotWritable);
+        assert_eq!(d.summary, "cannot write /tmp/out.mov — permission denied");
+        assert_eq!(d.detail.as_deref(), Some("/tmp/out.mov: Permission denied"));
+    }
+
+    #[test]
+    fn diagnose_reports_permission_denied_on_the_source() {
+        let plan = plan_for("/tmp");
+        let output = lines(&["/tmp/frames/LRT_00001.tiff: Permission denied"]);
+        let d = diagnose(&plan, Some(1), true, &output, &extensions(), false);
+        assert_eq!(d.kind, FailureKind::InputUnreadable);
+        assert_eq!(d.summary, "permission denied reading the source frames");
+        assert_eq!(
+            d.detail.as_deref(),
+            Some("/tmp/frames/LRT_00001.tiff: Permission denied")
+        );
+    }
+
+    #[test]
+    fn diagnose_reports_unrecognized_option() {
+        let plan = plan_for("/tmp");
+        let output = lines(&[
+            "Unrecognized option 'crf'.",
+            "Error splitting the argument list",
+        ]);
+        let d = diagnose(&plan, Some(1), true, &output, &extensions(), false);
+        assert_eq!(d.kind, FailureKind::FfmpegRejectedArguments);
+        assert_eq!(d.summary, "Unrecognized option 'crf'.");
+        assert!(d.detail.expect("a detail").contains("video_codecs.json"));
+    }
+
+    #[test]
+    fn diagnose_reports_option_not_found() {
+        let plan = plan_for("/tmp");
+        let output = lines(&["Option not found: -profile:v"]);
+        let d = diagnose(&plan, Some(1), true, &output, &extensions(), false);
+        assert_eq!(d.kind, FailureKind::FfmpegRejectedArguments);
+        assert_eq!(d.summary, "Option not found: -profile:v");
+    }
+
+    #[test]
+    fn diagnose_reports_invalid_argument() {
+        let plan = plan_for("/tmp");
+        let output = lines(&["Invalid argument"]);
+        let d = diagnose(&plan, Some(1), true, &output, &extensions(), false);
+        assert_eq!(d.kind, FailureKind::FfmpegRejectedArguments);
+        assert_eq!(d.summary, "Invalid argument");
+    }
+
+    #[test]
+    fn diagnose_reports_error_splitting_the_argument_list() {
+        let plan = plan_for("/tmp");
+        let output = lines(&["Error splitting the argument list: Unknown error"]);
+        let d = diagnose(&plan, Some(1), true, &output, &extensions(), false);
+        assert_eq!(d.kind, FailureKind::FfmpegRejectedArguments);
+        assert_eq!(
+            d.summary,
+            "Error splitting the argument list: Unknown error"
+        );
+    }
+
+    #[test]
+    fn diagnose_reports_invalid_data_in_a_source_frame() {
+        let plan = plan_for("/rp/tmp/frames");
+        let output = lines(&["Invalid data found when processing input"]);
+        let d = diagnose(&plan, Some(1), true, &output, &extensions(), false);
+        assert_eq!(d.kind, FailureKind::SourceFrameUnreadable);
+        assert_eq!(d.summary, "Invalid data found when processing input");
+        assert_eq!(
+            d.detail.as_deref(),
+            Some(
+                "One of the exported frames in /rp/tmp/frames is truncated or corrupt. \
+                 Re-export the sequence."
+            )
+        );
+    }
+
+    #[test]
+    fn diagnose_reports_decoding_error_in_a_source_frame() {
+        let plan = plan_for("/tmp");
+        let output = lines(&["Error while decoding stream #0:0"]);
+        let d = diagnose(&plan, Some(1), true, &output, &extensions(), false);
+        assert_eq!(d.kind, FailureKind::SourceFrameUnreadable);
+        assert_eq!(d.summary, "Error while decoding stream #0:0");
+    }
+
+    #[test]
+    fn diagnose_reports_unopenable_source_frame_with_fallback_summary() {
+        let plan = plan_for("/tmp");
+        let output = lines(&["Could not open file LRT_00002.tiff"]);
+        let d = diagnose(&plan, Some(1), true, &output, &extensions(), false);
+        assert_eq!(d.kind, FailureKind::SourceFrameUnreadable);
+        assert_eq!(d.summary, "a source frame could not be decoded");
+    }
+
+    #[test]
+    fn diagnose_reports_signal_without_exit_code() {
+        let plan = plan_for("/tmp");
+        let d = diagnose(&plan, None, false, &[], &extensions(), false);
+        assert_eq!(d.kind, FailureKind::TerminatedBySignal);
+        assert_eq!(d.summary, "ffmpeg was killed before it finished");
+    }
+
+    #[test]
+    fn diagnose_unknown_uses_last_significant_line() {
+        let plan = plan_for("/tmp");
+        let output = lines(&[
+            "ffmpeg version 8.1 Copyright (c) 2000-2026 the FFmpeg developers",
+            "frame=   30 fps=0.0 q=-0.0",
+            "Something odd happened",
+            "Then something else",
+        ]);
+        let d = diagnose(&plan, Some(1), true, &output, &extensions(), true);
+        assert_eq!(d.kind, FailureKind::Unknown);
+        assert_eq!(d.summary, "Then something else");
+        assert_eq!(d.detail, None);
+    }
+
+    #[test]
+    fn diagnose_unknown_with_banner_only_output_names_the_exit_code() {
+        let plan = plan_for("/tmp");
+        let output = lines(&["ffmpeg version 8.1 Copyright (c) 2000-2026 the FFmpeg developers"]);
+        let d = diagnose(&plan, Some(3), true, &output, &extensions(), true);
+        assert_eq!(d.kind, FailureKind::Unknown);
+        assert_eq!(
+            d.summary,
+            "ffmpeg exited 3 without a recognisable error message"
+        );
+        assert_eq!(
+            d.detail.as_deref(),
+            Some("ffmpeg produced no output beyond its startup banner.")
+        );
+    }
+
+    #[test]
+    fn diagnose_unknown_without_exit_code_says_abnormally() {
+        let plan = plan_for("/tmp");
+        let d = diagnose(&plan, None, true, &[], &extensions(), true);
+        assert_eq!(d.kind, FailureKind::Unknown);
+        assert_eq!(
+            d.summary,
+            "ffmpeg exited abnormally without a recognisable error message"
+        );
     }
 
     #[test]
