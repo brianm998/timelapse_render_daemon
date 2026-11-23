@@ -22,7 +22,9 @@ the caller tell "no such codec" from "the file is unreadable".
 
 ## What still differs
 
-- The ffprobe call is not bounded by `PROBE_TIMEOUT` yet. `Tools` defines the timeout; applying it
-  needs a spawn-and-wait helper that is shared with the other tool calls.
+- The ffprobe call is bounded: `probe_size` runs it through `tools::run_bounded` with
+  `PROBE_TIMEOUT`, so a stuck probe is killed and reported as a failed probe.
+- The size-probe tests use a `/bin/sh -c` stand-in ffprobe rather than a `trd-testtools` fake
+  binary. The spec suggested a fake through `FakeTools`; the stand-in needs no built binary.
 - Logging a pattern that differs from the configured prefix is the engine's job (TRD-08), not
   the planner's.
