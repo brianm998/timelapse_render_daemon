@@ -325,6 +325,14 @@ echo '<testsuite/>' > "$t/clients/kotlin/build/mason-desktop-results.xml"
 out="$(V3_ROOT="$t" bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
 expect "check-makefiles.sh ignores a directory holding only build output" "$rc" "rc=$rc $out"
 
+new_tree; t="$T"
+cp "$fixtures/Makefile.complete" "$t/Makefile"
+mkdir -p "$t/ios/build"
+echo '<testsuite/>' > "$t/ios/build/mason-ios-results.xml"
+out="$(V3_ROOT="$t" bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
+expect "check-makefiles.sh still fails for a non-Kotlin directory holding only build output" \
+  "$([ "$rc" -eq 1 ] && contains "$out" "v3/ios: no Makefile" && echo 0 || echo 1)" "rc=$rc $out"
+
 out="$(bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
 expect "check-makefiles.sh passes for the real v3/Makefile" "$rc" "rc=$rc $out"
 

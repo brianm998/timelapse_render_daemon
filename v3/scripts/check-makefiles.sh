@@ -31,8 +31,11 @@ check_dir() {
   checked=$((checked + 1))
 }
 
-# A directory whose only entry is a build/ folder holds build output (the junit placeholders that
-# mason.toml points at), not a component, so it is not checked.
+# A Kotlin directory whose only entry is a build/ folder holds build output, not a component, so it
+# is not checked. suite.sh kotlin-test and android-test write their junit placeholders to
+# clients/kotlin/build/ when the Kotlin client is absent; in the shared test worktree that leaves
+# clients/kotlin (and clients/kotlin/android) holding only build/. Every other component directory
+# that exists without a Makefile still fails.
 is_build_output_only() {
   local d="$1" e name has_build=0
   for e in "$d"/* "$d"/.[!.]*; do
@@ -49,9 +52,17 @@ is_build_output_only() {
 
 check_dir "$V3_ROOT" "v3"
 for comp in ffmpeg exiftool trd clients/kotlin clients/kotlin/android ios; do
-  if [ -d "$V3_ROOT/$comp" ] && ! is_build_output_only "$V3_ROOT/$comp"; then
-    check_dir "$V3_ROOT/$comp" "v3/$comp"
+  if [ ! -d "$V3_ROOT/$comp" ]; then
+    continue
   fi
+  case "$comp" in
+    clients/kotlin|clients/kotlin/android)
+      if is_build_output_only "$V3_ROOT/$comp"; then
+        continue
+      fi
+      ;;
+  esac
+  check_dir "$V3_ROOT/$comp" "v3/$comp"
 done
 
 if [ "$bad" -ne 0 ]; then
