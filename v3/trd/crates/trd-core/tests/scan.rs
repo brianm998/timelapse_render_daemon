@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use trd_core::config::Config;
 use trd_core::paths::ManualClock;
-use trd_core::scan::{DirItem, PROBLEM_PATH_UNREACHABLE, RealFs, ScanFs, Scanner};
+use trd_core::scan::{DirItem, PROBLEM_PATH_UNREACHABLE, RealFs, ScanFs, ScanResult, Scanner};
 
 /// Blocks a listing until the test releases it.
 #[derive(Default)]
@@ -660,29 +660,70 @@ async fn size_hang_does_not_stall() {
     let cfg = config(&strings(&["/fake/src"]), &strings(&["/fake/exp"]));
     scanner.scan(&cfg).await;
 
-    // The third sequence still gets measured once a hung measurement gives its slot back.
+    // The third sequence never gets a slot while the two hung measurements hold theirs.
     scanner.measure_sizes().await;
     assert_eq!(
         fake.size_calls.load(Ordering::SeqCst),
-        3,
-        "every due sequence was attempted"
+        2,
+        "a hung measurement keeps its slot past the call's deadline"
     );
+    assert!(fake.peak.load(Ordering::SeqCst) <= 2);
 
-    let measured = scanner.scan(&cfg).await;
-    let size_of = |name: &str| {
-        measured
+    let still_hung = scanner.scan(&cfg).await;
+    let size_of = |result: &ScanResult, name: &str| {
+        result
             .exports
             .iter()
             .find(|e| e.name == name)
             .expect("export found")
             .export_size
     };
-    assert_eq!(size_of("S3_x"), 4096);
-    assert_eq!(size_of("S1_x"), -1, "a hung measurement reports nothing");
-    assert_eq!(size_of("S2_x"), -1, "a hung measurement reports nothing");
+    assert_eq!(
+        size_of(&still_hung, "S1_x"),
+        -1,
+        "a hung measurement reports nothing"
+    );
+    assert_eq!(
+        size_of(&still_hung, "S2_x"),
+        -1,
+        "a hung measurement reports nothing"
+    );
+    assert_eq!(
+        size_of(&still_hung, "S3_x"),
+        -1,
+        "no slot yet, so not measured"
+    );
 
+    // Once the hung measurements return, their slots are free and the third is measured.
     hung_1.release();
     hung_2.release();
+    scanner.measure_sizes().await;
+    assert_eq!(fake.size_calls.load(Ordering::SeqCst), 3);
+    assert!(fake.peak.load(Ordering::SeqCst) <= 2);
+
+    let measured = scanner.scan(&cfg).await;
+    assert_eq!(size_of(&measured, "S3_x"), 4096);
+    assert_eq!(
+        size_of(&measured, "S1_x"),
+        4096,
+        "the released measurement stored its size"
+    );
+    assert_eq!(
+        size_of(&measured, "S2_x"),
+        4096,
+        "the released measurement stored its size"
+    );
+}
+
+#[tokio::test]
+async fn backup_unreachable_reported() {
+    let (fake, clock) = setup();
+    let scanner = scanner(&fake, &clock);
+    scanner.refresh_backups(&strings(&["/fake/missing"])).await;
+    let result = scanner.scan(&config(&[], &[])).await;
+    assert_eq!(result.unreachable.len(), 1);
+    assert_eq!(result.unreachable[0].path, "/fake/missing");
+    assert_eq!(result.unreachable[0].code, PROBLEM_PATH_UNREACHABLE);
 }
 
 #[tokio::test]

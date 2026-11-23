@@ -19,7 +19,7 @@ use std::time::{Duration, Instant, SystemTime};
 use regex::Regex;
 use serde_json::Value;
 use tokio::sync::Semaphore;
-use tokio::time::{timeout, timeout_at};
+use tokio::time::timeout_at;
 
 use crate::config::Config;
 use crate::paths::{Clock, ExpansionCache, expand_years, has_year_placeholder};
@@ -227,6 +227,8 @@ struct State {
     in_progress: Vec<String>,
     /// Paths whose listing has not returned yet.
     in_flight: HashSet<String>,
+    /// Problems from the last backup load, reported by every scan until the next load.
+    backup_problems: Vec<PathProblem>,
 }
 
 struct Inner {
@@ -234,6 +236,9 @@ struct Inner {
     clock: Arc<dyn Clock>,
     state: Mutex<State>,
     backup_running: AtomicBool,
+    /// The size-measurement slots. Shared by every call, so a hung measurement keeps its slot
+    /// against later calls too; a slot is released only when its blocking call returns.
+    size_permits: Arc<Semaphore>,
 }
 
 fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -278,6 +283,7 @@ impl Scanner {
                 clock,
                 state: Mutex::new(State::default()),
                 backup_running: AtomicBool::new(false),
+                size_permits: Arc::new(Semaphore::new(SIZE_CONCURRENCY)),
             }),
             path_timeout: PATH_TIMEOUT,
             size_timeout: SIZE_TIMEOUT,
@@ -318,7 +324,8 @@ impl Scanner {
 
     /// Loads the backup sidecars of every backup path (§6.3 step 2). Meant to run in the
     /// background; a call while another load runs returns at once. A directory whose load fails
-    /// keeps its previous entries.
+    /// keeps its previous entries, and its problem is reported by every later scan until the
+    /// next load.
     pub async fn refresh_backups(&self, backup_paths: &[String]) {
         if self.inner.backup_running.swap(true, Ordering::SeqCst) {
             return;
@@ -327,16 +334,14 @@ impl Scanner {
         let now = self.inner.clock.instant();
         lock(&self.inner.state).backup_attempt = Some(now);
 
-        let (dirs, expand_problems) = self.expand_patterns(backup_paths).await;
-        for problem in &expand_problems {
-            tracing::warn!(path = %problem.path, reason = %problem.reason, "backup path unreachable");
-        }
+        let (dirs, mut problems) = self.expand_patterns(backup_paths).await;
         let (loaded, load_problems) = self
             .run_jobs(dirs.clone(), BACKUP_TIMEOUT, |inner, dir| {
                 load_backup_dir(inner, dir)
             })
             .await;
-        for problem in &load_problems {
+        problems.extend(load_problems);
+        for problem in &problems {
             tracing::warn!(path = %problem.path, reason = %problem.reason, "backup path unreachable");
         }
 
@@ -345,12 +350,13 @@ impl Scanner {
         for (dir, entries) in loaded {
             st.backups.insert(dir, entries);
         }
+        st.backup_problems = problems;
     }
 
     /// Scans every configured path once (§6.3 steps 1 to 6). Never waits longer than the path
     /// timeout for any one path.
     pub async fn scan(&self, config: &Config) -> ScanResult {
-        let mut unreachable = Vec::new();
+        let mut unreachable = lock(&self.inner.state).backup_problems.clone();
 
         let (sources, problems) = self.expand_patterns(&config.source_paths).await;
         unreachable.extend(problems);
@@ -480,7 +486,8 @@ impl Scanner {
 
     /// Measures the size of every in-progress export directory that is due (§6.3 step 7): at
     /// most one measurement per sequence per 60 s, at most two running at once. A measurement
-    /// that hangs keeps its slot until it returns.
+    /// holds its slot until its blocking call returns, even after this call has stopped waiting
+    /// for it; a sequence that cannot get a slot before the deadline is due again on the next call.
     pub async fn measure_sizes(&self) {
         let now = self.inner.clock.instant();
         let due: Vec<String> = {
@@ -505,23 +512,30 @@ impl Scanner {
             due
         };
 
-        let permits = Arc::new(Semaphore::new(SIZE_CONCURRENCY));
-        let limit = self.size_timeout;
+        let deadline = tokio::time::Instant::now() + self.size_timeout;
         let mut tasks = Vec::new();
         for path in due {
             let inner = self.inner.clone();
-            let permits = permits.clone();
             tasks.push(tokio::spawn(async move {
-                // The slot is held here on the async side, never by the blocking thread. A
-                // measurement that outlives `limit` gives its slot back; its thread stays blocked
-                // until `size` returns, holding nothing but its own captured path.
-                let permit = permits
-                    .acquire_owned()
-                    .await
-                    .expect("size semaphore is never closed");
+                let permits = inner.size_permits.clone();
+                let permit = match timeout_at(deadline, permits.acquire_owned()).await {
+                    Ok(Ok(permit)) => permit,
+                    _ => {
+                        // No slot before the deadline: the sequence is due again on a later call.
+                        let mut guard = lock(&inner.state);
+                        if let Some(entry) = guard.sizes.get_mut(&path) {
+                            entry.in_flight = false;
+                            entry.scheduled_at = None;
+                        }
+                        return;
+                    }
+                };
                 let job_inner = inner.clone();
                 let job_path = path.clone();
                 let handle = tokio::task::spawn_blocking(move || {
+                    // The slot is released when this closure returns, not when the caller stops
+                    // waiting, so a hung measurement keeps counting against the cap.
+                    let _permit = permit;
                     let bytes = job_inner
                         .fs
                         .size(Path::new(&job_path))
@@ -535,8 +549,7 @@ impl Scanner {
                         entry.in_flight = false;
                     }
                 });
-                let _ = timeout(limit, handle).await;
-                drop(permit);
+                let _ = timeout_at(deadline, handle).await;
             }));
         }
         for task in tasks {
