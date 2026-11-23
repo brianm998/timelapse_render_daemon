@@ -5,8 +5,10 @@
 # For every component of overview §9 whose directory exists, `make -C <dir> -n <target>` must
 # succeed for run, develop, release, clean, test, check and ci (a dry run: nothing is built or
 # started). v3/Makefile is checked the same way. Prints each missing target and exits 1.
-# A component directory that holds only build/ output (the junit placeholder that suite.sh writes
-# before a component exists) is not a component yet, so it is skipped rather than reported.
+# A component directory whose only entries are generated build/ or .gradle/ output is not a
+# component yet, so it is skipped rather than reported. suite.sh's kotlin-test and android-test
+# write their junit placeholders into clients/kotlin/build (mason.toml reads them from there),
+# so a tree holding only that output must not fail the Makefile check.
 # V3_ROOT is the directory that plays the role of v3/ (default: the real one).
 set -euo pipefail
 
@@ -17,19 +19,20 @@ targets="run develop release clean test check ci"
 bad=0
 checked=0
 
-# build_only <dir>: true when dir's only entry (dotfiles included) is a build/ directory.
-build_only() {
-  local dir="$1" entry name has_build=0 others=0
+# generated_only <dir>: true when dir has at least one entry (dotfiles included), every entry is a
+# directory named build or .gradle, and there is no Makefile. An empty directory is not skipped.
+generated_only() {
+  local dir="$1" entry name generated=0 others=0
   for entry in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
     [ -e "$entry" ] || [ -L "$entry" ] || continue
     name="${entry##*/}"
-    if [ "$name" = build ] && [ -d "$entry" ]; then
-      has_build=1
+    if { [ "$name" = build ] || [ "$name" = .gradle ]; } && [ -d "$entry" ]; then
+      generated=1
     else
       others=1
     fi
   done
-  [ "$has_build" -eq 1 ] && [ "$others" -eq 0 ]
+  [ "$generated" -eq 1 ] && [ "$others" -eq 0 ]
 }
 
 check_dir() {
@@ -50,7 +53,7 @@ check_dir() {
 
 check_dir "$V3_ROOT" "v3"
 for comp in ffmpeg exiftool trd clients/kotlin clients/kotlin/android ios; do
-  if [ -d "$V3_ROOT/$comp" ] && ! build_only "$V3_ROOT/$comp"; then
+  if [ -d "$V3_ROOT/$comp" ] && ! generated_only "$V3_ROOT/$comp"; then
     check_dir "$V3_ROOT/$comp" "v3/$comp"
   fi
 done
