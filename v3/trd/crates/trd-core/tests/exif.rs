@@ -16,7 +16,7 @@ use trd_core::exif::{
     write_sidecar,
 };
 use trd_core::store::Store;
-use trd_core::tools::{EXIFTOOL, ResolvedTool, ToolCommand, ToolInfo};
+use trd_core::tools::{EXIFTOOL, ResolvedTool, ToolInfo};
 
 const NOW_MS: i64 = 1_790_000_000_000;
 
@@ -355,6 +355,7 @@ fn missing_command_is_unavailable() {
 #[cfg(unix)]
 #[test]
 fn real_process_matches_canned_output() {
+    use trd_core::tools::ToolCommand;
     use trd_testtools::FakeTools;
 
     let tmp = tempfile::tempdir().expect("a temporary directory");
