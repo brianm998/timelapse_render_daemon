@@ -6,6 +6,8 @@
 and its only entries are `build/` or `.gradle/`. Such a directory is skipped; any other directory
 without a Makefile still fails with `v3/<comp>: no Makefile`.
 
+This extends 0992, which skipped a directory whose only entry is `build/`, to also cover `.gradle/`.
+
 ## Why
 
 `suite.sh kotlin-test` and `android-test` write placeholder junit files to

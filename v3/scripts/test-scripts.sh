@@ -318,26 +318,49 @@ out="$(V3_ROOT="$t" bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
 expect "check-makefiles.sh fails for a component directory without a Makefile" \
   "$([ "$rc" -eq 1 ] && contains "$out" "v3/ios: no Makefile" && echo 0 || echo 1)" "rc=$rc $out"
 
-# A kotlin component tree holding only suite.sh's generated placeholder output is absent, not broken.
 new_tree; t="$T"
 cp "$fixtures/Makefile.complete" "$t/Makefile"
-mkdir -p "$t/clients/kotlin/build"
-echo "<testsuites/>" > "$t/clients/kotlin/build/mason-desktop-results.xml"
+mkdir -p "$t/trd" "$t/clients/kotlin/build"
+cp "$fixtures/Makefile.complete" "$t/trd/Makefile"
+: > "$t/clients/kotlin/build/mason-desktop-results.xml"
 out="$(V3_ROOT="$t" bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && ! contains "$out" "clients/kotlin: no Makefile"; then
-  pass "check-makefiles.sh skips a kotlin component holding only generated build output"
+expect "check-makefiles.sh passes when a component holds only build/ output" "$rc" "rc=$rc $out"
+
+new_tree; t="$T"
+cp "$fixtures/Makefile.complete" "$t/Makefile"
+mkdir -p "$t/trd" "$t/clients/kotlin/build"
+cp "$fixtures/Makefile.complete" "$t/trd/Makefile"
+: > "$t/clients/kotlin/build/mason-desktop-results.xml"
+: > "$t/clients/kotlin/notes.txt"
+out="$(V3_ROOT="$t" bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
+if [ "$rc" -eq 1 ] && contains "$out" "v3/clients/kotlin: no Makefile"; then
+  pass "check-makefiles.sh fails for build/ plus a stray file and no Makefile"
 else
-  fail "check-makefiles.sh skips a kotlin component holding only generated build output" "rc=$rc $out"
+  fail "check-makefiles.sh fails for build/ plus a stray file and no Makefile" "rc=$rc $out"
 fi
 
-# A kotlin component with generated output and a source file is still a real component.
-mkdir -p "$t/clients/kotlin/src"
+new_tree; t="$T"
+cp "$fixtures/Makefile.complete" "$t/Makefile"
+mkdir -p "$t/trd" "$t/clients/kotlin/.gradle"
+cp "$fixtures/Makefile.complete" "$t/trd/Makefile"
+out="$(V3_ROOT="$t" bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && ! contains "$out" "clients/kotlin: no Makefile"; then
+  pass "check-makefiles.sh skips a component holding only .gradle/ output"
+else
+  fail "check-makefiles.sh skips a component holding only .gradle/ output" "rc=$rc $out"
+fi
+
+new_tree; t="$T"
+cp "$fixtures/Makefile.complete" "$t/Makefile"
+mkdir -p "$t/trd" "$t/clients/kotlin/build" "$t/clients/kotlin/src"
+cp "$fixtures/Makefile.complete" "$t/trd/Makefile"
+: > "$t/clients/kotlin/build/mason-desktop-results.xml"
 echo "class Foo" > "$t/clients/kotlin/src/Foo.kt"
 out="$(V3_ROOT="$t" bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
 if [ "$rc" -eq 1 ] && contains "$out" "v3/clients/kotlin: no Makefile"; then
-  pass "check-makefiles.sh fails for a kotlin component with build output and a source file"
+  pass "check-makefiles.sh fails for build/ output plus a source file and no Makefile"
 else
-  fail "check-makefiles.sh fails for a kotlin component with build output and a source file" "rc=$rc $out"
+  fail "check-makefiles.sh fails for build/ output plus a source file and no Makefile" "rc=$rc $out"
 fi
 
 out="$(bash "$here/check-makefiles.sh" 2>&1)"; rc=$?

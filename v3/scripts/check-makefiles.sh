@@ -5,6 +5,10 @@
 # For every component of overview §9 whose directory exists, `make -C <dir> -n <target>` must
 # succeed for run, develop, release, clean, test, check and ci (a dry run: nothing is built or
 # started). v3/Makefile is checked the same way. Prints each missing target and exits 1.
+# A component directory whose only entries are generated build/ or .gradle/ output is not a
+# component yet, so it is skipped rather than reported. suite.sh's kotlin-test and android-test
+# write their junit placeholders into clients/kotlin/build (mason.toml reads them from there),
+# so a tree holding only that output must not fail the Makefile check.
 # V3_ROOT is the directory that plays the role of v3/ (default: the real one).
 set -euo pipefail
 
@@ -14,6 +18,22 @@ V3_ROOT="${V3_ROOT:-$(cd "$here/.." && pwd)}"
 targets="run develop release clean test check ci"
 bad=0
 checked=0
+
+# generated_only <dir>: true when dir has at least one entry (dotfiles included), every entry is a
+# directory named build or .gradle, and there is no Makefile. An empty directory is not skipped.
+generated_only() {
+  local dir="$1" entry name generated=0 others=0
+  for entry in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    name="${entry##*/}"
+    if { [ "$name" = build ] || [ "$name" = .gradle ]; } && [ -d "$entry" ]; then
+      generated=1
+    else
+      others=1
+    fi
+  done
+  [ "$generated" -eq 1 ] && [ "$others" -eq 0 ]
+}
 
 check_dir() {
   local dir="$1" label="$2" t
@@ -29,18 +49,6 @@ check_dir() {
     fi
   done
   checked=$((checked + 1))
-}
-
-# generated_only <dir>: true when <dir> has no Makefile and its only entries are generated
-# build/ or .gradle/ output. suite.sh's kotlin-test and android-test write their placeholder junit
-# files into clients/kotlin/build (mason.toml reads them from there), so a tree holding only that
-# output is an absent component, not a component missing its Makefile. An empty directory, or one
-# with any other entry, is not generated-only.
-generated_only() {
-  local dir="$1"
-  [ ! -f "$dir/Makefile" ] || return 1
-  [ -e "$dir/build" ] || [ -e "$dir/.gradle" ] || return 1
-  [ -z "$(find "$dir" -mindepth 1 -maxdepth 1 ! -name build ! -name .gradle)" ]
 }
 
 check_dir "$V3_ROOT" "v3"
