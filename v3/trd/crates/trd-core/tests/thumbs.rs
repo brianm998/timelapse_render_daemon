@@ -5,7 +5,9 @@
 //! thumbnails (§6.13). Every database and fixture lives in a temporary directory. The fake ffmpeg
 //! is a small `sh` script written into that directory, so the tests need no binaries built by
 //! another package and touch no owner data or port. The `thumbnail_written` and
-//! `thumbnail_failure` tests need `sh` and so run on Unix only.
+//! `thumbnail_failure` tests need `sh` and so run on Unix only. The fakes are written at run time,
+//! so no binary from another crate has to be built first: `cargo test -p trd-core --test thumbs`
+//! works on a cold target, with or without `cargo test --workspace`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
