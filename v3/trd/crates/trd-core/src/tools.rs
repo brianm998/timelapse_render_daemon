@@ -670,8 +670,14 @@ mod tests {
     #[test]
     fn infos_lists_the_three_tools_in_order() {
         let tree = Tree::new();
-        for name in ["ffmpeg", "ffprobe", "exiftool"] {
-            write(&tree.beside().join(name));
+        // On Linux exiftool sits in its bundle directory beside the executable.
+        let files = [
+            ("ffmpeg", tree.beside().join("ffmpeg")),
+            ("ffprobe", tree.beside().join("ffprobe")),
+            ("exiftool", tree.beside().join("exiftool").join("exiftool")),
+        ];
+        for (_, file) in &files {
+            write(file);
         }
         let tools = resolve(&tree, &Env::default(), "linux", "x86_64", &ok_probe);
 
@@ -681,10 +687,10 @@ mod tests {
         assert_eq!(infos[0], tools.ffmpeg.info);
         assert_eq!(infos[1], tools.ffprobe.info);
         assert_eq!(infos[2], tools.exiftool.info);
-        for info in &infos {
-            assert!(info.available, "{}: {:?}", info.name, info.problem);
+        for (info, (name, file)) in infos.iter().zip(&files) {
+            assert!(info.available, "{name}: {:?}", info.problem);
             assert_eq!(info.problem, None);
-            assert_eq!(info.path, Some(tree.beside().join(info.name)));
+            assert_eq!(info.path.as_deref(), Some(file.as_path()), "{name}");
         }
         assert_eq!(infos[0].version, "fake -version");
         assert_eq!(infos[1].version, "fake -version");
