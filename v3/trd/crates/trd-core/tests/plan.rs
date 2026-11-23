@@ -420,16 +420,22 @@ mod plan {
         export_with_sequence("LRT_seq", 5, 1, 3)
     }
 
+    /// The progress file of `render-1`, built with `Path::join` as `plan_render` builds it, so
+    /// the separators match on every platform.
+    fn render_progress(data: &Path) -> String {
+        data.join("renders")
+            .join("render-1.progress")
+            .to_string_lossy()
+            .into_owned()
+    }
+
     #[test]
     fn golden_argv_prores_uhq() {
         let tmp = golden_fixture();
         let export = export_path(&tmp);
         let data = data_dir(&tmp);
         let plan = golden_request_plan("ProResUHQ", &export, &data);
-        let progress = data
-            .join("renders/render-1.progress")
-            .to_string_lossy()
-            .into_owned();
+        let progress = render_progress(&data);
         let seq = format!("{export}/LRT_seq");
         let input = format!("{seq}/LRT_%05d.tiff");
         let partial = format!("{export}/.seq_ProRes-444_Rec.709F_720p_30_UHQ.partial.mov");
@@ -466,10 +472,7 @@ mod plan {
         let export = export_path(&tmp);
         let data = data_dir(&tmp);
         let plan = golden_request_plan("ProResMQ", &export, &data);
-        let progress = data
-            .join("renders/render-1.progress")
-            .to_string_lossy()
-            .into_owned();
+        let progress = render_progress(&data);
         let seq = format!("{export}/LRT_seq");
         let input = format!("{seq}/LRT_%05d.tiff");
         let partial = format!("{export}/.seq_ProRes-422_Rec.709F_720p_30_MQ.partial.mov");
@@ -502,10 +505,7 @@ mod plan {
         let export = export_path(&tmp);
         let data = data_dir(&tmp);
         let plan = golden_request_plan("h264", &export, &data);
-        let progress = data
-            .join("renders/render-1.progress")
-            .to_string_lossy()
-            .into_owned();
+        let progress = render_progress(&data);
         let seq = format!("{export}/LRT_seq");
         let input = format!("{seq}/LRT_%05d.tiff");
         let partial = format!("{export}/.seq_H264-420_Rec.709F_720p_30_HQ.partial.mov");
@@ -803,6 +803,10 @@ mod plan {
             metadata: BTreeMap::new(),
             total_frames: 3,
         };
+        // The probe itself reports the same failure when ffprobe is missing.
+        let probe = probe_size(&missing, &frame);
+        assert!(probe.is_err(), "no ffprobe gives no size: {probe:?}");
+
         let error = plan_render(&request).expect_err("no frame size");
         assert_eq!(not_queueable(&error), expected);
     }

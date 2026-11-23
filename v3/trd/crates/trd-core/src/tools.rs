@@ -14,6 +14,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -25,6 +26,8 @@ pub const PROBLEM_TOOL_BROKEN: &str = "PROBLEM_TOOL_BROKEN";
 /// The longest a version command may run before its tool counts as broken.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 const PROBE_POLL: Duration = Duration::from_millis(20);
+/// How long a finished child's pipes may take to deliver their bytes.
+const PIPE_GRACE: Duration = Duration::from_secs(2);
 
 /// The tool names, as `ToolInfo.name` carries them.
 pub const FFMPEG: &str = "ffmpeg";
@@ -429,6 +432,8 @@ pub fn run_bounded(
     };
     let stdout = join_pipe(stdout_reader);
     let stderr = join_pipe(stderr_reader);
+    // The child has exited; its pipes close with it unless a grandchild kept one open, so the
+    // bytes are waited for only up to PIPE_GRACE and a stray holder cannot block past the timeout.
     Ok(std::process::Output {
         status,
         stdout,
@@ -436,19 +441,22 @@ pub fn run_bounded(
     })
 }
 
-/// Reads a child's pipe to its end on a thread, returning the bytes through the join handle.
-fn read_pipe_on_thread<R: Read + Send + 'static>(mut pipe: R) -> thread::JoinHandle<Vec<u8>> {
+/// Reads a child's pipe to its end on a thread; the bytes arrive on the returned channel.
+fn read_pipe_on_thread<R: Read + Send + 'static>(mut pipe: R) -> mpsc::Receiver<Vec<u8>> {
+    let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut bytes = Vec::new();
         let _ = pipe.read_to_end(&mut bytes);
-        bytes
-    })
+        let _ = sender.send(bytes);
+    });
+    receiver
 }
 
-/// The bytes a reader thread collected; empty when there was no pipe or the thread panicked.
-fn join_pipe(reader: Option<thread::JoinHandle<Vec<u8>>>) -> Vec<u8> {
+/// The bytes a reader collected, waiting at most `PIPE_GRACE`. Empty when there was no pipe, the
+/// pipe stayed open past the grace period, or the reader failed.
+fn join_pipe(reader: Option<mpsc::Receiver<Vec<u8>>>) -> Vec<u8> {
     reader
-        .and_then(|handle| handle.join().ok())
+        .and_then(|receiver| receiver.recv_timeout(PIPE_GRACE).ok())
         .unwrap_or_default()
 }
 
