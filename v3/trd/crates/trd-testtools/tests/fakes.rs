@@ -247,6 +247,35 @@ fn ffmpeg_waits_for_the_file_before_the_last_frame() {
 }
 
 #[test]
+fn ffmpeg_reads_the_script_from_a_file_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let script_file = dir.path().join("script.json");
+    fs::write(&script_file, r#"{"exit_code": 4, "write_output": false}"#).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_fake-ffmpeg"))
+        .env("TRD_FAKE_FFMPEG", path_str(&script_file))
+        .args(["-i", "in.mov", path_str(&dir.path().join("render.mov"))])
+        .output()
+        .expect("the fake starts");
+    assert_eq!(out.status.code(), Some(4), "{out:?}");
+    assert!(!dir.path().join("render.mov").exists());
+}
+
+#[test]
+fn ffmpeg_rejects_a_script_that_is_not_an_object() {
+    let dir = tempfile::tempdir().unwrap();
+    let script_file = dir.path().join("script.json");
+    fs::write(&script_file, "[1, 2]").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_fake-ffmpeg"))
+        .env("TRD_FAKE_FFMPEG", path_str(&script_file))
+        .args(["-i", "in.mov", path_str(&dir.path().join("render.mov"))])
+        .output()
+        .expect("the fake starts");
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("must be a JSON object"));
+    assert!(!dir.path().join("render.mov").exists());
+}
+
+#[test]
 fn ffprobe_prints_the_scripted_dimensions() {
     let out = Command::new(env!("CARGO_BIN_EXE_fake-ffprobe"))
         .env(

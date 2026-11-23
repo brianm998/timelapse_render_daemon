@@ -668,6 +668,30 @@ mod tests {
     }
 
     #[test]
+    fn infos_lists_the_three_tools_in_order() {
+        let tree = Tree::new();
+        for name in ["ffmpeg", "ffprobe", "exiftool"] {
+            write(&tree.beside().join(name));
+        }
+        let tools = resolve(&tree, &Env::default(), "linux", "x86_64", &ok_probe);
+
+        let infos = tools.infos();
+        let names: Vec<&str> = infos.iter().map(|info| info.name).collect();
+        assert_eq!(names, ["ffmpeg", "ffprobe", "exiftool"]);
+        assert_eq!(infos[0], tools.ffmpeg.info);
+        assert_eq!(infos[1], tools.ffprobe.info);
+        assert_eq!(infos[2], tools.exiftool.info);
+        for info in &infos {
+            assert!(info.available, "{}: {:?}", info.name, info.problem);
+            assert_eq!(info.problem, None);
+            assert_eq!(info.path, Some(tree.beside().join(info.name)));
+        }
+        assert_eq!(infos[0].version, "fake -version");
+        assert_eq!(infos[1].version, "fake -version");
+        assert_eq!(infos[2].version, "fake -ver");
+    }
+
+    #[test]
     fn missing_tool_problem() {
         let tree = Tree::new();
         write(&tree.dev_v3().join("VERSION"));
