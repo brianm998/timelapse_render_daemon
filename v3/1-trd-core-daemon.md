@@ -2935,9 +2935,11 @@ Overview D5; §6.15 (how trd runs it); §9.3.
 ## Approach
 1. `versions.env`: `EXIFTOOL_VERSION` = the newest production release on the day of the ticket;
    `EXIFTOOL_UNIX_URL` = `https://github.com/exiftool/exiftool/archive/refs/tags/<version>.tar.gz`
-   with its SHA-256; `EXIFTOOL_WINDOWS_URL` = `https://exiftool.org/exiftool-<version>_64.zip`
-   with its SHA-256 and `EXIFTOOL_WINDOWS_MIRROR` =
-   `https://sourceforge.net/projects/exiftool/files/exiftool-<version>_64.zip/download`.
+   with its SHA-256; `EXIFTOOL_WINDOWS_URL` =
+   `https://sourceforge.net/projects/exiftool/files/exiftool-<version>_64.zip/download` with its
+   SHA-256 and `EXIFTOOL_WINDOWS_MIRROR` =
+   `https://downloads.sourceforge.net/project/exiftool/exiftool-<version>_64.zip`. (exiftool.org
+   serves only the current development build, so a production release's zip is not there.)
 2. `fetch.sh unix|windows <dest>`: download into `v3/exiftool/.work/` (mirror on failure), verify
    SHA-256 (a mismatch fails), extract; Unix: `<dest>/exiftool` (the script) and `<dest>/lib/`;
    Windows: `<dest>/exiftool.exe` (renamed from `exiftool(-k).exe`) and `<dest>/exiftool_files/`;
