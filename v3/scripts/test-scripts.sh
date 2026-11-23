@@ -318,6 +318,28 @@ out="$(V3_ROOT="$t" bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
 expect "check-makefiles.sh fails for a component directory without a Makefile" \
   "$([ "$rc" -eq 1 ] && contains "$out" "v3/ios: no Makefile" && echo 0 || echo 1)" "rc=$rc $out"
 
+# A kotlin component tree holding only suite.sh's generated placeholder output is absent, not broken.
+new_tree; t="$T"
+cp "$fixtures/Makefile.complete" "$t/Makefile"
+mkdir -p "$t/clients/kotlin/build"
+echo "<testsuites/>" > "$t/clients/kotlin/build/mason-desktop-results.xml"
+out="$(V3_ROOT="$t" bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && ! contains "$out" "clients/kotlin: no Makefile"; then
+  pass "check-makefiles.sh skips a kotlin component holding only generated build output"
+else
+  fail "check-makefiles.sh skips a kotlin component holding only generated build output" "rc=$rc $out"
+fi
+
+# A kotlin component with generated output and a source file is still a real component.
+mkdir -p "$t/clients/kotlin/src"
+echo "class Foo" > "$t/clients/kotlin/src/Foo.kt"
+out="$(V3_ROOT="$t" bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
+if [ "$rc" -eq 1 ] && contains "$out" "v3/clients/kotlin: no Makefile"; then
+  pass "check-makefiles.sh fails for a kotlin component with build output and a source file"
+else
+  fail "check-makefiles.sh fails for a kotlin component with build output and a source file" "rc=$rc $out"
+fi
+
 out="$(bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
 expect "check-makefiles.sh passes for the real v3/Makefile" "$rc" "rc=$rc $out"
 

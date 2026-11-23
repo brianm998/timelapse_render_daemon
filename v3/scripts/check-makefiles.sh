@@ -31,9 +31,21 @@ check_dir() {
   checked=$((checked + 1))
 }
 
+# generated_only <dir>: true when <dir> has no Makefile and its only entries are generated
+# build/ or .gradle/ output. suite.sh's kotlin-test and android-test write their placeholder junit
+# files into clients/kotlin/build (mason.toml reads them from there), so a tree holding only that
+# output is an absent component, not a component missing its Makefile. An empty directory, or one
+# with any other entry, is not generated-only.
+generated_only() {
+  local dir="$1"
+  [ ! -f "$dir/Makefile" ] || return 1
+  [ -e "$dir/build" ] || [ -e "$dir/.gradle" ] || return 1
+  [ -z "$(find "$dir" -mindepth 1 -maxdepth 1 ! -name build ! -name .gradle)" ]
+}
+
 check_dir "$V3_ROOT" "v3"
 for comp in ffmpeg exiftool trd clients/kotlin clients/kotlin/android ios; do
-  if [ -d "$V3_ROOT/$comp" ]; then
+  if [ -d "$V3_ROOT/$comp" ] && ! generated_only "$V3_ROOT/$comp"; then
     check_dir "$V3_ROOT/$comp" "v3/$comp"
   fi
 done
