@@ -597,6 +597,10 @@ pub struct SysinfoProcessTable {
 // `new` takes no arguments but asserts when built for tests, so `Default` would be wrong.
 #[allow(clippy::new_without_default)]
 impl SysinfoProcessTable {
+    // The assertion is constant per build on purpose: it must panic at run time inside unit
+    // tests (`sysinfo_table_refuses_in_unit_tests` is `#[should_panic]`); a `const` block would
+    // instead stop the test build from compiling.
+    #[allow(clippy::assertions_on_constants)]
     pub fn new() -> SysinfoProcessTable {
         assert!(
             !cfg!(test),
