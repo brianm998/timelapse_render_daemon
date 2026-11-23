@@ -339,6 +339,30 @@ else
   fail "check-makefiles.sh fails for build/ plus a stray file and no Makefile" "rc=$rc $out"
 fi
 
+new_tree; t="$T"
+cp "$fixtures/Makefile.complete" "$t/Makefile"
+mkdir -p "$t/trd" "$t/clients/kotlin/.gradle"
+cp "$fixtures/Makefile.complete" "$t/trd/Makefile"
+out="$(V3_ROOT="$t" bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && ! contains "$out" "clients/kotlin: no Makefile"; then
+  pass "check-makefiles.sh skips a component holding only .gradle/ output"
+else
+  fail "check-makefiles.sh skips a component holding only .gradle/ output" "rc=$rc $out"
+fi
+
+new_tree; t="$T"
+cp "$fixtures/Makefile.complete" "$t/Makefile"
+mkdir -p "$t/trd" "$t/clients/kotlin/build" "$t/clients/kotlin/src"
+cp "$fixtures/Makefile.complete" "$t/trd/Makefile"
+: > "$t/clients/kotlin/build/mason-desktop-results.xml"
+echo "class Foo" > "$t/clients/kotlin/src/Foo.kt"
+out="$(V3_ROOT="$t" bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
+if [ "$rc" -eq 1 ] && contains "$out" "v3/clients/kotlin: no Makefile"; then
+  pass "check-makefiles.sh fails for build/ output plus a source file and no Makefile"
+else
+  fail "check-makefiles.sh fails for build/ output plus a source file and no Makefile" "rc=$rc $out"
+fi
+
 out="$(bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
 expect "check-makefiles.sh passes for the real v3/Makefile" "$rc" "rc=$rc $out"
 
