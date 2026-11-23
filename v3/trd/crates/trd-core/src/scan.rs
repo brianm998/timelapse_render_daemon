@@ -245,15 +245,15 @@ fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
     state.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Marks a path in flight for as long as its blocking job exists.
+/// Marks a listing in flight for as long as its blocking job exists.
 struct Claim {
     inner: Arc<Inner>,
-    key: String,
+    id: String,
 }
 
 impl Drop for Claim {
     fn drop(&mut self) {
-        lock(&self.inner.state).in_flight.remove(&self.key);
+        lock(&self.inner.state).in_flight.remove(&self.id);
     }
 }
 
@@ -307,6 +307,12 @@ impl Scanner {
         lock(&self.inner.state).in_flight.len()
     }
 
+    /// The size-measurement slots not held by a running measurement. Every measurement stores
+    /// its result before its slot is released, so `SIZE_CONCURRENCY` free slots means none runs.
+    pub fn free_size_slots(&self) -> usize {
+        self.inner.size_permits.available_permits()
+    }
+
     /// Whether the backup sidecars should be loaded now: never loaded, or the last attempt is
     /// at least 10 minutes old, and no load is running.
     pub fn backups_due(&self) -> bool {
@@ -334,9 +340,9 @@ impl Scanner {
         let now = self.inner.clock.instant();
         lock(&self.inner.state).backup_attempt = Some(now);
 
-        let (dirs, mut problems) = self.expand_patterns(backup_paths).await;
+        let (dirs, mut problems) = self.expand_patterns("expand-backup", backup_paths).await;
         let (loaded, load_problems) = self
-            .run_jobs(dirs.clone(), BACKUP_TIMEOUT, |inner, dir| {
+            .run_jobs("backup", dirs.clone(), BACKUP_TIMEOUT, |inner, dir| {
                 load_backup_dir(inner, dir)
             })
             .await;
@@ -358,31 +364,49 @@ impl Scanner {
     pub async fn scan(&self, config: &Config) -> ScanResult {
         let mut unreachable = lock(&self.inner.state).backup_problems.clone();
 
-        let (sources, problems) = self.expand_patterns(&config.source_paths).await;
+        // Source and export entries are expanded, then listed, all concurrently: a slow source
+        // never delays the listing of an export root. Export directories are matched to raw
+        // sequences only once both are known.
+        let ((sources, problems), (export_roots, export_problems)) = tokio::join!(
+            self.expand_patterns("expand-source", &config.source_paths),
+            self.expand_patterns("expand-export", &config.export_paths),
+        );
         unreachable.extend(problems);
-        let (export_roots, problems) = self.expand_patterns(&config.export_paths).await;
+        unreachable.extend(export_problems);
+
+        let raw_types = Arc::new(config.raw_types.clone());
+        let raw_listing =
+            self.run_jobs("source", sources, self.path_timeout, move |inner, root| {
+                raw_job(inner, root, raw_types.as_slice())
+            });
+        let root_listing =
+            self.run_jobs("export", export_roots, self.path_timeout, |inner, root| {
+                export_root_job(inner, root)
+            });
+        let ((raw_found, problems), (listed_roots, problems_listing)) =
+            tokio::join!(raw_listing, root_listing);
         unreachable.extend(problems);
+        unreachable.extend(problems_listing);
+        let export_root_keys: Vec<String> = listed_roots.iter().map(|(r, _)| r.clone()).collect();
+        let listed_items: HashMap<String, Vec<DirItem>> = listed_roots.into_iter().collect();
 
         // Raw sequences: every source directory, then backups not overridden by a source.
-        let raw_types = Arc::new(config.raw_types.clone());
-        let (raw_found, problems) = self
-            .run_jobs(sources, self.path_timeout, move |inner, root| {
-                raw_job(inner, root, raw_types.as_slice())
-            })
-            .await;
-        unreachable.extend(problems);
-
+        let raw_root_keys: Vec<String> = raw_found.iter().map(|(root, _)| root.clone()).collect();
         let mut candidates: Vec<Candidate> = Vec::new();
-        for (root, subs) in raw_found {
+        for (root, subs) in &raw_found {
             for (name, frames) in subs {
                 candidates.push(Candidate {
-                    name,
+                    name: name.clone(),
                     parent: root.clone(),
-                    frames,
+                    frames: *frames,
                     from_backup: false,
                 });
             }
         }
+        let raw_seen: HashSet<String> = raw_found
+            .iter()
+            .flat_map(|(root, subs)| subs.iter().map(move |(name, _)| join_key(root, name)))
+            .collect();
         let source_names: HashSet<String> = candidates.iter().map(|c| c.name.clone()).collect();
         {
             let st = lock(&self.inner.state);
@@ -420,12 +444,24 @@ impl Scanner {
                 .filter_map(|p| Regex::new(p).ok())
                 .collect(),
         });
+        let listed_items = Arc::new(listed_items);
         let (export_found, problems) = self
-            .run_jobs(export_roots, self.path_timeout, move |inner, root| {
-                export_job(inner, root, &ctx)
-            })
+            .run_jobs(
+                "export",
+                export_root_keys,
+                self.path_timeout,
+                move |inner, root| {
+                    let items = listed_items.get(root).map(Vec::as_slice).unwrap_or(&[]);
+                    export_job(inner, root, &ctx, items)
+                },
+            )
             .await;
         unreachable.extend(problems);
+        let export_root_keys: Vec<String> = export_found.iter().map(|(r, _)| r.clone()).collect();
+        let export_seen: HashSet<String> = export_found
+            .iter()
+            .flat_map(|(_, found)| found.iter().map(|f| f.path.clone()))
+            .collect();
 
         // Samples, rates, ETAs and sizes.
         let now = self.inner.clock.instant();
@@ -437,6 +473,18 @@ impl Scanner {
             st.samples.retain(|_, samples| {
                 samples.retain(|(at, _)| now.saturating_duration_since(*at) <= RATE_WINDOW);
                 !samples.is_empty()
+            });
+            // Drop cache entries for directories this scan did not see. Only directories under
+            // a root that was listed completely are dropped; a root that failed keeps its entries.
+            st.raw_dirs
+                .retain(|key, _| !is_inside_any(key, &raw_root_keys) || raw_seen.contains(key));
+            st.export_dirs.retain(|key, _| {
+                !is_inside_any(key, &export_root_keys) || export_seen.contains(key)
+            });
+            st.sizes.retain(|key, entry| {
+                entry.in_flight
+                    || !is_inside_any(key, &export_root_keys)
+                    || export_seen.contains(key)
             });
             for (_root, found) in export_found {
                 for item in found {
@@ -557,15 +605,18 @@ impl Scanner {
         }
     }
 
-    /// Marks `key` in flight, or returns `None` if its previous listing has not returned.
-    fn claim(&self, key: &str) -> Option<Claim> {
+    /// Marks the listing of `key` of this `kind` in flight, or returns `None` if its previous
+    /// listing has not returned. The kind keeps one path listed as a source and as an export
+    /// from colliding.
+    fn claim(&self, kind: &str, key: &str) -> Option<Claim> {
+        let id = format!("{kind} {key}");
         let mut st = lock(&self.inner.state);
-        if !st.in_flight.insert(key.to_owned()) {
+        if !st.in_flight.insert(id.clone()) {
             return None;
         }
         Some(Claim {
             inner: self.inner.clone(),
-            key: key.to_owned(),
+            id,
         })
     }
 
@@ -573,6 +624,7 @@ impl Scanner {
     /// results of the jobs that finished in time, and a problem for each key that did not.
     async fn run_jobs<T, F>(
         &self,
+        kind: &'static str,
         keys: Vec<String>,
         limit: Duration,
         job: F,
@@ -589,16 +641,17 @@ impl Scanner {
             if !seen.insert(key.clone()) {
                 continue;
             }
-            match self.claim(&key) {
+            match self.claim(kind, &key) {
                 None => problems.push(PathProblem::unreachable(
                     &key,
                     "a previous listing of this path has not returned",
                 )),
                 Some(claim) => {
                     let job = job.clone();
+                    let path = key.clone();
                     let handle = tokio::task::spawn_blocking(move || {
                         let claim = claim;
-                        (*job)(&claim.inner, claim.key.as_str())
+                        (*job)(&claim.inner, path.as_str())
                     });
                     handles.push((key, handle));
                 }
@@ -626,7 +679,11 @@ impl Scanner {
 
     /// Expands `$YEAR` entries (§6.1) in their own jobs, so a hung directory check cannot block
     /// the others. Returns the paths in configuration order.
-    async fn expand_patterns(&self, patterns: &[String]) -> (Vec<String>, Vec<PathProblem>) {
+    async fn expand_patterns(
+        &self,
+        kind: &'static str,
+        patterns: &[String],
+    ) -> (Vec<String>, Vec<PathProblem>) {
         let mut year: Vec<String> = Vec::new();
         for pattern in patterns {
             if has_year_placeholder(pattern) && !year.contains(pattern) {
@@ -637,7 +694,7 @@ impl Scanner {
             return (patterns.to_vec(), Vec::new());
         }
         let (found, problems) = self
-            .run_jobs(year, self.path_timeout, |inner, pattern| {
+            .run_jobs(kind, year, self.path_timeout, |inner, pattern| {
                 let mut cache = lock(&inner.state)
                     .expansions
                     .remove(pattern)
@@ -769,10 +826,30 @@ fn raw_job(inner: &Inner, root: &str, raw_types: &[String]) -> Result<Vec<(Strin
     Ok(out)
 }
 
-/// The export sequences in one export directory (§6.3 step 3).
-fn export_job(inner: &Inner, root: &str, ctx: &ExportCtx) -> Result<Vec<ExportFound>, String> {
+/// The entries of one export root, listed in the first phase of a scan.
+fn export_root_job(inner: &Inner, root: &str) -> Result<Vec<DirItem>, String> {
+    inner.fs.list(Path::new(root)).map_err(|e| e.to_string())
+}
+
+/// The cache key of `name` inside `root`.
+fn join_key(root: &str, name: &str) -> String {
+    Path::new(root).join(name).to_string_lossy().into_owned()
+}
+
+/// Whether the cache key `key` names a directory directly inside one of `roots`.
+fn is_inside_any(key: &str, roots: &[String]) -> bool {
+    let parent = Path::new(key).parent();
+    roots.iter().any(|root| parent == Some(Path::new(root)))
+}
+
+/// The export sequences in one export root, given its listing (§6.3 step 3).
+fn export_job(
+    inner: &Inner,
+    root: &str,
+    ctx: &ExportCtx,
+    items: &[DirItem],
+) -> Result<Vec<ExportFound>, String> {
     let root_path = Path::new(root);
-    let items = inner.fs.list(root_path).map_err(|e| e.to_string())?;
     let now = inner.clock.instant();
     let mut out = Vec::new();
     for item in items.iter().filter(|i| i.is_dir && !is_hidden(&i.name)) {

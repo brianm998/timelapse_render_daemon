@@ -2,20 +2,25 @@
 // Copyright (C) 2026 Timelapse Render Daemon contributors
 
 //! Sequence scanner tests (§6.3) over a fake filesystem with an injected clock. No test sleeps.
-//! The only real time is the hang guards of the three tests that block a listing or a size on
-//! purpose: each waits 30 s, the lowest guard the test rules allow, and the fast paths finish
-//! well inside it.
+//! The only real time is the hang guards of the four tests that block a listing or a size on
+//! purpose: each waits at most 30 s, the lowest guard the test rules allow, and the fast paths
+//! finish well inside it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use trd_core::config::Config;
 use trd_core::paths::ManualClock;
-use trd_core::scan::{DirItem, PROBLEM_PATH_UNREACHABLE, RealFs, ScanFs, ScanResult, Scanner};
+use trd_core::scan::{
+    DirItem, PROBLEM_PATH_UNREACHABLE, RealFs, SIZE_CONCURRENCY, ScanFs, ScanResult, Scanner,
+};
+
+/// The longest a test waits for a blocked call to return once it is released or must have started.
+const HANG_GUARD: Duration = Duration::from_secs(30);
 
 /// Blocks a listing until the test releases it.
 #[derive(Default)]
@@ -98,6 +103,15 @@ impl Fake {
 
     fn file(&self, dir: &str, name: &str) {
         self.child(dir, name, false, true);
+    }
+
+    /// Removes an entry from `dir` and bumps its mtime, as a real removal would. The removed
+    /// entry's own directory keeps its mtime, so it looks unchanged if it comes back.
+    fn remove_child(&self, dir: &str, name: &str) {
+        let mut dirs = self.dirs.lock().unwrap();
+        let d = dirs.get_mut(dir).expect("parent directory exists");
+        d.items.retain(|i| i.name != name);
+        d.mtime += Duration::from_secs(1);
     }
 
     /// An entry that is neither a directory nor a regular file (a FIFO, say).
@@ -284,6 +298,43 @@ async fn slow_path_does_not_block() {
     // The scan returned while the hung listing is still blocked.
     assert_eq!(scanner.in_flight_count(), 1);
     gate.release();
+}
+
+#[tokio::test]
+async fn slow_source_does_not_delay_export_listing() {
+    let (fake, clock) = setup();
+    fake.dir("/fake/slow");
+    fake.subdir("/fake/slow", "R");
+    fake.file("/fake/slow/R", "r.ARW");
+    let slow = fake.block("/fake/slow");
+    fake.dir("/fake/exp");
+    fake.subdir("/fake/exp", "R_1");
+    fake.file("/fake/exp/R_1", "o.tif");
+
+    // The source stays blocked until the export root has been listed, so a scan that waited for
+    // the source before listing the export root would never reach the listing below.
+    let scanner = scanner(&fake, &clock).with_path_timeout(Duration::from_secs(120));
+    let cfg = config(&strings(&["/fake/slow"]), &strings(&["/fake/exp"]));
+    let running = scanner.clone();
+    let task = tokio::spawn(async move { running.scan(&cfg).await });
+
+    let waited = Instant::now();
+    while fake.lists_of("/fake/exp") == 0 {
+        assert!(
+            waited.elapsed() < HANG_GUARD,
+            "export root was not listed while the source was blocked"
+        );
+        tokio::task::yield_now().await;
+    }
+    slow.release();
+    let result = task.await.expect("scan task finished");
+    assert!(result.unreachable.is_empty(), "{:?}", result.unreachable);
+    assert!(
+        result
+            .exports
+            .iter()
+            .any(|e| e.name == "R_1" && e.raw_name == "R")
+    );
 }
 
 #[tokio::test]
@@ -552,6 +603,29 @@ async fn mtime_cache() {
 }
 
 #[tokio::test]
+async fn gone_directory_forgotten() {
+    let (fake, clock) = setup();
+    fake.dir("/fake/src");
+    fake.subdir("/fake/src", "P");
+    fake.file("/fake/src/P", "p.ARW");
+    let scanner = scanner(&fake, &clock);
+    let cfg = config(&strings(&["/fake/src"]), &[]);
+
+    scanner.scan(&cfg).await;
+    assert_eq!(fake.lists_of("/fake/src/P"), 1);
+
+    fake.remove_child("/fake/src", "P");
+    let gone = scanner.scan(&cfg).await;
+    assert!(gone.raw.is_empty());
+
+    // Back with its old mtime: the count from before it went is not reused.
+    fake.subdir("/fake/src", "P");
+    let back = scanner.scan(&cfg).await;
+    assert_eq!(back.raw.len(), 1);
+    assert_eq!(fake.lists_of("/fake/src/P"), 2);
+}
+
+#[tokio::test]
 async fn year_paths_scanned() {
     let root = tempfile::tempdir().expect("temp dir");
     let base = root.path().to_string_lossy().into_owned();
@@ -694,9 +768,19 @@ async fn size_hang_does_not_stall() {
         "no slot yet, so not measured"
     );
 
-    // Once the hung measurements return, their slots are free and the third is measured.
+    // Once the hung measurements return, their slots are free and the third is measured. Both
+    // slots must be free before the next call: each measurement stores its size before its slot
+    // is released, so a free slot count of two means both results are in the cache.
     hung_1.release();
     hung_2.release();
+    let waited = Instant::now();
+    while scanner.free_size_slots() != SIZE_CONCURRENCY {
+        assert!(
+            waited.elapsed() < HANG_GUARD,
+            "released measurements never returned"
+        );
+        tokio::task::yield_now().await;
+    }
     scanner.measure_sizes().await;
     assert_eq!(fake.size_calls.load(Ordering::SeqCst), 3);
     assert!(fake.peak.load(Ordering::SeqCst) <= 2);
