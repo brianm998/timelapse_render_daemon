@@ -31,9 +31,25 @@ check_dir() {
   checked=$((checked + 1))
 }
 
+# A directory whose only entry is a build/ folder holds build output (the junit placeholders that
+# mason.toml points at), not a component, so it is not checked.
+is_build_output_only() {
+  local d="$1" e name has_build=0
+  for e in "$d"/* "$d"/.[!.]*; do
+    [ -e "$e" ] || continue
+    name="$(basename "$e")"
+    if [ "$name" = build ] && [ -d "$e" ]; then
+      has_build=1
+    else
+      return 1
+    fi
+  done
+  [ "$has_build" -eq 1 ]
+}
+
 check_dir "$V3_ROOT" "v3"
 for comp in ffmpeg exiftool trd clients/kotlin clients/kotlin/android ios; do
-  if [ -d "$V3_ROOT/$comp" ]; then
+  if [ -d "$V3_ROOT/$comp" ] && ! is_build_output_only "$V3_ROOT/$comp"; then
     check_dir "$V3_ROOT/$comp" "v3/$comp"
   fi
 done
