@@ -7,3 +7,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+
+# The fake tools' JSON scripts and the fixture trees they build.
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+# Integration tests run the fakes and resolve them with trd-core; the system-test macro expands to
+# a tokio test in the calling crate.
+[dev-dependencies]
+trd-core = { path = "../trd-core" }
+tokio.workspace = true
