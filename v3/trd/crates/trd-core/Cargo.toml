@@ -20,4 +20,3 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-trd-testtools = { path = "../trd-testtools" }

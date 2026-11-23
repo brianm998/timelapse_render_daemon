@@ -14,7 +14,7 @@ use crate::codecs::{VideoCodec, VideoCodecs};
 use crate::config::{Config, RenderType};
 use crate::paths::expand_year_path;
 use crate::pattern;
-use crate::tools::Tools;
+use crate::tools::{PROBE_TIMEOUT, Tools, run_bounded};
 
 /// The failure kind for a sequence that cannot be queued (§6.5, §6.9).
 pub const FAILURE_NOT_QUEUEABLE: &str = "FAILURE_NOT_QUEUEABLE";
@@ -141,8 +141,8 @@ pub fn probe_size(tools: &Tools, example_frame: &Path) -> Result<(i64, i64), Pla
     let Some(command) = &tools.ffprobe.command else {
         return Err(not_read("ffprobe is not available".to_owned()));
     };
-    let output = command
-        .command()
+    let mut probe = command.command();
+    probe
         .args([
             "-v",
             "error",
@@ -153,9 +153,10 @@ pub fn probe_size(tools: &Tools, example_frame: &Path) -> Result<(i64, i64), Pla
             "-of",
             "default=noprint_wrappers=1",
         ])
-        .arg(example_frame)
-        .output()
-        .map_err(|err| not_read(format!("cannot run ffprobe: {err}")))?;
+        .arg(example_frame);
+    // Bounded, so a stuck ffprobe cannot block planning: it is killed after PROBE_TIMEOUT.
+    let output =
+        run_bounded(probe, PROBE_TIMEOUT).map_err(|err| not_read(format!("ffprobe {err}")))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(not_read(format!(
@@ -360,14 +361,9 @@ pub fn plan_render(request: &PlanRequest<'_>) -> Result<Plan, PlanError> {
     )
     .ok_or_else(|| PlanError::NotQueueable {
         summary: format!("no numbered image sequence in {}", dir.display()),
-        detail: format!(
-            "input analysis (TRD-11): directory {}, expected prefix {:?}, digit width {}, \
-             extensions {:?}",
-            dir.display(),
-            request.config.image_name_prefix,
-            pattern::LEGACY_FRAME_NUMBER_DIGITS,
-            request.config.image_extensions
-        ),
+        // The input analysis (what was looked for and what was found) is TRD-11's
+        // `analyze_input_sequence`; until it exists this carries no detail rather than a guess.
+        detail: String::new(),
     })?;
 
     let (size, resize) = match (render.width(), render.height()) {

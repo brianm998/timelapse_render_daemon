@@ -393,6 +393,49 @@ fn run_version_command(command: &ToolCommand, flag: &str) -> Result<String, Stri
         .ok_or_else(|| format!("{flag} printed nothing"))
 }
 
+/// Runs `command` to completion with an empty standard input, killing it when it has not finished
+/// within `timeout`. Its output comes back whatever its exit status; only a failure to start,
+/// to wait, or the timeout is an `Err`.
+pub fn run_bounded(
+    mut command: Command,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("cannot start: {err}"))?;
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("did not finish within {} s", timeout.as_secs()));
+                }
+                thread::sleep(PROBE_POLL);
+            }
+            Err(err) => return Err(format!("cannot wait: {err}")),
+        }
+    };
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = pipe.read_to_end(&mut stdout);
+    }
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_end(&mut stderr);
+    }
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

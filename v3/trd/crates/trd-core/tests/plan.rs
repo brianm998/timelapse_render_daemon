@@ -6,8 +6,9 @@
 //! same expectations.
 //!
 //! Every test is inside `mod plan`, so `cargo test -p trd-core plan` selects them all. Fixtures
-//! live in the system temporary directory. The size probe runs the fake ffprobe from
-//! `trd-testtools` through `/usr/bin/env`, which sets its variable for that child only.
+//! live in the system temporary directory. The size probe runs a stand-in ffprobe: a `/bin/sh -c`
+//! script that prints the size or fails. It needs no built binary, so the tests run without any
+//! other crate being built first.
 
 mod plan {
     use std::collections::BTreeMap;
@@ -25,10 +26,10 @@ mod plan {
         final_size, output_filename, plan_render, probe_size,
     };
     use trd_core::tools::{ResolvedTool, ToolCommand, ToolInfo, Tools};
-    use trd_testtools::FakeTools;
 
     const EXTENSIONS: [&str; 2] = ["tif", "tiff"];
-    const SOURCE_6000X4000: &str = r#"{"width":6000,"height":4000}"#;
+    /// What the stand-in ffprobe prints for a 6000x4000 source.
+    const SOURCE_6000X4000: &str = "echo width=6000; echo height=4000";
 
     fn extensions() -> Vec<String> {
         EXTENSIONS.iter().map(|e| (*e).to_owned()).collect()
@@ -97,13 +98,15 @@ mod plan {
         }
     }
 
-    /// The fake ffprobe, run through `/usr/bin/env` with `TRD_FAKE_FFPROBE` set to `script`.
-    fn fake_ffprobe(fakes: &FakeTools, script: &str) -> ToolCommand {
+    /// A stand-in ffprobe: `/bin/sh -c <script>`. The probe's own arguments become the script's
+    /// positional parameters, which the scripts ignore.
+    fn fake_ffprobe(script: &str) -> ToolCommand {
         ToolCommand {
-            program: OsString::from("/usr/bin/env"),
+            program: OsString::from("/bin/sh"),
             leading_args: vec![
-                OsString::from(format!("TRD_FAKE_FFPROBE={script}")),
-                fakes.path().join("ffprobe").into_os_string(),
+                OsString::from("-c"),
+                OsString::from(script),
+                OsString::from("ffprobe"),
             ],
         }
     }
@@ -530,13 +533,12 @@ mod plan {
 
     #[test]
     fn original_size_aspect_from_source() {
-        let fakes = FakeTools::new().expect("fake tools");
         let tmp = export_with_sequence("LRT_seq", 5, 1, 3);
         let export = export_path(&tmp);
         let cfg = config();
         let codecs = codecs::builtin();
         let rt = render("ProResUHQ", None);
-        let tools = tools(Some(fake_ffprobe(&fakes, SOURCE_6000X4000)));
+        let tools = tools(Some(fake_ffprobe(SOURCE_6000X4000)));
         let data = data_dir(&tmp);
         let request = PlanRequest {
             config: &cfg,
@@ -562,13 +564,12 @@ mod plan {
 
     #[test]
     fn width_only() {
-        let fakes = FakeTools::new().expect("fake tools");
         let tmp = export_with_sequence("LRT_seq", 5, 1, 3);
         let export = export_path(&tmp);
         let cfg = config();
         let codecs = codecs::builtin();
         let rt = render("ProResMQ", Some(vec![720]));
-        let tools = tools(Some(fake_ffprobe(&fakes, SOURCE_6000X4000)));
+        let tools = tools(Some(fake_ffprobe(SOURCE_6000X4000)));
         let data = data_dir(&tmp);
         let request = PlanRequest {
             config: &cfg,
@@ -773,7 +774,6 @@ mod plan {
 
     #[test]
     fn probe_failure() {
-        let fakes = FakeTools::new().expect("fake tools");
         let tmp = export_with_sequence("LRT_seq", 5, 1, 3);
         let export = export_path(&tmp);
         let cfg = config();
@@ -783,8 +783,8 @@ mod plan {
         let frame = Path::new(&export).join("LRT_seq").join("LRT_00001.tiff");
         let expected = format!("could not read the frame size of {}", frame.display());
 
-        // The fake ffprobe exits non-zero on a script that is not JSON.
-        let broken = tools(Some(fake_ffprobe(&fakes, "{\"width\":")));
+        // A stand-in ffprobe that reports an error and exits non-zero.
+        let broken = tools(Some(fake_ffprobe("echo 'no such stream' >&2; exit 1")));
         // And a tool that is not available at all.
         let missing = tools(None);
         for tools in [&broken, &missing] {
@@ -868,11 +868,10 @@ mod plan {
 
     #[test]
     fn probe_size_reads_the_fake_ffprobe() {
-        let fakes = FakeTools::new().expect("fake tools");
         let tmp = tempfile::tempdir().expect("temporary directory");
         let frame = tmp.path().join("LRT_00001.tiff");
         fs::write(&frame, b"x").expect("write");
-        let tools = tools(Some(fake_ffprobe(&fakes, SOURCE_6000X4000)));
+        let tools = tools(Some(fake_ffprobe(SOURCE_6000X4000)));
         assert_eq!(probe_size(&tools, &frame), Ok((6000, 4000)));
     }
 
