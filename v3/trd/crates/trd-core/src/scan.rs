@@ -562,7 +562,7 @@ impl Scanner {
                     let job = job.clone();
                     let handle = tokio::task::spawn_blocking(move || {
                         let claim = claim;
-                        (*job)(&*claim.inner, claim.key.as_str())
+                        (*job)(&claim.inner, claim.key.as_str())
                     });
                     handles.push((key, handle));
                 }
@@ -813,10 +813,10 @@ fn backup_count(value: &Value) -> Option<u64> {
     if let Some(Value::Object(sizes)) = value.get("ImageSize") {
         let mut keys: Vec<&String> = sizes.keys().collect();
         keys.sort();
-        if let Some(first) = keys.first() {
-            if let Some(count) = sizes.get(first.as_str()).and_then(as_count) {
-                return Some(count);
-            }
+        if let Some(first) = keys.first()
+            && let Some(count) = sizes.get(first.as_str()).and_then(as_count)
+        {
+            return Some(count);
         }
     }
     value.get("number_source_images").and_then(as_count)

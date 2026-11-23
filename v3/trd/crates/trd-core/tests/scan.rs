@@ -190,10 +190,11 @@ fn strings(list: &[&str]) -> Vec<String> {
 }
 
 fn config(sources: &[String], exports: &[String]) -> Config {
-    let mut cfg = Config::default();
-    cfg.source_paths = sources.to_vec();
-    cfg.export_paths = exports.to_vec();
-    cfg
+    Config {
+        source_paths: sources.to_vec(),
+        export_paths: exports.to_vec(),
+        ..Default::default()
+    }
 }
 
 fn setup() -> (Arc<Fake>, Arc<ManualClock>) {
