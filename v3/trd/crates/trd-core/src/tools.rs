@@ -14,6 +14,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -25,6 +26,8 @@ pub const PROBLEM_TOOL_BROKEN: &str = "PROBLEM_TOOL_BROKEN";
 /// The longest a version command may run before its tool counts as broken.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 const PROBE_POLL: Duration = Duration::from_millis(20);
+/// How long a finished child's pipes may take to deliver their bytes.
+const PIPE_GRACE: Duration = Duration::from_secs(2);
 
 /// The tool names, as `ToolInfo.name` carries them.
 pub const FFMPEG: &str = "ffmpeg";
@@ -391,6 +394,70 @@ fn run_version_command(command: &ToolCommand, flag: &str) -> Result<String, Stri
         .find(|line| !line.is_empty())
         .map(str::to_string)
         .ok_or_else(|| format!("{flag} printed nothing"))
+}
+
+/// Runs `command` to completion with an empty standard input, killing it when it has not finished
+/// within `timeout`. Its output comes back whatever its exit status; only a failure to start,
+/// to wait, or the timeout is an `Err`.
+pub fn run_bounded(
+    mut command: Command,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("cannot start: {err}"))?;
+    // Drain both pipes while the child runs: a child that writes more than a pipe buffer holds
+    // would otherwise block forever and only be stopped by the timeout.
+    let stdout_reader = child.stdout.take().map(read_pipe_on_thread);
+    let stderr_reader = child.stderr.take().map(read_pipe_on_thread);
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    // The reader threads end on their own once the pipes close; they are not
+                    // joined, so a grandchild that keeps a pipe open cannot delay the error.
+                    return Err(format!("did not finish within {} s", timeout.as_secs()));
+                }
+                thread::sleep(PROBE_POLL);
+            }
+            Err(err) => return Err(format!("cannot wait: {err}")),
+        }
+    };
+    let stdout = join_pipe(stdout_reader);
+    let stderr = join_pipe(stderr_reader);
+    // The child has exited; its pipes close with it unless a grandchild kept one open, so the
+    // bytes are waited for only up to PIPE_GRACE and a stray holder cannot block past the timeout.
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+/// Reads a child's pipe to its end on a thread; the bytes arrive on the returned channel.
+fn read_pipe_on_thread<R: Read + Send + 'static>(mut pipe: R) -> mpsc::Receiver<Vec<u8>> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        let _ = sender.send(bytes);
+    });
+    receiver
+}
+
+/// The bytes a reader collected, waiting at most `PIPE_GRACE`. Empty when there was no pipe, the
+/// pipe stayed open past the grace period, or the reader failed.
+fn join_pipe(reader: Option<mpsc::Receiver<Vec<u8>>>) -> Vec<u8> {
+    reader
+        .and_then(|receiver| receiver.recv_timeout(PIPE_GRACE).ok())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
