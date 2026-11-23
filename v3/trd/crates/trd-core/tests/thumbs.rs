@@ -19,9 +19,9 @@ use tempfile::TempDir;
 use trd_core::history_import::{
     ImportReport, ImportStatus, SOURCE_IMPORTED, default_history_path, import_swift_history,
 };
-use trd_core::store::{DAY_MS, RenderedVideo, Store};
 #[cfg(unix)]
 use trd_core::store::LogLevel;
+use trd_core::store::{DAY_MS, RenderedVideo, Store};
 use trd_core::thumbs::{
     Runner, THUMBNAILS_DIR, Thumbnailer, ensure_thumbnail, prune_history, thumbnail_args,
 };
