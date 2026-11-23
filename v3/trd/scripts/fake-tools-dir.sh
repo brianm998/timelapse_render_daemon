@@ -25,8 +25,14 @@ esac
 if [ -n "${TRD_FAKE_BIN_DIR:-}" ]; then
   bin_dir="$TRD_FAKE_BIN_DIR"
 else
+  # cargo runs in $ws, so a relative CARGO_TARGET_DIR is relative to $ws, not to the caller.
+  target_dir="${CARGO_TARGET_DIR:-$ws/target}"
+  case "$target_dir" in
+    /*|?:*) ;;
+    *) target_dir="$ws/$target_dir" ;;
+  esac
   (cd "$ws" && cargo build --quiet --locked -p trd-testtools --bins)
-  bin_dir="${CARGO_TARGET_DIR:-$ws/target}/debug"
+  bin_dir="$target_dir/debug"
 fi
 
 mkdir -p "$dest"
