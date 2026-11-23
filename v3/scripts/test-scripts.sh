@@ -318,6 +318,27 @@ out="$(V3_ROOT="$t" bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
 expect "check-makefiles.sh fails for a component directory without a Makefile" \
   "$([ "$rc" -eq 1 ] && contains "$out" "v3/ios: no Makefile" && echo 0 || echo 1)" "rc=$rc $out"
 
+new_tree; t="$T"
+cp "$fixtures/Makefile.complete" "$t/Makefile"
+mkdir -p "$t/trd" "$t/clients/kotlin/build"
+cp "$fixtures/Makefile.complete" "$t/trd/Makefile"
+: > "$t/clients/kotlin/build/mason-desktop-results.xml"
+out="$(V3_ROOT="$t" bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
+expect "check-makefiles.sh passes when a component holds only build/ output" "$rc" "rc=$rc $out"
+
+new_tree; t="$T"
+cp "$fixtures/Makefile.complete" "$t/Makefile"
+mkdir -p "$t/trd" "$t/clients/kotlin/build"
+cp "$fixtures/Makefile.complete" "$t/trd/Makefile"
+: > "$t/clients/kotlin/build/mason-desktop-results.xml"
+: > "$t/clients/kotlin/notes.txt"
+out="$(V3_ROOT="$t" bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
+if [ "$rc" -eq 1 ] && contains "$out" "v3/clients/kotlin: no Makefile"; then
+  pass "check-makefiles.sh fails for build/ plus a stray file and no Makefile"
+else
+  fail "check-makefiles.sh fails for build/ plus a stray file and no Makefile" "rc=$rc $out"
+fi
+
 out="$(bash "$here/check-makefiles.sh" 2>&1)"; rc=$?
 expect "check-makefiles.sh passes for the real v3/Makefile" "$rc" "rc=$rc $out"
 
