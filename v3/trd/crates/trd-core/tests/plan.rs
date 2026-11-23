@@ -8,10 +8,12 @@
 //! Every test is inside `mod plan`, so `cargo test -p trd-core plan` selects them all. Fixtures
 //! live in the system temporary directory. The size probe runs a stand-in ffprobe: a `/bin/sh -c`
 //! script that prints the size or fails. It needs no built binary, so the tests run without any
-//! other crate being built first.
+//! other crate being built first. Tests that run the stand-in are `#[cfg(unix)]`, because
+//! Windows has no `/bin/sh`; the rest run everywhere.
 
 mod plan {
     use std::collections::BTreeMap;
+    #[cfg(unix)]
     use std::ffi::OsString;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -29,6 +31,7 @@ mod plan {
 
     const EXTENSIONS: [&str; 2] = ["tif", "tiff"];
     /// What the stand-in ffprobe prints for a 6000x4000 source.
+    #[cfg(unix)]
     const SOURCE_6000X4000: &str = "echo width=6000; echo height=4000";
 
     fn extensions() -> Vec<String> {
@@ -100,6 +103,7 @@ mod plan {
 
     /// A stand-in ffprobe: `/bin/sh -c <script>`. The probe's own arguments become the script's
     /// positional parameters, which the scripts ignore.
+    #[cfg(unix)]
     fn fake_ffprobe(script: &str) -> ToolCommand {
         ToolCommand {
             program: OsString::from("/bin/sh"),
@@ -531,6 +535,7 @@ mod plan {
 
     // MARK: - A2, A3: the source size
 
+    #[cfg(unix)]
     #[test]
     fn original_size_aspect_from_source() {
         let tmp = export_with_sequence("LRT_seq", 5, 1, 3);
@@ -562,6 +567,7 @@ mod plan {
         assert!(!args.contains(&"-filter_complex".to_owned()));
     }
 
+    #[cfg(unix)]
     #[test]
     fn width_only() {
         let tmp = export_with_sequence("LRT_seq", 5, 1, 3);
@@ -774,6 +780,36 @@ mod plan {
 
     #[test]
     fn probe_failure() {
+        // No ffprobe at all: the probe cannot run, which is the same failure as a broken one.
+        let tmp = export_with_sequence("LRT_seq", 5, 1, 3);
+        let export = export_path(&tmp);
+        let cfg = config();
+        let codecs = codecs::builtin();
+        let rt = render("ProResMQ", Some(vec![720]));
+        let data = data_dir(&tmp);
+        let frame = Path::new(&export).join("LRT_seq").join("LRT_00001.tiff");
+        let expected = format!("could not read the frame size of {}", frame.display());
+
+        let missing = tools(None);
+        let request = PlanRequest {
+            config: &cfg,
+            codecs: &codecs,
+            tools: &missing,
+            export_path: &export,
+            sequence_dir: "LRT_seq",
+            render: &rt,
+            data_dir: &data,
+            render_id: "render-4",
+            metadata: BTreeMap::new(),
+            total_frames: 3,
+        };
+        let error = plan_render(&request).expect_err("no frame size");
+        assert_eq!(not_queueable(&error), expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_failure_when_ffprobe_exits_non_zero() {
         let tmp = export_with_sequence("LRT_seq", 5, 1, 3);
         let export = export_path(&tmp);
         let cfg = config();
@@ -785,24 +821,20 @@ mod plan {
 
         // A stand-in ffprobe that reports an error and exits non-zero.
         let broken = tools(Some(fake_ffprobe("echo 'no such stream' >&2; exit 1")));
-        // And a tool that is not available at all.
-        let missing = tools(None);
-        for tools in [&broken, &missing] {
-            let request = PlanRequest {
-                config: &cfg,
-                codecs: &codecs,
-                tools,
-                export_path: &export,
-                sequence_dir: "LRT_seq",
-                render: &rt,
-                data_dir: &data,
-                render_id: "render-4",
-                metadata: BTreeMap::new(),
-                total_frames: 3,
-            };
-            let error = plan_render(&request).expect_err("no frame size");
-            assert_eq!(not_queueable(&error), expected);
-        }
+        let request = PlanRequest {
+            config: &cfg,
+            codecs: &codecs,
+            tools: &broken,
+            export_path: &export,
+            sequence_dir: "LRT_seq",
+            render: &rt,
+            data_dir: &data,
+            render_id: "render-4",
+            metadata: BTreeMap::new(),
+            total_frames: 3,
+        };
+        let error = plan_render(&request).expect_err("no frame size");
+        assert_eq!(not_queueable(&error), expected);
     }
 
     #[test]
@@ -866,6 +898,7 @@ mod plan {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn probe_size_reads_the_fake_ffprobe() {
         let tmp = tempfile::tempdir().expect("temporary directory");

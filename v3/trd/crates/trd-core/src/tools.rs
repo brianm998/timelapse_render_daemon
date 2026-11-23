@@ -406,6 +406,10 @@ pub fn run_bounded(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| format!("cannot start: {err}"))?;
+    // Drain both pipes while the child runs: a child that writes more than a pipe buffer holds
+    // would otherwise block forever and only be stopped by the timeout.
+    let stdout_reader = child.stdout.take().map(read_pipe_on_thread);
+    let stderr_reader = child.stderr.take().map(read_pipe_on_thread);
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
@@ -414,6 +418,8 @@ pub fn run_bounded(
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
+                    // The reader threads end on their own once the pipes close; they are not
+                    // joined, so a grandchild that keeps a pipe open cannot delay the error.
                     return Err(format!("did not finish within {} s", timeout.as_secs()));
                 }
                 thread::sleep(PROBE_POLL);
@@ -421,19 +427,29 @@ pub fn run_bounded(
             Err(err) => return Err(format!("cannot wait: {err}")),
         }
     };
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.read_to_end(&mut stdout);
-    }
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = pipe.read_to_end(&mut stderr);
-    }
+    let stdout = join_pipe(stdout_reader);
+    let stderr = join_pipe(stderr_reader);
     Ok(std::process::Output {
         status,
         stdout,
         stderr,
     })
+}
+
+/// Reads a child's pipe to its end on a thread, returning the bytes through the join handle.
+fn read_pipe_on_thread<R: Read + Send + 'static>(mut pipe: R) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        bytes
+    })
+}
+
+/// The bytes a reader thread collected; empty when there was no pipe or the thread panicked.
+fn join_pipe(reader: Option<thread::JoinHandle<Vec<u8>>>) -> Vec<u8> {
+    reader
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
