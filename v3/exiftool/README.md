@@ -13,25 +13,28 @@ as CI artifacts. Nothing here installs anything system-wide.
 | `EXIFTOOL_VERSION` | The newest production release on the day of the pin (`exiftool -ver` must print it). |
 | `EXIFTOOL_UNIX_URL` | `https://github.com/exiftool/exiftool/archive/refs/tags/<version>.tar.gz` (the GitHub tag archive). |
 | `EXIFTOOL_UNIX_SHA256` | SHA-256 of the file downloaded from `EXIFTOOL_UNIX_URL`. |
-| `EXIFTOOL_WINDOWS_URL` | `https://exiftool.org/exiftool-<version>_64.zip` (the official Windows build). |
+| `EXIFTOOL_WINDOWS_URL` | `https://sourceforge.net/projects/exiftool/files/exiftool-<version>_64.zip/download` (the official Windows build; exiftool.org keeps only the current development build). |
 | `EXIFTOOL_WINDOWS_SHA256` | SHA-256 of the file downloaded from `EXIFTOOL_WINDOWS_URL`. |
-| `EXIFTOOL_WINDOWS_MIRROR` | `https://sourceforge.net/projects/exiftool/files/exiftool-<version>_64.zip/download`, tried only when the primary download fails. |
+| `EXIFTOOL_WINDOWS_MIRROR` | `https://downloads.sourceforge.net/project/exiftool/exiftool-<version>_64.zip`, tried only when the primary download fails. |
 
 The checksums are taken from the downloaded files, never copied from a page. A download that does
 not match its checksum is refused, whether it came from the primary URL or the mirror.
 
-**Status:** `versions.env` is not pinned yet. Its values are empty, and `fetch.sh` exits 2 with
-"not pinned yet" until they are filled in. The pin needs the network, so it is done by hand (below).
+**Status:** pinned to 13.55, the production release of 2026-04-07. The pin needs the network, so it
+is done by hand (below).
 
 ## How to bump
 
-1. Find the newest production release on <https://exiftool.org/ver.txt> and check that the GitHub
-   tag `<version>` exists.
+1. Find the newest production release: the latest entry marked "(production release)" in
+   <https://exiftool.org/history.html>, or the version named in that page's "most recent
+   production release" note. (`ver.txt` and the home page's download link show the newest
+   development build, which is not it.) Check that the GitHub tag `<version>` exists.
 2. Download the two files, hash them and record the hashes:
 
    ```sh
    curl -fsSLO "https://github.com/exiftool/exiftool/archive/refs/tags/<version>.tar.gz"
-   curl -fsSLO "https://exiftool.org/exiftool-<version>_64.zip"
+   curl -fsSL -o "exiftool-<version>_64.zip" \
+     "https://sourceforge.net/projects/exiftool/files/exiftool-<version>_64.zip/download"
    sha256sum <version>.tar.gz exiftool-<version>_64.zip   # or: shasum -a 256 ...
    ```
 3. Update `versions.env` with the version, both URLs, both SHA-256 values and the mirror.

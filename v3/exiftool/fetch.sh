@@ -119,6 +119,9 @@ else
   else
     die "need unzip or 7z to extract $archive_name"
   fi
+  # The official zip stores exiftool_files/ read-only (dr-xr-xr-x). cp -p keeps that mode, and a
+  # read-only directory can neither be moved to another parent nor cleaned up by the EXIT trap.
+  chmod -R u+w "$stage"
   exe_src="$(find_one "$stage" 'exiftool(-k).exe')"
   if [ -z "$exe_src" ]; then exe_src="$(find_one "$stage" 'exiftool.exe')"; fi
   [ -n "$exe_src" ] || die "the archive has no exiftool(-k).exe"

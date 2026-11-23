@@ -28,3 +28,12 @@ No agent invents, copies or pre-fills the version, URLs or hashes.
   bundle has never been fetched or verified.
 
 Related: stage note `docs/stages/s986.md`.
+
+## Outcome (2026-11-22)
+
+Pinned to 13.55, the newest production release (2026-04-07). exiftool.org serves only the current
+development build (13.64 that day) and returns 404 for older zips, so the Windows primary URL is
+SourceForge and the mirror is SourceForge's direct-download host; spec §TRD-23 and the README were
+changed to match. Fetching the Windows bundle also showed that the zip's read-only
+`exiftool_files/` broke the final move on Unix hosts; `fetch.sh` now makes the extracted tree
+writable first. `exiftool-smoke` passes on the owner's Mac.
