@@ -83,6 +83,20 @@ fn write_fake_ffmpeg(dir: &Path, body: &str) -> PathBuf {
     path
 }
 
+/// Serializes the tests that write and run a fake ffmpeg. A child forked by one test while another
+/// test still has its script open for writing can hit ETXTBSY when it runs that script, so these
+/// tests take this lock for their whole body. Poisoning is ignored: a panic in one test must not
+/// block the rest.
+#[cfg(unix)]
+static FAKE_FFMPEG_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(unix)]
+fn fake_ffmpeg_guard() -> std::sync::MutexGuard<'static, ()> {
+    FAKE_FFMPEG_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// A fake ffmpeg that writes a JPEG to its output.
 #[cfg(unix)]
 const FFMPEG_WRITES_JPEG: &str = r#"printf '\377\330\377\340' > "$out""#;
@@ -133,6 +147,7 @@ fn writing_runner(calls: Arc<AtomicUsize>) -> Runner {
 #[cfg(unix)]
 #[test]
 fn thumbnail_written() {
+    let _lock = fake_ffmpeg_guard();
     let tmp = TempDir::new().expect("a temporary directory");
     let ffmpeg = write_fake_ffmpeg(&tmp.path().join("bin"), FFMPEG_WRITES_JPEG);
     let store = open_store(tmp.path());
@@ -161,6 +176,7 @@ fn thumbnail_written() {
 #[cfg(unix)]
 #[test]
 fn thumbnail_failure() {
+    let _lock = fake_ffmpeg_guard();
     let tmp = TempDir::new().expect("a temporary directory");
     let ffmpeg = write_fake_ffmpeg(&tmp.path().join("bin"), FFMPEG_FAILS);
     let store = open_store(tmp.path());
@@ -237,10 +253,12 @@ fn thumbnail_concurrency() {
         store.put_rendered_video(render).expect("store the row");
     }
 
+    // Shared references, so each spawned closure can own a copy of them.
+    let (thumbnailer, store) = (&thumbnailer, &store);
     thread::scope(|scope| {
         let handles: Vec<_> = videos
             .iter()
-            .map(|render| scope.spawn(|| thumbnailer.make(&store, render, NOW)))
+            .map(|render| scope.spawn(move || thumbnailer.make(store, render, NOW)))
             .collect();
         for handle in handles {
             assert!(handle.join().expect("no panic").expect("make"));
