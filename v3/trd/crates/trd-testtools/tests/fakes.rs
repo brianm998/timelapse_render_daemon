@@ -372,6 +372,26 @@ fn exiftool_write_succeeds_by_default() {
     assert!(out.stdout.is_empty());
 }
 
+/// The bash that runs `fake-tools-dir.sh`. On Windows a bare `bash` finds WSL's launcher in
+/// `System32` first, which fails on runners without a WSL distribution, so the test uses Git for
+/// Windows' bash: `TRD_TEST_BASH` if set, else `<ProgramFiles>\Git\bin\bash.exe`, else `bash`.
+fn bash_program() -> PathBuf {
+    if let Some(bash) = std::env::var_os("TRD_TEST_BASH") {
+        return PathBuf::from(bash);
+    }
+    if cfg!(windows) {
+        for var in ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
+            if let Some(dir) = std::env::var_os(var) {
+                let candidate = PathBuf::from(dir).join("Git").join("bin").join("bash.exe");
+                if candidate.is_file() {
+                    return candidate;
+                }
+            }
+        }
+    }
+    PathBuf::from("bash")
+}
+
 #[test]
 fn fake_tools_dir_resolves() {
     let root = tempfile::tempdir().unwrap();
@@ -383,7 +403,7 @@ fn fake_tools_dir_resolves() {
         env!("CARGO_MANIFEST_DIR"),
         "/../../scripts/fake-tools-dir.sh"
     );
-    let status = Command::new("bash")
+    let status = Command::new(bash_program())
         .arg(script)
         .arg(&dest)
         .env("TRD_FAKE_BIN_DIR", bin_dir)
