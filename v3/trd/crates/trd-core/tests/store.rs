@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tracing::field::{Field, Visit};
 use tracing::{Event, Subscriber};
@@ -16,6 +16,15 @@ use trd_core::store::{
     DAY_MS, Device, ExifCacheEntry, Failure, JobStatus, LogFields, LogLevel, RenderJob,
     RenderedVideo, Store, SuspendedBy, log_event,
 };
+
+/// Serialises the tests that emit `tracing` events. `tracing` caches each callsite's interest
+/// process-wide: a callsite hit while no subscriber is installed (on another test thread) is
+/// cached as "never", and then a captured subscriber on a different thread would miss it.
+static TRACE_LOCK: Mutex<()> = Mutex::new(());
+
+fn trace_guard() -> MutexGuard<'static, ()> {
+    TRACE_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Opens a store at `dir/<name>/trd.sqlite3`, so the parent directory is created too.
 fn open_store(dir: &Path) -> Store {
@@ -260,6 +269,7 @@ fn store_migrates_and_round_trips() {
 
 #[test]
 fn log_seq_survives_reopen() {
+    let _trace = trace_guard();
     let dir = tempfile::tempdir().unwrap();
     let fields = LogFields::default();
 
@@ -400,6 +410,7 @@ impl<S: Subscriber> Layer<S> for Captured {
 
 #[test]
 fn log_event_writes_both() {
+    let _trace = trace_guard();
     let dir = tempfile::tempdir().unwrap();
     let store = open_store(dir.path());
     let mut live = store.subscribe_logs();
