@@ -266,10 +266,11 @@ impl Drop for BackupRun {
 pub struct Scanner {
     inner: Arc<Inner>,
     path_timeout: Duration,
+    size_timeout: Duration,
 }
 
 impl Scanner {
-    /// A scanner over `fs`, timing with `clock`, with the 10 s path timeout.
+    /// A scanner over `fs`, timing with `clock`, with the 10 s path and 60 s size timeouts.
     pub fn new(fs: Arc<dyn ScanFs>, clock: Arc<dyn Clock>) -> Self {
         Scanner {
             inner: Arc::new(Inner {
@@ -279,12 +280,19 @@ impl Scanner {
                 backup_running: AtomicBool::new(false),
             }),
             path_timeout: PATH_TIMEOUT,
+            size_timeout: SIZE_TIMEOUT,
         }
     }
 
     /// Replaces the per-path listing timeout.
     pub fn with_path_timeout(mut self, timeout: Duration) -> Self {
         self.path_timeout = timeout;
+        self
+    }
+
+    /// Replaces the per-measurement size timeout.
+    pub fn with_size_timeout(mut self, timeout: Duration) -> Self {
+        self.size_timeout = timeout;
         self
     }
 
@@ -498,26 +506,41 @@ impl Scanner {
         };
 
         let permits = Arc::new(Semaphore::new(SIZE_CONCURRENCY));
-        let mut handles = Vec::new();
+        let limit = self.size_timeout;
+        let mut tasks = Vec::new();
         for path in due {
-            let Ok(permit) = permits.clone().acquire_owned().await else {
-                break;
-            };
             let inner = self.inner.clone();
-            handles.push(tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                let bytes = inner.fs.size(Path::new(&path)).ok().map(|b| b as i64);
-                let mut guard = lock(&inner.state);
-                if let Some(entry) = guard.sizes.get_mut(&path) {
-                    if bytes.is_some() {
-                        entry.bytes = bytes;
+            let permits = permits.clone();
+            tasks.push(tokio::spawn(async move {
+                // The slot is held here on the async side, never by the blocking thread. A
+                // measurement that outlives `limit` gives its slot back; its thread stays blocked
+                // until `size` returns, holding nothing but its own captured path.
+                let permit = permits
+                    .acquire_owned()
+                    .await
+                    .expect("size semaphore is never closed");
+                let job_inner = inner.clone();
+                let job_path = path.clone();
+                let handle = tokio::task::spawn_blocking(move || {
+                    let bytes = job_inner
+                        .fs
+                        .size(Path::new(&job_path))
+                        .ok()
+                        .map(|b| b as i64);
+                    let mut guard = lock(&job_inner.state);
+                    if let Some(entry) = guard.sizes.get_mut(&job_path) {
+                        if bytes.is_some() {
+                            entry.bytes = bytes;
+                        }
+                        entry.in_flight = false;
                     }
-                    entry.in_flight = false;
-                }
+                });
+                let _ = timeout(limit, handle).await;
+                drop(permit);
             }));
         }
-        for handle in handles {
-            let _ = timeout(SIZE_TIMEOUT, handle).await;
+        for task in tasks {
+            let _ = task.await;
         }
     }
 

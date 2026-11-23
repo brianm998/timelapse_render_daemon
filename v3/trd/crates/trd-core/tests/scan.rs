@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Timelapse Render Daemon contributors
 
-//! Sequence scanner tests (§6.3) over a fake filesystem with an injected clock. No test sleeps:
-//! the only real time is the path timeout in the two tests that hang a listing on purpose.
+//! Sequence scanner tests (§6.3) over a fake filesystem with an injected clock. No test sleeps.
+//! The only real time is the hang guards of the three tests that block a listing or a size on
+//! purpose: each waits 30 s, the lowest guard the test rules allow, and the fast paths finish
+//! well inside it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;
@@ -50,6 +52,7 @@ struct Fake {
     files: Mutex<BTreeMap<String, Vec<u8>>>,
     lists: Mutex<HashMap<String, usize>>,
     gates: Mutex<HashMap<String, Arc<Gate>>>,
+    size_gates: Mutex<HashMap<String, Arc<Gate>>>,
     size_calls: AtomicUsize,
     active: AtomicUsize,
     peak: AtomicUsize,
@@ -131,6 +134,16 @@ impl Fake {
         gate
     }
 
+    /// Makes size measurements of `dir` block until the returned gate is released.
+    fn block_size(&self, dir: &str) -> Arc<Gate> {
+        let gate = Arc::new(Gate::default());
+        self.size_gates
+            .lock()
+            .unwrap()
+            .insert(dir.to_owned(), gate.clone());
+        gate
+    }
+
     fn lists_of(&self, dir: &str) -> usize {
         self.lists.lock().unwrap().get(dir).copied().unwrap_or(0)
     }
@@ -164,6 +177,10 @@ impl ScanFs for Fake {
         self.size_calls.fetch_add(1, Ordering::SeqCst);
         let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.peak.fetch_max(now, Ordering::SeqCst);
+        let gate = self.size_gates.lock().unwrap().get(&key(dir)).cloned();
+        if let Some(gate) = gate {
+            gate.wait();
+        }
         let size = self
             .dirs
             .lock()
@@ -251,7 +268,7 @@ async fn slow_path_does_not_block() {
     fake.subdir("/fake/exp", "R1_x");
     fake.file("/fake/exp/R1_x", "x.tif");
 
-    let scanner = scanner(&fake, &clock).with_path_timeout(Duration::from_secs(1));
+    let scanner = scanner(&fake, &clock).with_path_timeout(Duration::from_secs(30));
     let result = scanner
         .scan(&config(
             &strings(&["/fake/src", "/fake/slow"]),
@@ -277,7 +294,7 @@ async fn in_flight_path_not_relisted() {
     fake.file("/fake/slow/R", "r.ARW");
     let gate = fake.block("/fake/slow");
 
-    let scanner = scanner(&fake, &clock).with_path_timeout(Duration::from_secs(1));
+    let scanner = scanner(&fake, &clock).with_path_timeout(Duration::from_secs(30));
     let cfg = config(&strings(&["/fake/slow"]), &[]);
 
     let first = scanner.scan(&cfg).await;
@@ -618,6 +635,54 @@ async fn export_size_measurement() {
     scanner.measure_sizes().await;
     assert_eq!(fake.size_calls.load(Ordering::SeqCst), 6);
     assert!(fake.peak.load(Ordering::SeqCst) <= 2);
+}
+
+#[tokio::test]
+async fn size_hang_does_not_stall() {
+    let (fake, clock) = setup();
+    fake.dir("/fake/src");
+    for raw in ["S1", "S2", "S3"] {
+        fake.subdir("/fake/src", raw);
+        fake.file(&format!("/fake/src/{raw}"), "f0.ARW");
+        fake.file(&format!("/fake/src/{raw}"), "f1.ARW");
+        fake.file(&format!("/fake/src/{raw}"), "f2.ARW");
+    }
+    fake.dir("/fake/exp");
+    for name in ["S1_x", "S2_x", "S3_x"] {
+        fake.subdir("/fake/exp", name);
+        fake.file(&format!("/fake/exp/{name}"), "o.tif");
+        fake.set_size(&format!("/fake/exp/{name}"), 4096);
+    }
+    // The first two measurements hang: with two slots they hold every slot.
+    let hung_1 = fake.block_size("/fake/exp/S1_x");
+    let hung_2 = fake.block_size("/fake/exp/S2_x");
+    let scanner = scanner(&fake, &clock).with_size_timeout(Duration::from_secs(30));
+    let cfg = config(&strings(&["/fake/src"]), &strings(&["/fake/exp"]));
+    scanner.scan(&cfg).await;
+
+    // The third sequence still gets measured once a hung measurement gives its slot back.
+    scanner.measure_sizes().await;
+    assert_eq!(
+        fake.size_calls.load(Ordering::SeqCst),
+        3,
+        "every due sequence was attempted"
+    );
+
+    let measured = scanner.scan(&cfg).await;
+    let size_of = |name: &str| {
+        measured
+            .exports
+            .iter()
+            .find(|e| e.name == name)
+            .expect("export found")
+            .export_size
+    };
+    assert_eq!(size_of("S3_x"), 4096);
+    assert_eq!(size_of("S1_x"), -1, "a hung measurement reports nothing");
+    assert_eq!(size_of("S2_x"), -1, "a hung measurement reports nothing");
+
+    hung_1.release();
+    hung_2.release();
 }
 
 #[tokio::test]
