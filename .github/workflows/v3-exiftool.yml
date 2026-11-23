@@ -1,0 +1,92 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+#
+# ExifTool bundles (spec 1 §9.3, TRD-23): fetch the pinned ExifTool, check its SHA-256, smoke-test
+# it on Linux, macOS (with /usr/bin/perl) and Windows (under Git Bash), and publish the Unix and
+# Windows bundles as artifacts.
+name: v3-exiftool
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: [develop]
+    paths:
+      - 'v3/exiftool/**'
+      - '.github/workflows/v3-exiftool.yml'
+  pull_request:
+    branches: [develop]
+    paths:
+      - 'v3/exiftool/**'
+      - '.github/workflows/v3-exiftool.yml'
+
+concurrency:
+  group: v3-exiftool-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  unix:
+    name: unix (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cache the Unix bundle
+        id: cache
+        uses: actions/cache@v5
+        with:
+          path: v3/exiftool/dist/unix
+          key: v3-exiftool-unix-${{ hashFiles('v3/exiftool/versions.env', 'v3/exiftool/fetch.sh') }}
+      - name: Fetch the Unix bundle
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bash v3/exiftool/fetch.sh unix v3/exiftool/dist/unix
+      - name: Smoke test
+        run: bash v3/exiftool/smoke_test.sh v3/exiftool/dist/unix
+      - name: Upload the Unix bundle
+        uses: actions/upload-artifact@v6
+        with:
+          name: v3-exiftool-unix
+          path: v3/exiftool/dist/unix
+          if-no-files-found: error
+
+  unix-macos:
+    name: unix (macos-15)
+    runs-on: macos-15
+    needs: unix
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download the Unix bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: v3-exiftool-unix
+          path: v3/exiftool/dist/unix
+      - name: Smoke test with /usr/bin/perl
+        run: bash v3/exiftool/smoke_test.sh v3/exiftool/dist/unix
+
+  windows:
+    name: windows (windows-2022)
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cache the Windows bundle
+        id: cache
+        uses: actions/cache@v5
+        with:
+          path: v3/exiftool/dist/windows
+          key: v3-exiftool-windows-${{ hashFiles('v3/exiftool/versions.env', 'v3/exiftool/fetch.sh') }}
+      - name: Fetch the Windows bundle
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bash v3/exiftool/fetch.sh windows v3/exiftool/dist/windows
+      - name: Smoke test under Git Bash
+        run: bash v3/exiftool/smoke_test.sh v3/exiftool/dist/windows
+      - name: Upload the Windows bundle
+        uses: actions/upload-artifact@v6
+        with:
+          name: v3-exiftool-windows
+          path: v3/exiftool/dist/windows
+          if-no-files-found: error
