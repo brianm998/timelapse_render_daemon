@@ -1596,7 +1596,6 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "trd-testtools",
  "uuid",
  "windows-sys 0.59.0",
 ]

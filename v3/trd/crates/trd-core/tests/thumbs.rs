@@ -2,14 +2,15 @@
 // Copyright (C) 2026 Timelapse Render Daemon contributors
 
 //! Thumbnails (§6.16), the Swift history import (§6.17) and the history retention that deletes
-//! thumbnails (§6.13). Every database and fixture lives in a temporary directory; the fake ffmpeg
-//! comes from trd-testtools, and no test touches the owner's data or a port.
+//! thumbnails (§6.13). Every database and fixture lives in a temporary directory. The fake ffmpeg
+//! is a small `sh` script written into that directory, so the tests need no binaries built by
+//! another package and touch no owner data or port. The `thumbnail_written` and
+//! `thumbnail_failure` tests need `sh` and so run on Unix only.
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -23,12 +24,11 @@ use trd_core::thumbs::{
     Runner, THUMBNAILS_DIR, Thumbnailer, ensure_thumbnail, prune_history, thumbnail_args,
 };
 use trd_core::tools::ToolCommand;
-use trd_testtools::FakeTools;
 
 /// 2023-11-14T22:13:20Z in milliseconds.
 const NOW: i64 = 1_700_000_000_000;
-/// How long a fake thumbnail stays in flight, so that overlapping runs would show.
-const HOLD: Duration = Duration::from_millis(20);
+/// The longest a run waits for its partner in [`Rendezvous`]. It only guards against a hang.
+const DEADLINE: Duration = Duration::from_secs(30);
 
 fn open_store(dir: &Path) -> Store {
     Store::open(&dir.join("trd.sqlite3")).expect("open the store")
@@ -65,25 +65,56 @@ fn output_of(args: &[String]) -> &str {
     args.last().expect("ffmpeg is given an output")
 }
 
-/// A runner that runs the fake ffmpeg with `script` in its environment for that one command.
-fn fake_runner(tools: &FakeTools, script: Value) -> Runner {
-    let ffmpeg = tools.path().join("ffmpeg");
-    Box::new(move |args| {
-        let output = Command::new(&ffmpeg)
-            .env("TRD_FAKE_FFMPEG", script.to_string())
-            .args(args)
-            .output()
-            .map_err(|err| err.to_string())?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "exit {:?}: {}",
-                output.status.code(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            ))
+/// Writes an executable `ffmpeg` script into `dir` whose body runs after the output argument is
+/// found: the last argument of the command (§6.16 puts the output last).
+#[cfg(unix)]
+fn write_fake_ffmpeg(dir: &Path, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::create_dir_all(dir).expect("the fake tools folder");
+    let path = dir.join("ffmpeg");
+    fs::write(&path, format!("#!/bin/sh\nfor out; do :; done\n{body}\n")).expect("the fake ffmpeg");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("make it executable");
+    path
+}
+
+/// A fake ffmpeg that writes a JPEG to its output.
+#[cfg(unix)]
+const FFMPEG_WRITES_JPEG: &str = r#"printf '\377\330\377\340' > "$out""#;
+
+/// A fake ffmpeg that writes a partial file to its output, reports on stderr and exits 1.
+#[cfg(unix)]
+const FFMPEG_FAILS: &str = r#"printf 'partial' > "$out"; echo 'Invalid data found' >&2; exit 1"#;
+
+/// Two runs that wait for each other, so that a test can see them in flight together without any
+/// sleep. A run whose partner never arrives panics after [`DEADLINE`] instead of hanging.
+struct Rendezvous {
+    arrived: Mutex<usize>,
+    all: Condvar,
+}
+
+impl Rendezvous {
+    fn new() -> Rendezvous {
+        Rendezvous {
+            arrived: Mutex::new(0),
+            all: Condvar::new(),
         }
-    })
+    }
+
+    /// Counts this run and waits until two runs have arrived. Later runs pass straight through.
+    fn meet(&self) {
+        let mut arrived = self.arrived.lock().expect("the rendezvous lock");
+        *arrived += 1;
+        self.all.notify_all();
+        let (_arrived, timeout) = self
+            .all
+            .wait_timeout_while(arrived, DEADLINE, |count| *count < 2)
+            .expect("the rendezvous wait");
+        assert!(
+            !timeout.timed_out(),
+            "no second run reached the rendezvous: the gate let fewer than two run at once"
+        );
+    }
 }
 
 /// A runner that writes the output file and counts its calls.
@@ -94,10 +125,11 @@ fn writing_runner(calls: Arc<AtomicUsize>) -> Runner {
     })
 }
 
+#[cfg(unix)]
 #[test]
 fn thumbnail_written() {
     let tmp = TempDir::new().expect("a temporary directory");
-    let tools = FakeTools::new().expect("the fake tools");
+    let ffmpeg = write_fake_ffmpeg(&tmp.path().join("bin"), FFMPEG_WRITES_JPEG);
     let store = open_store(tmp.path());
     let data = tmp.path().join("data");
     let render = video(tmp.path(), "render-1", NOW);
@@ -105,8 +137,7 @@ fn thumbnail_written() {
     store.put_rendered_video(&render).expect("store the row");
 
     // The real command path: the fake ffmpeg writes the poster frame it is asked for.
-    let thumbnailer =
-        Thumbnailer::with_tool(&data, ToolCommand::direct(&tools.path().join("ffmpeg")));
+    let thumbnailer = Thumbnailer::with_tool(&data, ToolCommand::direct(&ffmpeg));
     assert!(thumbnailer.make(&store, &render, NOW).expect("make"));
 
     let thumb = thumbnailer.path_for("render-1");
@@ -122,10 +153,11 @@ fn thumbnail_written() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn thumbnail_failure() {
     let tmp = TempDir::new().expect("a temporary directory");
-    let tools = FakeTools::new().expect("the fake tools");
+    let ffmpeg = write_fake_ffmpeg(&tmp.path().join("bin"), FFMPEG_FAILS);
     let store = open_store(tmp.path());
     let data = tmp.path().join("data");
     let render = video(tmp.path(), "render-2", NOW);
@@ -133,8 +165,7 @@ fn thumbnail_failure() {
     store.put_rendered_video(&render).expect("store the row");
 
     // The fake writes its output and then exits 1: the partial file must not survive.
-    let script = json!({"exit_code": 1, "stderr_lines": ["Invalid data found"]});
-    let thumbnailer = Thumbnailer::new(&data, fake_runner(&tools, script));
+    let thumbnailer = Thumbnailer::with_tool(&data, ToolCommand::direct(&ffmpeg));
     assert!(!thumbnailer.make(&store, &render, NOW).expect("make"));
 
     let stored = store
@@ -177,15 +208,16 @@ fn thumbnail_concurrency() {
     let store = open_store(tmp.path());
     let data = tmp.path().join("data");
     let counters = Arc::new(Counters::default());
+    // The first two runs wait for each other, so they are known to overlap; no timing is involved.
+    let rendezvous = Arc::new(Rendezvous::new());
 
     let shared = Arc::clone(&counters);
+    let met = Arc::clone(&rendezvous);
     let runner: Runner = Box::new(move |args| {
         shared.calls.fetch_add(1, Ordering::SeqCst);
         let now = shared.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
         shared.peak.fetch_max(now, Ordering::SeqCst);
-        // Stay in flight a moment so that overlapping runs would be seen. The gate alone keeps
-        // the peak at two; this sleep is not an assertion on timing.
-        thread::sleep(HOLD);
+        met.meet();
         let result = fs::write(output_of(args), b"jpeg").map_err(|err| err.to_string());
         shared.in_flight.fetch_sub(1, Ordering::SeqCst);
         result
@@ -211,9 +243,8 @@ fn thumbnail_concurrency() {
     });
 
     assert_eq!(counters.calls.load(Ordering::SeqCst), 6);
-    assert_eq!(
-        counters.peak.load(Ordering::SeqCst),
-        2,
+    assert!(
+        counters.peak.load(Ordering::SeqCst) <= 2,
         "two thumbnails run at once, never more"
     );
 }
@@ -455,6 +486,18 @@ fn thumbnail_args_match_spec() {
         "/d/thumbnails/render-1.jpg",
     ];
     assert_eq!(args, expected);
+}
+
+#[test]
+fn thumbnail_args_first_frame_without_duration() {
+    // An imported row has no duration, so its poster frame is the first frame (a deliberate
+    // deviation from duration/2, recorded in §6.16 and on thumbnail_args).
+    let args = thumbnail_args(
+        Path::new("/d/render.mov"),
+        0.0,
+        Path::new("/d/thumbnails/render-1.jpg"),
+    );
+    assert_eq!(args[6], "0.000");
 }
 
 #[test]

@@ -33,4 +33,3 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_
 
 [dev-dependencies]
 tempfile = { workspace = true }
-trd-testtools = { path = "../trd-testtools" }
