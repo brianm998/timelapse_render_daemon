@@ -2,9 +2,8 @@
 // Copyright (C) 2026 Timelapse Render Daemon contributors
 
 //! Sequence scanner tests (§6.3) over a fake filesystem with an injected clock. No test sleeps.
-//! The only real time is the hang guards of the four tests that block a listing or a size on
-//! purpose: each waits at most 30 s, the lowest guard the test rules allow, and the fast paths
-//! finish well inside it.
+//! The only real time is the hang guards of the tests that block a listing or a size on purpose:
+//! each waits at most 30 s, and a blocked call is released when its test ends, pass or fail.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;
@@ -43,6 +42,23 @@ impl Gate {
     }
 }
 
+/// The test's hold on a gate. Dropping it releases the gate, so a test that panics before its
+/// explicit `release()` still frees the blocked listing and the runtime can shut down. The
+/// blocked thread is not bounded by a timer: a timer would race the scanner's own path timeout.
+struct GateHandle(Arc<Gate>);
+
+impl GateHandle {
+    fn release(&self) {
+        self.0.release();
+    }
+}
+
+impl Drop for GateHandle {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
 #[derive(Clone)]
 struct FakeDir {
     mtime: SystemTime,
@@ -63,8 +79,14 @@ struct Fake {
     peak: AtomicUsize,
 }
 
+/// Normalises a path to `/` separators. The scanner joins paths with `Path::join`, which uses `\`
+/// on Windows, so every key the fake stores or looks up goes through here.
+fn norm(s: &str) -> String {
+    s.replace('\\', "/")
+}
+
 fn key(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+    norm(&path.to_string_lossy())
 }
 
 fn at(secs: u64) -> SystemTime {
@@ -76,7 +98,7 @@ impl Fake {
         self.dirs
             .lock()
             .unwrap()
-            .entry(path.to_owned())
+            .entry(norm(path))
             .or_insert(FakeDir {
                 mtime: at(1),
                 items: Vec::new(),
@@ -87,7 +109,7 @@ impl Fake {
     /// Adds an entry to `dir` and bumps its mtime, as a real change would.
     fn child(&self, dir: &str, name: &str, is_dir: bool, is_regular_file: bool) {
         let mut dirs = self.dirs.lock().unwrap();
-        let d = dirs.get_mut(dir).expect("parent directory exists");
+        let d = dirs.get_mut(&norm(dir)).expect("parent directory exists");
         d.items.push(DirItem {
             name: name.to_owned(),
             is_dir,
@@ -109,7 +131,7 @@ impl Fake {
     /// entry's own directory keeps its mtime, so it looks unchanged if it comes back.
     fn remove_child(&self, dir: &str, name: &str) {
         let mut dirs = self.dirs.lock().unwrap();
-        let d = dirs.get_mut(dir).expect("parent directory exists");
+        let d = dirs.get_mut(&norm(dir)).expect("parent directory exists");
         d.items.retain(|i| i.name != name);
         d.mtime += Duration::from_secs(1);
     }
@@ -125,41 +147,43 @@ impl Fake {
         self.files
             .lock()
             .unwrap()
-            .insert(format!("{dir}/{name}"), body.as_bytes().to_vec());
+            .insert(norm(&format!("{dir}/{name}")), body.as_bytes().to_vec());
     }
 
     fn touch(&self, dir: &str) {
         let mut dirs = self.dirs.lock().unwrap();
-        dirs.get_mut(dir).expect("directory exists").mtime += Duration::from_secs(1);
+        dirs.get_mut(&norm(dir)).expect("directory exists").mtime += Duration::from_secs(1);
     }
 
     fn set_size(&self, dir: &str, bytes: u64) {
         let mut dirs = self.dirs.lock().unwrap();
-        dirs.get_mut(dir).expect("directory exists").size = bytes;
+        dirs.get_mut(&norm(dir)).expect("directory exists").size = bytes;
     }
 
     /// Makes listings of `dir` block until the returned gate is released.
-    fn block(&self, dir: &str) -> Arc<Gate> {
+    fn block(&self, dir: &str) -> GateHandle {
         let gate = Arc::new(Gate::default());
-        self.gates
-            .lock()
-            .unwrap()
-            .insert(dir.to_owned(), gate.clone());
-        gate
+        self.gates.lock().unwrap().insert(norm(dir), gate.clone());
+        GateHandle(gate)
     }
 
     /// Makes size measurements of `dir` block until the returned gate is released.
-    fn block_size(&self, dir: &str) -> Arc<Gate> {
+    fn block_size(&self, dir: &str) -> GateHandle {
         let gate = Arc::new(Gate::default());
         self.size_gates
             .lock()
             .unwrap()
-            .insert(dir.to_owned(), gate.clone());
-        gate
+            .insert(norm(dir), gate.clone());
+        GateHandle(gate)
     }
 
     fn lists_of(&self, dir: &str) -> usize {
-        self.lists.lock().unwrap().get(dir).copied().unwrap_or(0)
+        self.lists
+            .lock()
+            .unwrap()
+            .get(&norm(dir))
+            .copied()
+            .unwrap_or(0)
     }
 }
 
