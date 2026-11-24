@@ -34,7 +34,9 @@ mod queue {
     use trd_core::plan;
     use trd_core::queue::{Ctx, Renders, SWEEP_INTERVAL_MS};
     use trd_core::scan::{ExportSequence, RawSequence, ScanResult};
-    use trd_core::store::{Failure, JobStatus, LogLevel, LogRow, RenderJob, Store, SuspendedBy};
+    use trd_core::store::{
+        Failure, JobStatus, LogLevel, LogRow, RenderJob, RenderedVideo, Store, SuspendedBy,
+    };
     use trd_core::thumbs::Thumbnailer;
     use trd_core::tools::{ResolvedTool, ToolCommand, ToolInfo, Tools};
     use trd_testtools::FakeTools;
@@ -503,10 +505,40 @@ mod queue {
         setup.processes = 1;
         let mut w = World::new(setup);
         w.add_sequence("seqA");
+        // An older TRD row of variant 0, as a render from before a restart leaves behind. It must
+        // not be counted as a second video of that variant.
+        let older = RenderedVideo {
+            id: "older-render".to_owned(),
+            rendered_at: 1,
+            sequence_name: "seqA".to_owned(),
+            export_path: w.export.to_string_lossy().into_owned(),
+            output_filename: "older.mov".to_owned(),
+            output_path: w.export.join("older.mov").to_string_lossy().into_owned(),
+            variant_key: w.key(0),
+            codec: "ProRes".to_owned(),
+            resolution_label: "720p".to_owned(),
+            frame_rate: 25,
+            frame_count: 3,
+            size_bytes: 1_000_000,
+            width: 1280,
+            height: 720,
+            duration_seconds: 0.1,
+            render_seconds: 0.1,
+            thumbnail_path: None,
+            xmp_embedded: false,
+            source: "TRD".to_owned(),
+        };
+        w.store.put_rendered_video(&older).expect("an older row");
         w.scan(&["seqA"]);
         w.drive(|w| !w.in_flight());
 
-        let videos = w.store.rendered_videos().expect("the history");
+        let videos: Vec<RenderedVideo> = w
+            .store
+            .rendered_videos()
+            .expect("the history")
+            .into_iter()
+            .filter(|video| video.id != "older-render")
+            .collect();
         assert_eq!(videos.len(), 2, "one history row per variant");
         for video in &videos {
             assert_eq!(video.source, "TRD");
@@ -528,7 +560,11 @@ mod queue {
             "only the last variant finishes the sequence"
         );
         let total: i64 = videos.iter().map(|video| video.size_bytes).sum();
-        assert_eq!(finished[0].fields.video_count, Some(2));
+        assert_eq!(
+            finished[0].fields.video_count,
+            Some(2),
+            "one video per variant, the older row not counted"
+        );
         assert_eq!(finished[0].fields.total_bytes, Some(total));
     }
 
@@ -1212,6 +1248,22 @@ mod queue {
             "FAILED_PRECONDITION",
         );
         control(&mut w, |w| w.renders.resume_sequence(&mut ctx!(w), "seqA")).expect("resume seqA");
+        w.scan(&["seqA"]);
+        let queued = w.only_in_flight("seqA", &key1);
+        assert!(
+            matches!(queued.status, JobStatus::Queued),
+            "the second variant waits in the queue"
+        );
+        control(&mut w, |w| w.renders.stop_render(&mut ctx!(w), &queued.id)).expect("stop queued");
+        let paused = w
+            .config
+            .config()
+            .expect("the config")
+            .paused_variants
+            .iter()
+            .any(|p| p.variant_key == key1);
+        assert!(paused, "stop pauses the variant");
+        control(&mut w, |w| w.renders.retry(&mut ctx!(w), "seqA", &key1)).expect("retry key1");
         assert_code(
             control(&mut w, |w| w.renders.stop_render(&mut ctx!(w), &running.id)),
             "FAILED_PRECONDITION",
@@ -1221,33 +1273,51 @@ mod queue {
             "NOT_FOUND",
         );
         assert_code(
-            control(&mut w, |w| w.renders.retry(&mut ctx!(w), "seqA", &key1)),
+            control(&mut w, |w| w.renders.retry(&mut ctx!(w), "seqA", &key0)),
             "FAILED_PRECONDITION",
+        );
+        assert_code(
+            control(&mut w, |w| w.renders.pause_sequence(&mut ctx!(w), "nope")),
+            "NOT_FOUND",
+        );
+        assert_code(
+            control(&mut w, |w| w.renders.resume_sequence(&mut ctx!(w), "nope")),
+            "NOT_FOUND",
         );
         let rescanned = control(&mut w, |w| w.renders.rescan_now(&mut ctx!(w))).expect("rescan");
         assert!(rescanned.rescan);
 
         w.release();
         drain(&mut w);
-        let infos = w.control_rows();
-        assert!(
-            infos >= 10,
-            "every applied control wrote its row, {infos} in all"
-        );
-        let messages: Vec<String> = w
+        let rows: Vec<(LogLevel, String)> = w
             .log_rows()
             .into_iter()
             .filter(|row| row.subject == "controls")
-            .map(|row| row.message)
+            .map(|row| (row.level, row.message))
             .collect();
-        assert!(messages.iter().any(|m| m.contains("pause all rendering")));
-        assert!(
-            messages
-                .iter()
-                .any(|m| m.contains("dismiss failure card-1"))
+        let expected = vec![
+            "pause all rendering".to_owned(),
+            "resume all rendering".to_owned(),
+            format!("suspend render {}", running.id),
+            format!("resume render {}", running.id),
+            "dismiss failure card-1".to_owned(),
+            format!("pause variant seqA/{key1}"),
+            format!("resume variant seqA/{key1}"),
+            "pause sequence seqA".to_owned(),
+            "resume sequence seqA".to_owned(),
+            format!("stop render {}", queued.id),
+            format!("retry seqA/{key1}"),
+            "rescan now".to_owned(),
+        ];
+        let got: Vec<String> = rows.iter().map(|(_, message)| message.clone()).collect();
+        assert_eq!(
+            got, expected,
+            "one row per applied control, in order, naming its action and target"
         );
-        assert!(messages.iter().any(|m| m.contains("pause variant seqA/")));
-        assert!(messages.iter().any(|m| m.contains("rescan now")));
+        assert!(
+            rows.iter().all(|(level, _)| *level == LogLevel::Info),
+            "every control row is INFO"
+        );
     }
 
     fn assert_code<T: std::fmt::Debug>(result: Result<T, ControlError>, code: &str) {

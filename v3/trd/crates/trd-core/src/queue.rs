@@ -15,7 +15,7 @@
 //! is not paused and its histogram is known. A failure card (§6.9) blocks requeueing its output
 //! until the card is dismissed or retried.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -75,6 +75,8 @@ pub struct Renders {
     pub(crate) histograms: BTreeMap<String, Histogram>,
     /// When each sequence was first sighted (ms), from the engine (§6.7 promotion order).
     pub(crate) first_seen: BTreeMap<String, i64>,
+    /// The export sequences of the last scan, by name. The sequence controls check against it.
+    pub(crate) known_sequences: BTreeSet<String>,
     /// When each complete sequence was first seen complete, by sequence name.
     pub(crate) complete_since: BTreeMap<String, i64>,
     /// When the next sweep of stale partial files is due.
@@ -91,6 +93,7 @@ impl Renders {
             running: BTreeMap::new(),
             histograms: BTreeMap::new(),
             first_seen: BTreeMap::new(),
+            known_sequences: BTreeSet::new(),
             complete_since: BTreeMap::new(),
             next_sweep_ms: None,
         }
@@ -155,6 +158,7 @@ impl Renders {
         first_seen: &BTreeMap<String, i64>,
     ) -> StoreResult<usize> {
         self.first_seen = first_seen.clone();
+        self.known_sequences = scan.exports.iter().map(|seq| seq.name.clone()).collect();
         let Some(config) = ctx.config.config().cloned() else {
             return Ok(0);
         };

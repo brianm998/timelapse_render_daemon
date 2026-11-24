@@ -8,6 +8,7 @@
 //! thumbnail, the events, delete-after-render and the cleanup of the progress file and old logs.
 //! [`sweep_stale_partials`] and [`retain_render_logs`] are the two sweeps of §6.6.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -390,23 +391,28 @@ impl Renders {
         );
         let missing_unpaused = outputs.iter().any(|o| !o.paused && !o.rendered);
         if finished_render && !missing_unpaused {
-            let since = self
-                .complete_since
-                .get(&job.sequence_name)
-                .copied()
-                .unwrap_or(0);
-            let videos: Vec<RenderedVideo> = ctx
-                .store
-                .rendered_videos()?
-                .into_iter()
-                .filter(|v| {
-                    v.sequence_name == job.sequence_name
-                        && v.source == "TRD"
-                        && v.rendered_at >= since
-                })
+            // One video per configured variant: the newest TRD row of each variant. Older rows of
+            // the same variant (a re-render, or a render from before a restart) are not counted.
+            let configured: BTreeSet<String> = config
+                .rendering
+                .iter()
+                .filter(|render| ctx.codecs.contains_key(&render.codec))
+                .map(|render| render.variant_key())
                 .collect();
-            let video_count = videos.len() as i64;
-            let total_bytes: i64 = videos.iter().map(|v| v.size_bytes).sum();
+            let mut seen: BTreeSet<String> = BTreeSet::new();
+            let mut video_count = 0_i64;
+            let mut total_bytes = 0_i64;
+            // rendered_videos() is newest first, so the first row of a variant is its latest.
+            for video in ctx.store.rendered_videos()? {
+                if video.sequence_name == job.sequence_name
+                    && video.source == "TRD"
+                    && configured.contains(&video.variant_key)
+                    && seen.insert(video.variant_key.clone())
+                {
+                    video_count += 1;
+                    total_bytes += video.size_bytes;
+                }
+            }
             let fields = LogFields {
                 event: Some(EVENT_SEQUENCE_FINISHED.to_owned()),
                 sequence_name: Some(job.sequence_name.clone()),

@@ -151,6 +151,7 @@ impl Renders {
         name: &str,
     ) -> Result<Outcome, ControlError> {
         let config = require_config(ctx)?;
+        self.require_sequence(ctx, &config, name)?;
         if config.paused_sequence_names.iter().any(|n| n == name) {
             return Err(ControlError::FailedPrecondition(format!(
                 "sequence {name} is already paused"
@@ -175,6 +176,7 @@ impl Renders {
         name: &str,
     ) -> Result<Outcome, ControlError> {
         let config = require_config(ctx)?;
+        self.require_sequence(ctx, &config, name)?;
         if !config.paused_sequence_names.iter().any(|n| n == name) {
             return Err(ControlError::FailedPrecondition(format!(
                 "sequence {name} is not paused"
@@ -196,6 +198,7 @@ impl Renders {
         variant_key: &str,
     ) -> Result<Outcome, ControlError> {
         let config = require_config(ctx)?;
+        self.require_sequence(ctx, &config, sequence)?;
         require_variant(&config, variant_key)?;
         if is_paused_variant(&config, sequence, variant_key) {
             return Err(ControlError::FailedPrecondition(format!(
@@ -226,6 +229,7 @@ impl Renders {
         variant_key: &str,
     ) -> Result<Outcome, ControlError> {
         let config = require_config(ctx)?;
+        self.require_sequence(ctx, &config, sequence)?;
         require_variant(&config, variant_key)?;
         if !is_paused_variant(&config, sequence, variant_key) {
             return Err(ControlError::FailedPrecondition(format!(
@@ -338,6 +342,7 @@ impl Renders {
         variant_key: &str,
     ) -> Result<Outcome, ControlError> {
         let config = require_config(ctx)?;
+        self.require_sequence(ctx, &config, sequence)?;
         require_variant(&config, variant_key)?;
         let paused = is_paused_variant(&config, sequence, variant_key);
         let failures: Vec<Failure> = ctx
@@ -446,6 +451,26 @@ impl Renders {
     pub fn rescan_now(&mut self, ctx: &mut Ctx<'_>) -> Result<Outcome, ControlError> {
         record(ctx, "rescan now", None, None)?;
         Ok(Outcome { rescan: true })
+    }
+
+    /// A sequence is known when the last scan saw it, when it is paused (so it can be resumed after it
+    /// left the disk), or when a job of it is in flight. Anything else is NOT_FOUND.
+    fn require_sequence(
+        &self,
+        ctx: &Ctx<'_>,
+        config: &Config,
+        name: &str,
+    ) -> Result<(), ControlError> {
+        let known = self.known_sequences.contains(name)
+            || config.paused_sequence_names.iter().any(|n| n == name)
+            || in_flight_jobs(ctx.store)?
+                .iter()
+                .any(|job| job.sequence_name == name);
+        if known {
+            Ok(())
+        } else {
+            Err(ControlError::NotFound(format!("no sequence {name}")))
+        }
     }
 
     /// Ends a job: a process this queue holds, or one recorded in the job row that is still alive, is
