@@ -857,11 +857,21 @@ mod tests {
         );
     }
 
+    /// Writes a shell script. The probe tests run it as `/bin/sh <script>` rather than exec'ing
+    /// the file: a concurrent test thread forking while the file is open for writing hands its
+    /// child that descriptor, and exec of the fresh file then fails with `ETXTBSY`.
     #[cfg(unix)]
     fn write_script(path: &Path, body: &str) {
-        use std::os::unix::fs::PermissionsExt;
         write_bytes(path, format!("#!/bin/sh\n{body}\n").as_bytes());
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// The command that runs a script written by `write_script` through the shell.
+    #[cfg(unix)]
+    fn shell_script_command(path: &Path) -> ToolCommand {
+        ToolCommand {
+            program: OsString::from("/bin/sh"),
+            leading_args: vec![path.as_os_str().to_owned()],
+        }
     }
 
     #[cfg(unix)]
@@ -870,7 +880,7 @@ mod tests {
         let tree = Tree::new();
         let script = tree.root().join("fake-tool");
         write_script(&script, "echo ''\necho 'ffmpeg version 7.1'\necho 'more'");
-        let command = ToolCommand::direct(&script);
+        let command = shell_script_command(&script);
         assert_eq!(
             run_version_command(&command, "-version"),
             Ok("ffmpeg version 7.1".to_string())
@@ -883,7 +893,7 @@ mod tests {
         let tree = Tree::new();
         let script = tree.root().join("fake-tool");
         write_script(&script, "echo 'no such codec' >&2\nexit 3");
-        let command = ToolCommand::direct(&script);
+        let command = shell_script_command(&script);
         let err = run_version_command(&command, "-version").unwrap_err();
         assert!(err.contains("-version exited with"), "{err}");
         assert!(err.contains("no such codec"), "{err}");

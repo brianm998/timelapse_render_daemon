@@ -29,6 +29,8 @@ pub const DAY_MS: i64 = 86_400_000;
 pub const DEFAULT_LOG_MAX_ROWS: i64 = 20_000;
 /// The age beyond which log rows are deleted by [`Store::prune`].
 pub const DEFAULT_LOG_MAX_AGE_MS: i64 = 30 * DAY_MS;
+/// A failure card is removed when it was last seen longer ago than this (§6.9).
+pub const FAILURE_RETENTION_MS: i64 = 30 * DAY_MS;
 /// How many live log rows a slow subscriber may lag behind before it misses some.
 const LOG_CHANNEL_CAPACITY: usize = 1024;
 
@@ -596,10 +598,10 @@ impl Store {
         )
     }
 
-    /// Deletes `rendered_videos` rows older than `history_days` days, and `log` rows older than
-    /// `log_max_age_ms` or beyond the newest `log_max_rows`. Returns the thumbnail paths of the
-    /// deleted videos. The sequence numbers of `log` never go back, even after the newest row is
-    /// deleted.
+    /// Deletes `rendered_videos` rows older than `history_days` days, `failures` cards not seen for
+    /// [`FAILURE_RETENTION_MS`], and `log` rows older than `log_max_age_ms` or beyond the newest
+    /// `log_max_rows`. Returns the thumbnail paths of the deleted videos. The sequence numbers of
+    /// `log` never go back, even after the newest row is deleted.
     pub fn prune_with(
         &self,
         now_ms: i64,
@@ -621,6 +623,10 @@ impl Store {
         tx.execute(
             "DELETE FROM rendered_videos WHERE rendered_at < ?1",
             [history_cutoff],
+        )?;
+        tx.execute(
+            "DELETE FROM failures WHERE last_seen < ?1",
+            [now_ms - FAILURE_RETENTION_MS],
         )?;
         tx.execute("DELETE FROM log WHERE at < ?1", [now_ms - log_max_age_ms])?;
         // The row at offset `log_max_rows` is the oldest one kept: delete it and everything older.
