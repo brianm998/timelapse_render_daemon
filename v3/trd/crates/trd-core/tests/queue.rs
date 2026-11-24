@@ -32,6 +32,7 @@ mod queue {
     use trd_core::paths::Clock;
     use trd_core::pipeline::{RENDER_LOG_LIMIT, retain_render_logs};
     use trd_core::plan;
+    use trd_core::process::{self, ProcessState};
     use trd_core::queue::{Ctx, Renders, SWEEP_INTERVAL_MS};
     use trd_core::scan::{ExportSequence, RawSequence, ScanResult};
     use trd_core::store::{
@@ -566,6 +567,61 @@ mod queue {
             "one video per variant, the older row not counted"
         );
         assert_eq!(finished[0].fields.total_bytes, Some(total));
+    }
+
+    #[test]
+    fn sequence_totals_count_since_completion() {
+        let mut setup = Setup::new();
+        setup.rendering = vec![pro_res(1280, 720), pro_res(1920, 1080)];
+        let mut w = World::new(setup);
+        w.add_sequence("seqA");
+        // Variant 0 was rendered before the sequence was seen complete. Its output is still in the
+        // export directory, so this run does not render it again, and its row is not one of the
+        // videos rendered since the sequence became complete (§6.6 step 7).
+        fs::write(w.output("seqA", 0), b"earlier").expect("the earlier output");
+        let earlier = RenderedVideo {
+            id: "earlier-render".to_owned(),
+            rendered_at: 1,
+            sequence_name: "seqA".to_owned(),
+            export_path: w.export.to_string_lossy().into_owned(),
+            output_filename: "earlier.mov".to_owned(),
+            output_path: w.export.join("earlier.mov").to_string_lossy().into_owned(),
+            variant_key: w.key(0),
+            codec: "ProRes".to_owned(),
+            resolution_label: "720p".to_owned(),
+            frame_rate: 25,
+            frame_count: 3,
+            size_bytes: 5_000_000,
+            width: 1280,
+            height: 720,
+            duration_seconds: 0.1,
+            render_seconds: 0.1,
+            thumbnail_path: None,
+            xmp_embedded: false,
+            source: "TRD".to_owned(),
+        };
+        w.store
+            .put_rendered_video(&earlier)
+            .expect("an earlier row");
+        w.scan(&["seqA"]);
+        w.drive(|w| !w.in_flight());
+
+        let finished = w.events(EVENT_SEQUENCE_FINISHED);
+        assert_eq!(finished.len(), 1, "the last variant finishes the sequence");
+        let this_run: Vec<RenderedVideo> = w
+            .store
+            .rendered_videos()
+            .expect("the history")
+            .into_iter()
+            .filter(|video| video.id != "earlier-render")
+            .collect();
+        assert_eq!(this_run.len(), 1, "only variant 1 is rendered in this run");
+        assert_eq!(
+            finished[0].fields.video_count,
+            Some(1),
+            "the earlier row is not counted"
+        );
+        assert_eq!(finished[0].fields.total_bytes, Some(this_run[0].size_bytes));
     }
 
     #[test]
@@ -1318,6 +1374,65 @@ mod queue {
             rows.iter().all(|(level, _)| *level == LogLevel::Info),
             "every control row is INFO"
         );
+    }
+
+    /// A row whose pid is a live process this daemon did not start, with a start time that does not
+    /// match it (as after a pid is reused): the global pause and the controls leave the process
+    /// alone and the row as it was.
+    #[test]
+    fn controls_skip_foreign_pids() {
+        let mut w = World::new(Setup::new());
+        let mut foreign = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("a process to stand in for a foreign one");
+        let pid = foreign.id();
+        let job = RenderJob {
+            id: "foreign-job".to_owned(),
+            sequence_name: "seqA".to_owned(),
+            export_path: w.export.to_string_lossy().into_owned(),
+            variant_key: w.key(0),
+            output_filename: "seqA.mov".to_owned(),
+            output_path: w.export.join("seqA.mov").to_string_lossy().into_owned(),
+            partial_path: w
+                .export
+                .join(".seqA.partial.mov")
+                .to_string_lossy()
+                .into_owned(),
+            plan_json: "{}".to_owned(),
+            status: JobStatus::Running,
+            suspended_by: None,
+            pid: Some(i64::from(pid)),
+            pid_start_time: Some(1),
+            queued_at: 1,
+            started_at: Some(1),
+            finished_at: None,
+            progress_path: None,
+            log_path: None,
+            adopted: false,
+            foreign: false,
+        };
+        w.store.put_render_job(&job).expect("the row");
+
+        control(&mut w, |w| w.renders.pause_all_rendering(&mut ctx!(w))).expect("pause all");
+        assert_code(
+            control(&mut w, |w| w.renders.suspend_render(&mut ctx!(w), &job.id)),
+            "FAILED_PRECONDITION",
+        );
+        assert_eq!(
+            w.jobs(JobStatus::Running).len(),
+            1,
+            "the row keeps its state"
+        );
+        assert_eq!(
+            process::process_state(pid),
+            ProcessState::Running,
+            "the foreign process was not stopped"
+        );
+        control(&mut w, |w| w.renders.resume_all_rendering(&mut ctx!(w))).expect("resume all");
+
+        let _ = foreign.kill();
+        let _ = foreign.wait();
     }
 
     fn assert_code<T: std::fmt::Debug>(result: Result<T, ControlError>, code: &str) {

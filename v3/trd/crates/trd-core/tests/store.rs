@@ -373,6 +373,35 @@ fn retention() {
     assert_eq!(store.log_rows_after(0).unwrap().len(), 3);
 }
 
+#[test]
+fn failures_pruned_after_30_days() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_store(dir.path());
+    let now = 100 * DAY_MS;
+
+    // A card last seen 31 days ago goes; one seen a day ago stays.
+    store
+        .record_failure(&sample_failure("/e/old.mov", "old_kind", now - 31 * DAY_MS))
+        .unwrap();
+    store
+        .record_failure(&sample_failure(
+            "/e/recent.mov",
+            "recent_kind",
+            now - DAY_MS,
+        ))
+        .unwrap();
+
+    store.prune_with(now, 30, 1_000, 30 * DAY_MS).unwrap();
+
+    let kept: Vec<String> = store
+        .failures()
+        .unwrap()
+        .into_iter()
+        .map(|failure| failure.output_path)
+        .collect();
+    assert_eq!(kept, ["/e/recent.mov".to_owned()]);
+}
+
 /// Collects every `tracing` event as its target, level and fields (strings), in order.
 #[derive(Default, Clone)]
 struct Captured(Arc<Mutex<Vec<CapturedEvent>>>);

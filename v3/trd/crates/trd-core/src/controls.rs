@@ -157,14 +157,15 @@ impl Renders {
                 "sequence {name} is already paused"
             )));
         }
-        let target = name.to_owned();
-        edit_config(ctx, move |cfg| cfg.paused_sequence_names.push(target))?;
+        // The renders end first: when one cannot be ended, the config is left as it was.
         for job in in_flight_jobs(ctx.store)?
             .into_iter()
             .filter(|job| job.sequence_name == name)
         {
             self.cancel_job(ctx, job)?;
         }
+        let target = name.to_owned();
+        edit_config(ctx, move |cfg| cfg.paused_sequence_names.push(target))?;
         record(ctx, &format!("pause sequence {name}"), Some(name), None)?;
         Ok(Outcome::done())
     }
@@ -205,13 +206,14 @@ impl Renders {
                 "{sequence}/{variant_key} is already paused"
             )));
         }
-        push_pause(ctx, sequence, variant_key)?;
+        // The renders end first: when one cannot be ended, the config is left as it was.
         for job in in_flight_jobs(ctx.store)?
             .into_iter()
             .filter(|job| job.sequence_name == sequence && job.variant_key == variant_key)
         {
             self.cancel_job(ctx, job)?;
         }
+        push_pause(ctx, sequence, variant_key)?;
         record(
             ctx,
             &format!("pause variant {sequence}/{variant_key}"),
@@ -259,10 +261,10 @@ impl Renders {
                 job.status.as_str()
             )));
         }
-        let pid = job.pid.ok_or_else(|| {
-            ControlError::FailedPrecondition(format!("render {id} has no process"))
+        let pid = self.live_pid(&job).ok_or_else(|| {
+            ControlError::FailedPrecondition(format!("render {id} has no live process"))
         })?;
-        process::suspend(pid as u32).map_err(|err| process_error("suspend", pid, err))?;
+        process::suspend(pid).map_err(|err| process_error("suspend", i64::from(pid), err))?;
         job.status = JobStatus::Suspended;
         job.suspended_by = Some(SuspendedBy::User);
         ctx.store.put_render_job(&job)?;
@@ -290,9 +292,12 @@ impl Renders {
                 "render {id} was suspended by pause rendering; resume rendering instead"
             )));
         }
-        if let Some(pid) = job.pid {
-            process::resume(pid as u32).map_err(|err| process_error("resume", pid, err))?;
-        }
+        let pid = self.live_pid(&job).ok_or_else(|| {
+            ControlError::FailedPrecondition(format!(
+                "render {id} has no live process; stop it instead"
+            ))
+        })?;
+        process::resume(pid).map_err(|err| process_error("resume", i64::from(pid), err))?;
         job.status = JobStatus::Running;
         job.suspended_by = None;
         ctx.store.put_render_job(&job)?;
@@ -319,11 +324,14 @@ impl Renders {
             )));
         }
         let config = require_config(ctx)?;
-        if !is_paused_variant(&config, &job.sequence_name, &job.variant_key) {
-            push_pause(ctx, &job.sequence_name, &job.variant_key)?;
-        }
+        let paused = is_paused_variant(&config, &job.sequence_name, &job.variant_key);
         let (sequence, output) = (job.sequence_name.clone(), job.output_filename.clone());
+        let (variant_sequence, variant_key) = (job.sequence_name.clone(), job.variant_key.clone());
+        // The render ends first: when it cannot be ended, the config is left as it was.
         self.cancel_job(ctx, job)?;
+        if !paused {
+            push_pause(ctx, &variant_sequence, &variant_key)?;
+        }
         record(
             ctx,
             &format!("stop render {id}"),
@@ -391,8 +399,13 @@ impl Renders {
         }
         ctx.store.set_global_pause(true)?;
         for mut job in ctx.store.render_jobs(Some(JobStatus::Running))? {
-            if let Some(pid) = job.pid {
-                process::suspend(pid as u32).map_err(|err| process_error("suspend", pid, err))?;
+            let Some(pid) = self.live_pid(&job) else {
+                skip_job(ctx, &job, "has no live process")?;
+                continue;
+            };
+            if let Err(err) = process::suspend(pid) {
+                skip_job(ctx, &job, &format!("could not be suspended: {err}"))?;
+                continue;
             }
             job.status = JobStatus::Suspended;
             job.suspended_by = Some(SuspendedBy::Global);
@@ -410,18 +423,23 @@ impl Renders {
                 "rendering is not paused".to_owned(),
             ));
         }
-        ctx.store.set_global_pause(false)?;
         for mut job in ctx.store.render_jobs(Some(JobStatus::Suspended))? {
             if job.suspended_by != Some(SuspendedBy::Global) {
                 continue;
             }
-            if let Some(pid) = job.pid {
-                process::resume(pid as u32).map_err(|err| process_error("resume", pid, err))?;
+            let Some(pid) = self.live_pid(&job) else {
+                skip_job(ctx, &job, "has no live process; it stays suspended")?;
+                continue;
+            };
+            if let Err(err) = process::resume(pid) {
+                skip_job(ctx, &job, &format!("could not be resumed: {err}"))?;
+                continue;
             }
             job.status = JobStatus::Running;
             job.suspended_by = None;
             ctx.store.put_render_job(&job)?;
         }
+        ctx.store.set_global_pause(false)?;
         record(ctx, "resume all rendering", None, None)?;
         self.promote(ctx)?;
         Ok(Outcome::done())
@@ -473,14 +491,30 @@ impl Renders {
         }
     }
 
+    /// The pid to signal for a job, or `None`. Only a process this queue holds, or one recorded in the
+    /// row whose start time still matches, is signalled: a recycled pid has another start time, and
+    /// nothing signals a process the daemon did not start (overview §10 rule 2).
+    fn live_pid(&self, job: &RenderJob) -> Option<u32> {
+        if let Some(active) = self.running.get(&job.id) {
+            return Some(active.process.pid);
+        }
+        let pid = u32::try_from(job.pid?).ok()?;
+        let start = u64::try_from(job.pid_start_time?).ok()?;
+        process::is_alive(pid, start).then_some(pid)
+    }
+
     /// Ends a job: a process this queue holds, or one recorded in the job row that is still alive, is
     /// terminated (a suspended one is resumed first, §6.8). Its partial file is deleted and the row
     /// becomes `cancelled`.
     fn cancel_job(&mut self, ctx: &Ctx<'_>, mut job: RenderJob) -> Result<(), ControlError> {
         if let Some(mut active) = self.running.remove(&job.id) {
             let pid = active.process.pid;
-            process::terminate(&mut active.process, TERMINATE_GRACE)
-                .map_err(|err| process_error("end", i64::from(pid), err))?;
+            if let Err(err) = process::terminate(&mut active.process, TERMINATE_GRACE) {
+                // The process may still be running: its entry goes back, so the next tick reaps it
+                // and the row keeps its state.
+                self.running.insert(job.id.clone(), active);
+                return Err(process_error("end", i64::from(pid), err));
+            }
         } else if let (Some(pid), Some(start)) = (job.pid, job.pid_start_time) {
             let live_job = matches!(job.status, JobStatus::Running | JobStatus::Suspended);
             if live_job && process::is_alive(pid as u32, start as u64) {
@@ -493,6 +527,22 @@ impl Renders {
         pipeline::finish_job(ctx, &mut job, JobStatus::Cancelled)?;
         Ok(())
     }
+}
+
+/// Writes the WARN row of a job that a global pause or resume could not act on. The job keeps its
+/// state, and the row says so.
+fn skip_job(ctx: &Ctx<'_>, job: &RenderJob, why: &str) -> Result<(), ControlError> {
+    let fields = LogFields {
+        sequence_name: Some(job.sequence_name.clone()),
+        output_filename: Some(job.output_filename.clone()),
+        ..LogFields::default()
+    };
+    let message = format!(
+        "render of {} {why}; its state is unchanged",
+        job.output_filename
+    );
+    note(ctx, LogLevel::Warn, &job.sequence_name, &message, fields)?;
+    Ok(())
 }
 
 /// Adds a variant to `paused_variants` (no-op when it is there already).

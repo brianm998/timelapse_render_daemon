@@ -71,8 +71,13 @@ impl Renders {
                     continue;
                 }
             };
-            if let Some(active) = self.running.remove(&id) {
-                self.finish(ctx, &id, active, exit)?;
+            if let Some(active) = self.running.remove(&id)
+                && let Err(err) = self.finish(ctx, &id, active, exit)
+            {
+                // The process has ended and its entry is gone: end the row so it no longer owns its
+                // output or a slot. The error still goes up.
+                release_job(ctx, &id, &err.to_string());
+                return Err(err);
             }
         }
         Ok(())
@@ -391,8 +396,15 @@ impl Renders {
         );
         let missing_unpaused = outputs.iter().any(|o| !o.paused && !o.rendered);
         if finished_render && !missing_unpaused {
-            // One video per configured variant: the newest TRD row of each variant. Older rows of
-            // the same variant (a re-render, or a render from before a restart) are not counted.
+            // The videos trd rendered for the sequence since it became complete (§6.6 step 7): the
+            // newest row of each configured variant that was rendered after that time. Older rows
+            // (a render from before the sequence was complete, or from before a restart) are not
+            // counted, and neither is a second row of the same variant.
+            let since = self
+                .complete_since
+                .get(&job.sequence_name)
+                .copied()
+                .unwrap_or(i64::MIN);
             let configured: BTreeSet<String> = config
                 .rendering
                 .iter()
@@ -406,6 +418,7 @@ impl Renders {
             for video in ctx.store.rendered_videos()? {
                 if video.sequence_name == job.sequence_name
                     && video.source == "TRD"
+                    && video.rendered_at >= since
                     && configured.contains(&video.variant_key)
                     && seen.insert(video.variant_key.clone())
                 {
@@ -476,6 +489,33 @@ pub(crate) fn finish_job(ctx: &Ctx<'_>, job: &mut RenderJob, status: JobStatus) 
     }
     retain_render_logs(ctx.store, RENDER_LOG_LIMIT)?;
     Ok(())
+}
+
+/// Ends the row of a job whose process has ended but whose completion failed part way (a store or
+/// file error). The row is marked failed and a WARN row says why, so it no longer counts as in
+/// flight. A row that already ended is left alone. Errors here are dropped: the caller returns the
+/// error that started this.
+pub(crate) fn release_job(ctx: &Ctx<'_>, id: &str, reason: &str) {
+    let Ok(Some(mut job)) = ctx.store.render_job(id) else {
+        return;
+    };
+    if !matches!(
+        job.status,
+        JobStatus::Queued | JobStatus::Running | JobStatus::Suspended
+    ) {
+        return;
+    }
+    let message = format!(
+        "render of {} ended without completing: {reason}",
+        job.output_filename
+    );
+    let fields = LogFields {
+        sequence_name: Some(job.sequence_name.clone()),
+        output_filename: Some(job.output_filename.clone()),
+        ..LogFields::default()
+    };
+    let _ = note(ctx, LogLevel::Warn, &job.sequence_name, &message, fields);
+    let _ = finish_job(ctx, &mut job, JobStatus::Failed);
 }
 
 /// Ends a job that could not start or whose plan is unreadable, with a failure of `kind`.
