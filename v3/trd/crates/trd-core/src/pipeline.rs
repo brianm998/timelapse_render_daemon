@@ -10,6 +10,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
@@ -23,7 +24,7 @@ use crate::events::{
 use crate::exif::Histogram;
 use crate::paths::expand_year_path;
 use crate::plan::{self, Plan};
-use crate::process::ExitInfo;
+use crate::process::{self, ExitInfo};
 use crate::queue::{Active, Ctx, Renders, in_flight_jobs, is_paused_variant, note};
 use crate::store::{
     Failure, JobStatus, LogFields, LogLevel, RenderJob, RenderedVideo, Store, StoreResult,
@@ -51,7 +52,7 @@ impl Renders {
                 Some(active) => {
                     // Progress is best effort: a missing or unreadable file leaves the last block.
                     let _ = active.progress.poll();
-                    active.process.try_wait()
+                    poll_process(active)
                 }
             };
             let exit = match polled {
@@ -81,6 +82,89 @@ impl Renders {
             }
         }
         Ok(())
+    }
+
+    /// Reaps the foreign renders whose process has ended (§6.11 step 2). The output's existence
+    /// decides the job.
+    pub fn poll_foreign(&mut self, ctx: &mut Ctx<'_>) -> StoreResult<()> {
+        let ended: Vec<String> = self
+            .foreign
+            .iter()
+            .filter(|(_, watched)| !process::is_alive(watched.pid, watched.start_time))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ended {
+            self.foreign.remove(&id);
+            let Some(job) = ctx.store.render_job(&id)? else {
+                continue;
+            };
+            if let Err(err) = self.finish_foreign(ctx, job) {
+                release_job(ctx, &id, &err.to_string());
+                return Err(err);
+            }
+        }
+        Ok(())
+    }
+
+    /// The end of a foreign render (§6.11 step 2): when its output exists, a history row with source
+    /// `ADOPTED`, no XMP and a thumbnail; otherwise `FAILURE_PRODUCED_NO_OUTPUT`. Returns whether it
+    /// succeeded. Nothing is deleted: the foreign process owns its partial file, if any.
+    pub(crate) fn finish_foreign(&self, ctx: &Ctx<'_>, mut job: RenderJob) -> StoreResult<bool> {
+        let output = PathBuf::from(&job.output_path);
+        if output.exists() {
+            let size_bytes = fs::metadata(&output)
+                .map(|meta| meta.len() as i64)
+                .unwrap_or(0);
+            let video = RenderedVideo {
+                id: Uuid::new_v4().to_string(),
+                rendered_at: ctx.now_ms,
+                sequence_name: job.sequence_name.clone(),
+                export_path: job.export_path.clone(),
+                output_filename: job.output_filename.clone(),
+                output_path: job.output_path.clone(),
+                variant_key: job.variant_key.clone(),
+                codec: String::new(),
+                resolution_label: String::new(),
+                frame_rate: 0,
+                frame_count: 0,
+                size_bytes,
+                width: 0,
+                height: 0,
+                duration_seconds: 0.0,
+                render_seconds: 0.0,
+                thumbnail_path: None,
+                xmp_embedded: false,
+                source: "ADOPTED".to_owned(),
+            };
+            ctx.store.put_rendered_video(&video)?;
+            self.thumbs.make(ctx.store, &video, ctx.now_ms)?;
+            ctx.store.delete_failures_for_output(&job.output_path)?;
+            finish_job(ctx, &mut job, JobStatus::Done)?;
+            let fields = LogFields {
+                event: Some(EVENT_RENDER_FINISHED.to_owned()),
+                sequence_name: Some(job.sequence_name.clone()),
+                output_filename: Some(job.output_filename.clone()),
+                rendered_video_id: Some(video.id.clone()),
+                ..LogFields::default()
+            };
+            let message = format!(
+                "adopted render {} finished ({size_bytes} bytes)",
+                job.output_filename
+            );
+            note(ctx, LogLevel::Info, &job.sequence_name, &message, fields)?;
+            return Ok(true);
+        }
+        let summary = format!("ffmpeg exited without writing {}", job.output_filename);
+        let failure = job_failure(
+            &job,
+            ctx.now_ms,
+            FailureKind::ProducedNoOutput.code(),
+            summary,
+            String::new(),
+        );
+        record_failure(ctx, failure)?;
+        finish_job(ctx, &mut job, JobStatus::Failed)?;
+        Ok(false)
     }
 
     /// The end of a job (§6.6 steps 4–9).
@@ -136,8 +220,9 @@ impl Renders {
         finish_job(ctx, &mut job, JobStatus::Failed)
     }
 
-    /// Steps 5–9 for a render whose process exited 0 and wrote its partial file.
-    fn finish_success(
+    /// Steps 5–9 for a render whose process exited 0 and wrote its partial file. Also the end of a
+    /// re-adopted render that finished while the daemon was down (§6.11 step 1).
+    pub(crate) fn finish_success(
         &mut self,
         ctx: &mut Ctx<'_>,
         mut job: RenderJob,
@@ -716,8 +801,25 @@ pub(crate) fn read_tail(log: Option<&str>, lines: usize) -> Vec<String> {
     all[start..].iter().map(|line| (*line).to_owned()).collect()
 }
 
-fn tool_output_json(lines: &[String]) -> String {
+pub(crate) fn tool_output_json(lines: &[String]) -> String {
     serde_json::to_string(lines).unwrap_or_else(|_| "[]".to_owned())
+}
+
+/// The exit of a process the queue holds (§6.6 step 3, §6.11). A child reports its own status. An
+/// adopted process has no handle: it is alive while its pid has the recorded start time. Once it is
+/// gone its exit is unknown, except that a progress file ending in `progress=end` reads as exit 0.
+fn poll_process(active: &mut Active) -> io::Result<Option<ExitInfo>> {
+    if active.process.is_child() {
+        return active.process.try_wait();
+    }
+    if process::is_alive(active.process.pid, active.process.start_time) {
+        return Ok(None);
+    }
+    let ended = active.progress.latest().is_some_and(|block| block.ended);
+    Ok(Some(ExitInfo {
+        code: ended.then_some(0),
+        by_signal: None,
+    }))
 }
 
 fn first_line(text: &str) -> &str {
