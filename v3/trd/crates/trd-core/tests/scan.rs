@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use trd_core::config::Config;
@@ -29,15 +29,29 @@ struct Gate {
 }
 
 impl Gate {
+    /// Waits until the gate opens. A gate that is still closed after `HANG_GUARD` panics, so the
+    /// blocked thread ends and the runtime can shut down instead of hanging the test binary.
     fn wait(&self) {
-        let mut open = self.open.lock().unwrap();
+        let deadline = Instant::now() + HANG_GUARD;
+        let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
         while !*open {
-            open = self.changed.wait(open).unwrap();
+            let left = match deadline.checked_duration_since(Instant::now()) {
+                Some(left) => left,
+                None => {
+                    drop(open);
+                    panic!("gate was never released");
+                }
+            };
+            open = self
+                .changed
+                .wait_timeout(open, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
         }
     }
 
     fn release(&self) {
-        *self.open.lock().unwrap() = true;
+        *self.open.lock().unwrap_or_else(PoisonError::into_inner) = true;
         self.changed.notify_all();
     }
 }
