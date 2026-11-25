@@ -393,10 +393,12 @@ async fn in_flight_path_not_relisted() {
     );
 
     gate.release();
-    let mut spins = 0usize;
+    let waited = Instant::now();
     while scanner.in_flight_count() != 0 {
-        spins += 1;
-        assert!(spins < 1_000_000, "blocked listing never returned");
+        assert!(
+            waited.elapsed() < HANG_GUARD,
+            "blocked listing never returned"
+        );
         tokio::task::yield_now().await;
     }
 
