@@ -2,9 +2,12 @@
 // Copyright (C) 2026 Timelapse Render Daemon contributors
 
 //! Sequence scanner tests (§6.3) over a fake filesystem with an injected clock. No test sleeps.
-//! The only real time is the `HANG_GUARD` bound on the polling loops that wait for a blocked call
-//! to start or return. A blocked listing or size measurement has no timer: its `GateHandle` releases
-//! it when the test ends, pass or fail, so a failing test ends instead of hanging the binary.
+//! Real time comes from two places. The scanner's own path and size timeouts are real time: 10 s
+//! and 60 s by default, or the 30 s and 120 s the slow-path tests set with `with_path_timeout` and
+//! `with_size_timeout`; the slow-path tests wait for those timeouts to fire. `HANG_GUARD` bounds
+//! only the polling loops that wait for a blocked call to start or return. A blocked listing or
+//! size measurement has no timer of its own: its `GateHandle` releases it when the test ends, pass
+//! or fail, so a failing test ends instead of hanging the binary.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;
