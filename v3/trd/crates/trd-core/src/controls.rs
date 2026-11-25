@@ -399,6 +399,10 @@ impl Renders {
         }
         ctx.store.set_global_pause(true)?;
         for mut job in ctx.store.render_jobs(Some(JobStatus::Running))? {
+            // An adopted foreign render is never signalled except by its own stop (§6.11 step 3).
+            if job.foreign {
+                continue;
+            }
             let Some(pid) = self.live_pid(&job) else {
                 skip_job(ctx, &job, "has no live process")?;
                 continue;

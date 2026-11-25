@@ -5,7 +5,8 @@
 //!
 //! An event is a `log` row whose `event` field holds one of these names (§6.14). The names are the
 //! `EventKind` names of `trd.proto`. This module holds the six that the render queue and completion
-//! pipeline emit (TRD-12); the rest of §6.12 is added with the event stream (TRD-16).
+//! pipeline emit (TRD-12), plus `EVENT_CONFIG_RELOADED` (TRD-16). The rest of §6.12 is added with
+//! the event stream.
 
 /// A sequence became complete and its variants are considered for rendering.
 pub const EVENT_SEQUENCE_READY: &str = "EVENT_SEQUENCE_READY";
@@ -19,3 +20,5 @@ pub const EVENT_SEQUENCE_FINISHED: &str = "EVENT_SEQUENCE_FINISHED";
 pub const EVENT_RENDER_FAILED: &str = "EVENT_RENDER_FAILED";
 /// The export directory of a sequence was deleted after its renders (§6.6 step 8).
 pub const EVENT_SEQUENCE_DELETED: &str = "EVENT_SEQUENCE_DELETED";
+/// config.json was read again because it changed (§6.1); the engine rescans at once.
+pub const EVENT_CONFIG_RELOADED: &str = "EVENT_CONFIG_RELOADED";
