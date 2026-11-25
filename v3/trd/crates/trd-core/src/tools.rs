@@ -448,12 +448,15 @@ fn read_pipe_on_thread<R: Read + Send + 'static>(mut pipe: R) -> mpsc::Receiver<
         let mut chunk = [0u8; 8192];
         loop {
             match pipe.read(&mut chunk) {
-                Ok(0) | Err(_) => break,
+                Ok(0) => break,
                 Ok(read) => {
                     if sender.send(chunk[..read].to_vec()).is_err() {
                         break;
                     }
                 }
+                // A signal interrupting the read is not the end of the pipe.
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
             }
         }
     });
@@ -471,7 +474,13 @@ fn join_pipe(reader: Option<mpsc::Receiver<Vec<u8>>>) -> Vec<u8> {
     let Some(receiver) = reader else {
         return Vec::new();
     };
-    let deadline = Instant::now() + PIPE_GRACE;
+    collect_until(&receiver, Instant::now() + PIPE_GRACE)
+}
+
+/// Collects the chunks a reader sends until the channel closes or `deadline` passes, whichever
+/// comes first. The deadline is checked before every receive, so chunks already queued are not
+/// taken once it has passed.
+fn collect_until(receiver: &mpsc::Receiver<Vec<u8>>, deadline: Instant) -> Vec<u8> {
     let mut bytes = Vec::new();
     loop {
         // Checked on every pass: a queued chunk must not keep the loop going past the deadline,
@@ -951,18 +960,18 @@ mod tests {
     }
 
     /// When a grandchild keeps stdout open past the child's exit, the bounded run returns the bytes
-    /// the child wrote, once the pipe grace expires, rather than waiting for the pipe to close.
-    /// The grandchild writes nothing, so the captured bytes are the same whether the grace or the
-    /// grandchild's exit ends the join: the assertion does not depend on timing. The hang guard
-    /// stops the test if the run waits for the grandchild. Unix only: it runs `/bin/sh` and a
-    /// `sleep` grandchild, which Windows does not provide.
+    /// the child wrote once the pipe grace expires, rather than waiting for the pipe to close. The
+    /// grandchild sleeps longer than the hang guard, so the pipe cannot close before the guard
+    /// fires: the only thing that ends the join is the grace, and the test depends on that. The
+    /// hang guard stops the test if the run waits for the grandchild. Unix only: it runs `/bin/sh`
+    /// and a `sleep` grandchild, which Windows does not provide.
     #[cfg(unix)]
     #[test]
     fn bounded_run_returns_partial_bytes_when_the_grace_expires() {
         const HANG_GUARD: Duration = Duration::from_secs(30);
         let tree = Tree::new();
         let script = tree.root().join("partial-tool");
-        write_script(&script, "echo 'partial'\nsleep 20 &\nexit 0");
+        write_script(&script, "echo 'partial'\nsleep 60 &\nexit 0");
         let mut command = Command::new("/bin/sh");
         command.arg(&script);
         let (sender, receiver) = mpsc::channel();
@@ -975,6 +984,30 @@ mod tests {
             .expect("the child exits within its timeout");
         assert!(output.status.success());
         assert_eq!(output.stdout, b"partial\n");
+    }
+
+    /// The grace deadline is checked before every receive, so chunks already queued after it has
+    /// passed are not taken. The deadline here is already reached when the collection starts, so
+    /// nothing is collected even though the channel holds bytes; no clock is compared.
+    #[test]
+    fn collect_until_takes_no_queued_chunk_after_the_deadline() {
+        let (sender, receiver) = mpsc::channel();
+        sender.send(b"queued".to_vec()).expect("a live receiver");
+        let deadline = Instant::now();
+        assert_eq!(collect_until(&receiver, deadline), Vec::<u8>::new());
+        drop(sender);
+    }
+
+    /// With a deadline far ahead, every queued chunk is collected and the join ends when the
+    /// channel closes at the pipe's end.
+    #[test]
+    fn collect_until_collects_chunks_until_the_pipe_closes() {
+        let (sender, receiver) = mpsc::channel();
+        sender.send(b"one ".to_vec()).expect("a live receiver");
+        sender.send(b"two".to_vec()).expect("a live receiver");
+        drop(sender);
+        let deadline = Instant::now() + Duration::from_secs(120);
+        assert_eq!(collect_until(&receiver, deadline), b"one two".to_vec());
     }
 
     #[test]
