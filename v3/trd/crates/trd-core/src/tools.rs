@@ -462,7 +462,9 @@ fn read_pipe_on_thread<R: Read + Send + 'static>(mut pipe: R) -> mpsc::Receiver<
 
 /// The bytes a reader collected. Once the child has exited its pipe closes unless a grandchild
 /// kept it open, so this takes the chunks up to the end of the pipe or `PIPE_GRACE`, whichever
-/// comes first. Empty when there was no pipe.
+/// comes first. When the grace expires first, the bytes received so far are returned and any
+/// later output from a grandchild is dropped: the deadline is checked on every chunk, so queued
+/// chunks cannot extend it. Empty when there was no pipe.
 fn join_pipe(reader: Option<mpsc::Receiver<Vec<u8>>>) -> Vec<u8> {
     let Some(receiver) = reader else {
         return Vec::new();
@@ -944,6 +946,33 @@ mod tests {
             .recv_timeout(HANG_GUARD)
             .expect("the probe answers without waiting for the grandchild");
         assert_eq!(answer, Ok("ffmpeg version 7.1".to_string()));
+    }
+
+    /// When a grandchild keeps stdout open past the child's exit, the bounded run returns the bytes
+    /// the child wrote, once the pipe grace expires, rather than waiting for the pipe to close.
+    /// The grandchild writes nothing, so the captured bytes are the same whether the grace or the
+    /// grandchild's exit ends the join: the assertion does not depend on timing. The hang guard
+    /// stops the test if the run waits for the grandchild. Unix only: it runs `/bin/sh` and a
+    /// `sleep` grandchild, which Windows does not provide.
+    #[cfg(unix)]
+    #[test]
+    fn bounded_run_returns_partial_bytes_when_the_grace_expires() {
+        const HANG_GUARD: Duration = Duration::from_secs(30);
+        let tree = Tree::new();
+        let script = tree.root().join("partial-tool");
+        write_script(&script, "echo 'partial'\nsleep 20 &\nexit 0");
+        let mut command = Command::new("/bin/sh");
+        command.arg(&script);
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = sender.send(bounded_output(command, Duration::from_secs(10)));
+        });
+        let output = receiver
+            .recv_timeout(HANG_GUARD)
+            .expect("the run returns once the pipe grace expires")
+            .expect("the child exits within its timeout");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"partial\n");
     }
 
     #[test]
