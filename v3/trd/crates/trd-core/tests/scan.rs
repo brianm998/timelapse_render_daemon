@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Timelapse Render Daemon contributors
 
 //! Sequence scanner tests (§6.3) over a fake filesystem with an injected clock. No test sleeps.
-//! The only real time is the hang guards of the tests that block a listing or a size on purpose:
-//! each waits at most 30 s, and a blocked call is released when its test ends, pass or fail.
+//! The only real time is the `HANG_GUARD` bound on the polling loops that wait for a blocked call
+//! to start or return. A blocked listing or size measurement has no timer: its `GateHandle` releases
+//! it when the test ends, pass or fail, so a failing test ends instead of hanging the binary.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;
@@ -21,7 +22,8 @@ use trd_core::scan::{
 /// The longest a test waits for a blocked call to return once it is released or must have started.
 const HANG_GUARD: Duration = Duration::from_secs(30);
 
-/// Blocks a listing until the test releases it.
+/// Blocks a listing or a size measurement until the test releases it. Only a `GateHandle` opens
+/// it, either through `release()` or by being dropped.
 #[derive(Default)]
 struct Gate {
     open: Mutex<bool>,
@@ -29,24 +31,15 @@ struct Gate {
 }
 
 impl Gate {
-    /// Waits until the gate opens. A gate that is still closed after `HANG_GUARD` panics, so the
-    /// blocked thread ends and the runtime can shut down instead of hanging the test binary.
+    /// Waits until the gate opens. There is no timer: the wait ends when the handle releases the
+    /// gate, which happens on every exit from the test body, including a panic.
     fn wait(&self) {
-        let deadline = Instant::now() + HANG_GUARD;
         let mut open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
         while !*open {
-            let left = match deadline.checked_duration_since(Instant::now()) {
-                Some(left) => left,
-                None => {
-                    drop(open);
-                    panic!("gate was never released");
-                }
-            };
             open = self
                 .changed
-                .wait_timeout(open, left)
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
+                .wait(open)
+                .unwrap_or_else(PoisonError::into_inner);
         }
     }
 
