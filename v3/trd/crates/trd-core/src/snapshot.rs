@@ -325,15 +325,16 @@ pub struct PhaseInputs {
     pub sequence_exporting: bool,
 }
 
-/// The phase, by precedence: starting, no config, waiting for disk access, paused, rendering,
-/// exporting, else idle.
+/// The phase, by precedence: starting, waiting for disk access, no config, paused, rendering,
+/// exporting, else idle. Waiting comes before no config: the config is not read while access is
+/// missing (§6.12), so at launch without access it is not yet known whether one exists.
 pub fn phase_of(inputs: PhaseInputs) -> Phase {
     if !inputs.started {
         Phase::Starting
-    } else if !inputs.config_loaded {
-        Phase::NoConfig
     } else if inputs.fda_missing {
         Phase::WaitingForDiskAccess
+    } else if !inputs.config_loaded {
+        Phase::NoConfig
     } else if inputs.global_pause {
         Phase::Paused
     } else if inputs.job_running {
@@ -364,6 +365,11 @@ impl FileExistsCache {
         let exists = probe(path);
         self.checked.insert(path.to_owned(), (exists, now));
         exists
+    }
+
+    /// The answer held for `path`, without probing it. `None` when no answer is held.
+    pub fn held(&self, path: &str) -> Option<bool> {
+        self.checked.get(path).map(|(exists, _)| *exists)
     }
 
     /// Forgets the answers of paths not in `keep`.

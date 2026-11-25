@@ -31,7 +31,7 @@ use crate::adopt::{AdoptPolicy, adopt_at_startup};
 use crate::codecs::VideoCodecs;
 use crate::config::{
     Config, ConfigStore, PROBLEM_CONFIG_INVALID, PROBLEM_CONFIG_ISSUES, PROBLEM_CONFIG_MISSING,
-    PROBLEM_UNKNOWN_CODEC,
+    PROBLEM_UNKNOWN_CODEC, Status,
 };
 use crate::controls::ControlError;
 use crate::events::EVENT_CONFIG_RELOADED;
@@ -211,8 +211,12 @@ pub struct Engine {
     clock: Arc<dyn Clock>,
     now_ms: Arc<dyn Fn() -> i64 + Send + Sync>,
     history_path: Option<PathBuf>,
-    /// Set once start-up has run.
+    /// Set once the tools are resolved.
     started: bool,
+    /// Set once the start-up work that touches the configured folders has run (see [`Engine::begin`]).
+    begun: bool,
+    /// Set once a tick has read the config file (never while Full Disk Access is missing).
+    config_checked: bool,
     /// Set once the first tick has run; until then the phase is `PHASE_STARTING`.
     ticked: bool,
     rescan: bool,
@@ -298,6 +302,8 @@ impl Engine {
             now_ms: options.now_ms,
             history_path: options.history_path,
             started: false,
+            begun: false,
+            config_checked: false,
             ticked: false,
             rescan: false,
             scan: None,
@@ -354,19 +360,24 @@ impl Engine {
         }
     }
 
-    /// Start-up (§6.6, §6.11, §6.15, §6.17): resolves the tools, re-adopts the renders the database
-    /// records and the foreign ffmpeg processes the policy allows, imports the Swift history once,
-    /// sweeps stale partial files and applies retention. Runs once; later calls return at once.
+    /// Start-up, first half (§6.15): resolves the tools. Runs once; later calls return at once.
+    /// The rest of start-up is [`Engine::begin`], which waits for Full Disk Access and a config.
     pub async fn startup(&mut self) {
         if self.started {
             return;
         }
         self.started = true;
-        let now = self.now();
         let instant = self.clock.instant();
         self.tools = (self.resolve_tools)();
         self.tools_checked = Some(instant);
+    }
 
+    /// Start-up, second half (§6.6, §6.11, §6.17): re-adopts the renders the database records and the
+    /// foreign ffmpeg processes the policy allows, imports the Swift history once and sweeps stale
+    /// partial files. Each step reads the configured folders or needs the config's settings, so it
+    /// runs once, at the first tick that has Full Disk Access and a loaded config (§6.12).
+    fn begin(&mut self, now: i64) {
+        self.begun = true;
         let report = {
             let mut ctx = ctx!(self, now);
             adopt_at_startup(self.policy, &mut ctx, &mut self.renders, &mut *self.table)
@@ -393,7 +404,6 @@ impl Engine {
                 tracing::warn!(error = %err, "the start-up sweep failed");
             }
         }
-        self.apply_retention(now);
     }
 
     /// One pass of the engine (§6.1, §6.3): tools if due, then [`Engine::run_tick`], then publish.
@@ -505,25 +515,29 @@ impl Engine {
             self.fda_checked = Some(instant);
         }
         if self.fda_missing {
-            // Nothing is scanned, promoted or collected while access is missing; the running renders
-            // are still reaped.
+            // Nothing is read, scanned, reaped, promoted or collected while access is missing (§6.12).
+            // Loading the config stats the configured folders, so it waits too. A render that is
+            // running keeps running; its completion is picked up once access is back.
             self.scan = None;
-            let mut ctx = ctx!(self, now);
-            self.renders.poll_running(&mut ctx, &mut *self.table)?;
-            self.renders.poll_foreign(&mut ctx, &mut *self.table)?;
             return Ok(());
         }
 
         if self.config.reload_if_changed(&self.codecs) {
             self.rescan = true;
             self.unknown_codecs = self.read_unknown_codecs();
-            self.log_config_reloaded(now)?;
+            if matches!(self.config.status(), Status::Loaded) {
+                self.log_config_reloaded(now)?;
+            }
         }
+        self.config_checked = true;
         let Some(config) = self.config.config().cloned() else {
             self.scan = None;
             self.poll_and_promote(now)?;
             return Ok(());
         };
+        if !self.begun {
+            self.begin(now);
+        }
 
         let interval = self.scan_interval();
         let due = self.rescan || self.scan_due(instant, interval);
@@ -691,9 +705,10 @@ impl Engine {
         self.renders.tick(&mut ctx, &mut *self.table)
     }
 
-    /// Applies the retention of §6.13 at start-up and then hourly.
+    /// Applies the retention of §6.13 hourly, once a config is loaded: its window is the config's, so
+    /// no pass runs on the default window before the config says what it is.
     fn apply_retention(&mut self, now: i64) {
-        if now < self.prune_due_ms {
+        if self.config.config().is_none() || now < self.prune_due_ms {
             return;
         }
         self.prune_due_ms = now + PRUNE_EVERY_MS;
@@ -758,7 +773,12 @@ impl Engine {
             }
         }
         let path = self.config.path().to_string_lossy().into_owned();
-        let ids = self.config.problem_ids();
+        // A config that has not been read yet is not reported as missing.
+        let ids = if self.config_checked {
+            self.config.problem_ids()
+        } else {
+            Vec::new()
+        };
         if ids.contains(&PROBLEM_CONFIG_MISSING) {
             out.push(problems::config_problem(true, &path));
         }
@@ -843,9 +863,14 @@ impl Engine {
         let mut kept_paths = Vec::with_capacity(recent.len());
         let mut recently_rendered = Vec::with_capacity(recent.len());
         for row in recent {
-            let file_exists = self
-                .file_cache
-                .check(&row.output_path, instant, |path| Path::new(path).exists());
+            // While access is missing no output is probed: the last answer held stands, or none is
+            // known and the row shows `false` until access is back.
+            let file_exists = if self.fda_missing {
+                self.file_cache.held(&row.output_path).unwrap_or(false)
+            } else {
+                self.file_cache
+                    .check(&row.output_path, instant, |path| Path::new(path).exists())
+            };
             kept_paths.push(row.output_path.clone());
             recently_rendered.push(snap_video(row, file_exists));
         }

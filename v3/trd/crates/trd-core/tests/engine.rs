@@ -670,24 +670,55 @@ async fn fda_blocks_scanning() {
         exif_released: true,
         ..Opts::default()
     });
+    // One render slot: S1 runs and S2 waits in the queue.
     w.add_raw("S1", 5);
-    w.set_export("S1", 3);
-    w.tick().await;
-    assert!(
-        card(&w.snap(), "LRT_S1").is_some(),
-        "the sequence is listed before the block"
-    );
+    w.set_export("S1", 5);
+    w.add_raw("S2", 5);
+    w.set_export("S2", 5);
+    // A finished render whose file the snapshot reports with `file_exists`.
+    let old = w.paths.export.join("LRT_OLD").join("old.mov");
+    fs::create_dir_all(old.parent().expect("a parent")).expect("a directory");
+    fs::write(&old, b"x").expect("the old render");
+    let now = w.shared.now.load(Ordering::SeqCst);
+    w.store_video("old", now, &old.to_string_lossy());
+    w.drive(|s| s.counts.rendering == 1 && s.counts.queued == 1)
+        .await;
 
+    let ids = |jobs: Vec<trd_core::store::RenderJob>| -> Vec<String> {
+        jobs.into_iter().map(|job| job.id).collect()
+    };
+    let running = ids(w.jobs(JobStatus::Running));
+    let queued = ids(w.jobs(JobStatus::Queued));
+    assert_eq!((running.len(), queued.len()), (1, 1), "one runs, one waits");
+    let old_path = old.to_string_lossy().into_owned();
+    let listed = |snap: &Snapshot| {
+        snap.recently_rendered
+            .iter()
+            .find(|row| row.output_path == old_path)
+            .map(|row| row.file_exists)
+    };
+    assert_eq!(listed(&w.snap()), Some(true));
+
+    // Access goes missing. The running render's slot frees up and the file goes away, and the
+    // recheck is due: nothing may be reaped, promoted or probed.
     *w.shared.disk.lock().expect("the disk state") = FdaState::Missing;
     w.shared.blocked.store(true, Ordering::SeqCst);
-    w.advance(Duration::from_secs(31));
+    fs::write(&w.paths.release_render, b"").expect("the render release");
+    fs::remove_file(&old).expect("the old render is removed");
+    w.advance(Duration::from_secs(120));
     w.engine().tick().await;
     let snap = w.snap();
     assert_eq!(snap.phase, Phase::WaitingForDiskAccess);
     let fda = problem(&snap, "fda").expect("the fda problem");
     assert_eq!(fda.severity, Severity::Error);
     assert!(snap.in_progress.is_empty(), "no configured path is listed");
-    assert!(w.jobs(JobStatus::Queued).is_empty() && w.jobs(JobStatus::Running).is_empty());
+    assert_eq!(
+        listed(&snap),
+        Some(true),
+        "the file is not probed while access is missing"
+    );
+    assert_eq!(ids(w.jobs(JobStatus::Running)), running, "nothing reaped");
+    assert_eq!(ids(w.jobs(JobStatus::Queued)), queued, "nothing promoted");
 
     // Still blocked on the next tick, and nothing touched the filesystem.
     w.tick().await;
@@ -697,15 +728,69 @@ async fn fda_blocks_scanning() {
         0,
         "no path was touched"
     );
+    assert_eq!(ids(w.jobs(JobStatus::Queued)), queued, "still not promoted");
+
+    // Access granted: the finished render is reaped, S2 is promoted and renders to the end.
+    *w.shared.disk.lock().expect("the disk state") = FdaState::Granted;
+    w.shared.blocked.store(false, Ordering::SeqCst);
+    w.advance(Duration::from_secs(31));
+    w.engine().tick().await;
+    assert!(
+        problem(&w.snap(), "fda").is_none(),
+        "the problem is gone once access is granted"
+    );
+    assert_eq!(listed(&w.snap()), Some(false), "the file is probed again");
+    w.drive(|s| s.counts.rendering == 0 && s.counts.queued == 0)
+        .await;
+}
+
+#[tokio::test]
+async fn fda_at_launch_waits_before_config() {
+    // Access is missing from the first tick, and a config file exists that is not read yet.
+    let mut w = World::new(Opts {
+        config: false,
+        ..Opts::default()
+    });
+    *w.shared.disk.lock().expect("the disk state") = FdaState::Missing;
+    w.shared.blocked.store(true, Ordering::SeqCst);
+    w.write_config(|_| {});
+    w.tick().await;
+    let snap = w.snap();
+    assert_eq!(snap.phase, Phase::WaitingForDiskAccess);
+    assert!(problem(&snap, "fda").is_some(), "the fda problem");
+    assert!(
+        problem(&snap, "config").is_none(),
+        "the config is not read while access is missing, so it is not reported missing"
+    );
+    assert_eq!(w.shared.touched.load(Ordering::SeqCst), 0);
 
     *w.shared.disk.lock().expect("the disk state") = FdaState::Granted;
     w.shared.blocked.store(false, Ordering::SeqCst);
     w.advance(Duration::from_secs(31));
     w.engine().tick().await;
-    assert_eq!(w.snap().phase, Phase::Exporting);
+    assert_eq!(
+        w.snap().phase,
+        Phase::Idle,
+        "the config is read once access is granted"
+    );
+}
+
+#[tokio::test]
+async fn retention_uses_loaded_config() {
+    const DAY: i64 = 24 * 60 * 60 * 1000;
+    // No config at launch: the retention window is the config's, so no pass runs before it loads.
+    let mut w = World::new(Opts {
+        config: false,
+        ..Opts::default()
+    });
+    let now = w.shared.now.load(Ordering::SeqCst);
+    w.store_video("old", now - 60 * DAY, "/nonexistent/old.mov");
+    w.write_config(|c| c.recent_render_history_days = 90);
+    w.tick().await;
+    let rows = w.reader.rendered_videos().expect("the rows");
     assert!(
-        problem(&w.snap(), "fda").is_none(),
-        "the problem is gone once access is granted"
+        rows.iter().any(|row| row.id == "old"),
+        "a row inside the config's 90-day window survives start-up"
     );
 }
 
