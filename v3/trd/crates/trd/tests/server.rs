@@ -13,9 +13,9 @@ mod server {
     use std::fs;
     use std::io::{BufRead, BufReader};
     use std::path::{Path, PathBuf};
-    use std::process::{Child, ChildStdout, Command, Stdio};
     #[cfg(unix)]
     use std::process::ExitStatus;
+    use std::process::{Child, ChildStdout, Command, Stdio};
     use std::time::{Duration, Instant};
 
     #[cfg(unix)]
