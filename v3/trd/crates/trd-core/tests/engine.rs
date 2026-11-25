@@ -117,6 +117,7 @@ struct Shared {
     now: Arc<AtomicI64>,
     blocked: Arc<AtomicBool>,
     touched: Arc<AtomicUsize>,
+    lists: Arc<AtomicUsize>,
 }
 
 /// Full Disk Access as the test sets it.
@@ -132,6 +133,7 @@ impl DiskAccess for ScriptedDisk {
 struct GuardedFs {
     blocked: Arc<AtomicBool>,
     touched: Arc<AtomicUsize>,
+    lists: Arc<AtomicUsize>,
 }
 
 impl GuardedFs {
@@ -146,6 +148,7 @@ impl GuardedFs {
 
 impl ScanFs for GuardedFs {
     fn list(&self, dir: &Path) -> io::Result<Vec<DirItem>> {
+        self.lists.fetch_add(1, Ordering::SeqCst);
         self.gate()?;
         RealFs.list(dir)
     }
@@ -247,6 +250,7 @@ fn build_engine(
         scan_fs: Arc::new(GuardedFs {
             blocked: shared.blocked.clone(),
             touched: shared.touched.clone(),
+            lists: shared.lists.clone(),
         }),
         clock: shared.clock.clone() as Arc<dyn Clock>,
         now_ms: Arc::new(move || now.load(Ordering::SeqCst)),
@@ -310,6 +314,7 @@ impl World {
             now: Arc::new(AtomicI64::new(1_000_000_000)),
             blocked: Arc::new(AtomicBool::new(false)),
             touched: Arc::new(AtomicUsize::new(0)),
+            lists: Arc::new(AtomicUsize::new(0)),
         };
         let (foreign_child, processes) = if opts.foreign {
             let (child, entries) = start_foreign_render(&paths);
@@ -655,6 +660,8 @@ async fn ordering() {
             Stage::Paused,
         ]
     );
+    // Let R's fake ffmpeg finish, so it does not outlive the test.
+    fs::write(&w.paths.release_render, b"").expect("the render release");
 }
 
 #[tokio::test]
@@ -707,7 +714,8 @@ async fn config_reload_event() {
     let mut w = World::new(Opts::default());
     w.tick().await;
     let before = w.events(EVENT_CONFIG_RELOADED).len();
-    let scanned_at = w.snap().last_scan_completed_ms;
+    // A scan lists the export folders; the count shows whether one ran.
+    let scanned_at = w.shared.lists.load(Ordering::SeqCst);
 
     // Without the clock moving, no scan is due: only the config change asks for one.
     w.write_config(|c| c.scan_interval_seconds = 2.5);
@@ -719,16 +727,16 @@ async fn config_reload_event() {
         "one EVENT_CONFIG_RELOADED for the edit"
     );
     assert!(
-        w.snap().last_scan_completed_ms > scanned_at,
+        w.shared.lists.load(Ordering::SeqCst) > scanned_at,
         "the config change triggered a rescan"
     );
 
     // No edit: no event, and no scan either.
-    let after_edit = w.snap().last_scan_completed_ms;
+    let after_edit = w.shared.lists.load(Ordering::SeqCst);
     w.shared.now.fetch_add(1_000, Ordering::SeqCst);
     w.engine().tick().await;
     assert_eq!(w.events(EVENT_CONFIG_RELOADED).len(), before + 1);
-    assert_eq!(w.snap().last_scan_completed_ms, after_edit);
+    assert_eq!(w.shared.lists.load(Ordering::SeqCst), after_edit);
 }
 
 #[tokio::test]
@@ -1052,6 +1060,20 @@ async fn foreign_render_left_alone() {
         "its row is still running"
     );
     assert!(w.jobs(JobStatus::Suspended).is_empty());
+
+    // Pausing its sequence does not signal it either: only its own stop ends it (§6.11 step 3).
+    apply(&mut w, Control::PauseSequence("LRT_S1".to_owned())).expect("pause the sequence");
+    w.tick().await;
+    assert_eq!(
+        process::process_state(pid),
+        ProcessState::Running,
+        "the foreign render is still running after its sequence is paused"
+    );
+    assert_eq!(
+        w.jobs(JobStatus::Running).len(),
+        1,
+        "its row is still running after its sequence is paused"
+    );
 
     // A config reload that no longer covers its folder does not signal it.
     w.write_config(|c| c.export_paths = vec![w.paths.export_other.to_string_lossy().into_owned()]);

@@ -226,15 +226,18 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Whether `other` shows the same state. The revision and the generation time are not
-    /// compared: they are what changes when the state does.
+    /// Whether `other` shows the same state. The revision, the generation time and the last-scan
+    /// timing are not compared: a scan that changes nothing is not a change, so an idle daemon
+    /// publishes nothing. The timing reaches the clients with the next real change.
     pub fn same_content(&self, other: &Snapshot) -> bool {
         let mut a = self.clone();
         let mut b = other.clone();
-        a.revision = 0;
-        a.generated_at_ms = 0;
-        b.revision = 0;
-        b.generated_at_ms = 0;
+        for s in [&mut a, &mut b] {
+            s.revision = 0;
+            s.generated_at_ms = 0;
+            s.last_scan_completed_ms = 0;
+            s.last_scan_duration_ms = 0;
+        }
         a == b
     }
 }

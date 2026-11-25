@@ -158,9 +158,10 @@ impl Renders {
             )));
         }
         // The renders end first: when one cannot be ended, the config is left as it was.
+        // An adopted foreign render is left running (§6.11 step 3): only its own stop ends it.
         for job in in_flight_jobs(ctx.store)?
             .into_iter()
-            .filter(|job| job.sequence_name == name)
+            .filter(|job| job.sequence_name == name && !job.foreign)
         {
             self.cancel_job(ctx, job)?;
         }
@@ -207,10 +208,10 @@ impl Renders {
             )));
         }
         // The renders end first: when one cannot be ended, the config is left as it was.
-        for job in in_flight_jobs(ctx.store)?
-            .into_iter()
-            .filter(|job| job.sequence_name == sequence && job.variant_key == variant_key)
-        {
+        // An adopted foreign render is left running (§6.11 step 3): only its own stop ends it.
+        for job in in_flight_jobs(ctx.store)?.into_iter().filter(|job| {
+            job.sequence_name == sequence && job.variant_key == variant_key && !job.foreign
+        }) {
             self.cancel_job(ctx, job)?;
         }
         push_pause(ctx, sequence, variant_key)?;
