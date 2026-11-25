@@ -52,8 +52,9 @@ jobs:
     name: trd (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # A hang here holds a runner until GitHub's 6 h default cancels it. The Windows job's green
-    # run takes about 40 s of tests (TASK-1112), so 20 minutes is a generous bound.
-    timeout-minutes: ${{ matrix.os == 'windows-2022' && 20 || 60 }}
+    # run takes about 40 s of tests (TASK-1112), so 20 minutes is a generous bound. The other
+    # platforms keep GitHub's 6 h default (360 minutes) so only the Windows job changes.
+    timeout-minutes: ${{ matrix.os == 'windows-2022' && 20 || 360 }}
     strategy:
       fail-fast: false
       matrix:

@@ -469,9 +469,17 @@ fn join_pipe(reader: Option<mpsc::Receiver<Vec<u8>>>) -> Vec<u8> {
     };
     let deadline = Instant::now() + PIPE_GRACE;
     let mut bytes = Vec::new();
-    while let Ok(chunk) = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-    {
-        bytes.extend_from_slice(&chunk);
+    loop {
+        // Checked on every pass: a queued chunk must not keep the loop going past the deadline,
+        // since `recv_timeout` returns queued chunks at once even with no time left.
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+        match receiver.recv_timeout(deadline - now) {
+            Ok(chunk) => bytes.extend_from_slice(&chunk),
+            Err(_) => break,
+        }
     }
     bytes
 }
@@ -917,17 +925,25 @@ mod tests {
 
     /// A grandchild that inherits the probe's stdout keeps the pipe open after the probe exits. The
     /// probe must still answer with what the probe printed, rather than wait for the grandchild.
+    /// The grandchild outlives the hang guard, so a probe that waits for it fails the test; the
+    /// probe runs on a thread so the test can stop waiting. This is a hang guard, not a timing
+    /// assertion: the probe's answer is not checked against any clock.
     #[cfg(unix)]
     #[test]
     fn unix_probe_does_not_wait_for_a_grandchild_holding_the_pipe() {
+        const HANG_GUARD: Duration = Duration::from_secs(30);
         let tree = Tree::new();
         let script = tree.root().join("fake-tool");
-        write_script(&script, "sleep 3 &\necho 'ffmpeg version 7.1'");
+        write_script(&script, "sleep 60 &\necho 'ffmpeg version 7.1'");
         let command = shell_script_command(&script);
-        assert_eq!(
-            run_version_command(&command, "-version"),
-            Ok("ffmpeg version 7.1".to_string())
-        );
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = sender.send(run_version_command(&command, "-version"));
+        });
+        let answer = receiver
+            .recv_timeout(HANG_GUARD)
+            .expect("the probe answers without waiting for the grandchild");
+        assert_eq!(answer, Ok("ffmpeg version 7.1".to_string()));
     }
 
     #[test]
