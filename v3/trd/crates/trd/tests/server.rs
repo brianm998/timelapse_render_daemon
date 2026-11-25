@@ -11,6 +11,8 @@
 
 mod server {
     use std::fs;
+    #[cfg(unix)]
+    use std::io::Read;
     use std::io::{BufRead, BufReader};
     use std::path::{Path, PathBuf};
     #[cfg(unix)]
@@ -69,7 +71,8 @@ mod server {
     /// A running `trd daemon` child. Killed when dropped unless it was stopped first.
     struct Daemon {
         child: Child,
-        _stdout: BufReader<ChildStdout>,
+        #[cfg_attr(not(unix), allow(dead_code))]
+        stdout: BufReader<ChildStdout>,
         port: u16,
     }
 
@@ -120,7 +123,7 @@ mod server {
                 .unwrap_or_else(|| panic!("unexpected first line: {line:?}"));
             Daemon {
                 child,
-                _stdout: stdout,
+                stdout,
                 port,
             }
         }
@@ -139,13 +142,15 @@ mod server {
         /// Sends SIGTERM and waits for the process to exit.
         #[cfg(unix)]
         fn terminate(&mut self) -> ExitStatus {
+            self.signal_and_wait(libc::SIGTERM)
+        }
+
+        /// Sends `signal`, which asks the daemon to stop, and waits for the process to exit.
+        #[cfg(unix)]
+        fn signal_and_wait(&mut self, signal: i32) -> ExitStatus {
             let pid = i32::try_from(self.pid()).expect("a pid fits in i32");
-            // SAFETY: the pid is the daemon this test started and still owns; SIGTERM only asks it to stop.
-            assert_eq!(
-                unsafe { libc::kill(pid, libc::SIGTERM) },
-                0,
-                "SIGTERM is sent"
-            );
+            // SAFETY: the pid is the daemon this test started and still owns; the signal only asks it to stop.
+            assert_eq!(unsafe { libc::kill(pid, signal) }, 0, "the signal is sent");
             self.wait()
         }
 
@@ -1040,6 +1045,42 @@ mod server {
             }
         }
         assert!(watched.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    /// `ServerInfo.name` is the `--advertise-name`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn server_info_name_follows_advertise_name() {
+        let fixture = Fixture::new();
+        fixture.write_config(&empty_config(&fixture));
+        let daemon =
+            Daemon::start_with_flags(&fixture, &[], &["--advertise-name", "Studio Renderer"]);
+        let mut client = daemon.client().await;
+        let info = client
+            .get_server_info(pb::GetServerInfoRequest {})
+            .await
+            .expect("GetServerInfo")
+            .into_inner();
+        assert_eq!(info.name, "Studio Renderer");
+    }
+
+    /// A signal sent as soon as `TRD_LISTENING` is read stops the daemon cleanly (exit 0), for
+    /// SIGTERM and SIGINT alike. The listening line is the only thing the daemon prints.
+    #[cfg(unix)]
+    #[test]
+    fn signals_right_after_listening_exit_zero() {
+        for signal in [libc::SIGTERM, libc::SIGINT] {
+            let fixture = Fixture::new();
+            fixture.write_config(&empty_config(&fixture));
+            let mut daemon = Daemon::start(&fixture, &[]);
+            let status = daemon.signal_and_wait(signal);
+            assert!(status.success(), "exit 0 after signal {signal}: {status:?}");
+            let mut rest = String::new();
+            daemon
+                .stdout
+                .read_to_string(&mut rest)
+                .expect("the rest of stdout");
+            assert_eq!(rest, "", "exactly one line is printed");
+        }
     }
 
     /// SIGTERM ends the streams with UNAVAILABLE, leaves a running render alive (A4), and exits 0.

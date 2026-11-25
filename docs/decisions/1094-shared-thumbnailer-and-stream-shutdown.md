@@ -9,5 +9,8 @@ Decision: every stream send races the shutdown watch. A stopped stream ends with
 with the notice wait bounded at one second, so a client that does not read cannot keep the
 daemon's graceful shutdown waiting.
 
+Decision: a `WatchSnapshots` channel holds one message, and the feed reserves that room before it
+reads the latest snapshot. A stalled reader finds at most one old message in the server's queue.
+
 Why: two separate thumbnailers each got their own gate, doubling the cap; a blocked send
-ignored shutdown.
+ignored shutdown. A longer queue gave a slow reader a backlog.

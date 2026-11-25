@@ -985,6 +985,83 @@ fn sample_rate(requested: u32) -> u32 {
     }
 }
 
+/// Feeds one `WatchSnapshots` stream from `updates` (§7): the current value at once, then the latest
+/// one whenever its revision changed, at most one message per `period`. The channel holds one
+/// message and the latest value is read only once there is room for it, so a reader that stalls
+/// finds at most one old message and then the newest. Ends with UNAVAILABLE on shutdown.
+fn feed_snapshots<S, T>(
+    mut updates: watch::Receiver<S>,
+    mut shutdown: watch::Receiver<bool>,
+    period: Duration,
+    revision: impl Fn(&S) -> u64 + Send + Sync + 'static,
+    message: impl Fn(&S) -> T + Send + Sync + 'static,
+) -> mpsc::Receiver<Result<T, Status>>
+where
+    S: Clone + Send + Sync + 'static,
+    T: Send + 'static,
+{
+    let (tx, rx) = mpsc::channel(1);
+    tokio::spawn(async move {
+        async {
+            let mut ticker = tokio::time::interval(period);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut sent = None;
+            loop {
+                // The first message does not wait for a change.
+                if sent.is_some() {
+                    tokio::select! {
+                        changed = updates.changed() => {
+                            if changed.is_err() {
+                                return;
+                            }
+                        }
+                        () = wait_shutdown(&mut shutdown) => return,
+                    }
+                }
+                let permit = tokio::select! {
+                    reserved = tx.reserve() => match reserved {
+                        Ok(permit) => permit,
+                        Err(_) => return,
+                    },
+                    () = wait_shutdown(&mut shutdown) => return,
+                };
+                // The first tick of an interval is immediate; the next ones pace the messages.
+                tokio::select! {
+                    _ = ticker.tick() => {}
+                    () = wait_shutdown(&mut shutdown) => return,
+                }
+                // Only the newest value is sent, once per revision.
+                let latest = updates.borrow_and_update().clone();
+                let current = revision(&latest);
+                if sent == Some(current) {
+                    continue;
+                }
+                sent = Some(current);
+                permit.send(Ok(message(&latest)));
+            }
+        }
+        .await;
+        end_for_shutdown(&tx, &shutdown).await;
+    });
+    rx
+}
+
+/// The page size of `ListRenderedVideos`: 0 is 100, and 500 is the most.
+fn videos_limit(requested: u32) -> usize {
+    match requested {
+        0 => 100,
+        n => n.min(500) as usize,
+    }
+}
+
+/// The page size of `ListLog`: 0 is 200, and 1000 is the most.
+fn log_limit(requested: u32) -> usize {
+    match requested {
+        0 => 200,
+        n => n.min(1000) as usize,
+    }
+}
+
 /// The levels a `WatchLog` or `ListLog` answer includes.
 fn at_least(level: LogLevel, min: LogLevel) -> bool {
     level >= min
@@ -1059,55 +1136,13 @@ impl TrdService for Server {
         let rate = sample_rate(request.get_ref().max_per_second);
         let period = Duration::from_millis(1000 / u64::from(rate));
         let shared = self.shared.clone();
-        let mut updates = shared.handle.subscribe();
-        let mut shutdown = shared.shutdown.clone();
-        let (tx, rx) = mpsc::channel(4);
-        tokio::spawn(async move {
-            async {
-                let mut ticker = tokio::time::interval(period);
-                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                // The first tick of an interval is immediate; the next ones pace the messages.
-                ticker.tick().await;
-                let current = updates.borrow_and_update().clone();
-                let mut sent = current.revision;
-                if !send_unless_stopped(&tx, Ok(shared.snapshot_message(&current)), &mut shutdown)
-                    .await
-                {
-                    return;
-                }
-                loop {
-                    tokio::select! {
-                        changed = updates.changed() => {
-                            if changed.is_err() {
-                                return;
-                            }
-                        }
-                        () = wait_shutdown(&mut shutdown) => return,
-                    }
-                    tokio::select! {
-                        _ = ticker.tick() => {}
-                        () = wait_shutdown(&mut shutdown) => return,
-                    }
-                    // Only the newest snapshot is sent, once per revision.
-                    let latest = updates.borrow_and_update().clone();
-                    if latest.revision == sent {
-                        continue;
-                    }
-                    sent = latest.revision;
-                    if !send_unless_stopped(
-                        &tx,
-                        Ok(shared.snapshot_message(&latest)),
-                        &mut shutdown,
-                    )
-                    .await
-                    {
-                        return;
-                    }
-                }
-            }
-            .await;
-            end_for_shutdown(&tx, &shutdown).await;
-        });
+        let rx = feed_snapshots(
+            shared.handle.subscribe(),
+            shared.shutdown.clone(),
+            period,
+            |snap| snap.revision,
+            move |snap| shared.snapshot_message(snap),
+        );
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
@@ -1116,10 +1151,7 @@ impl TrdService for Server {
         request: Request<pb::ListRenderedVideosRequest>,
     ) -> Result<Response<pb::ListRenderedVideosResponse>, Status> {
         let request = request.into_inner();
-        let limit = match request.limit {
-            0 => 100,
-            n => n.min(500),
-        } as usize;
+        let limit = videos_limit(request.limit);
         let search = request.search.to_lowercase();
         let rows = self.shared.store.rendered_videos().map_err(internal)?;
         let matching: Vec<&RenderedVideo> = rows
@@ -1248,10 +1280,7 @@ impl TrdService for Server {
         request: Request<pb::ListLogRequest>,
     ) -> Result<Response<pb::ListLogResponse>, Status> {
         let request = request.into_inner();
-        let limit = match request.limit {
-            0 => 200,
-            n => n.min(1000),
-        } as usize;
+        let limit = log_limit(request.limit);
         let min = min_level_of(request.min_level);
         let before = i64::try_from(request.before_seq).unwrap_or(i64::MAX);
         let mut rows = self
@@ -1758,14 +1787,29 @@ impl Server {
 mod tests {
     use super::*;
     use crate::daemon::{Settings, assemble};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio_stream::StreamExt;
     use trd_core::adopt::AdoptPolicy;
     use trd_core::dirs::Dirs;
 
+    /// Stops a test that waits for a state that never comes. It is not a timing assertion.
+    const HANG_GUARD: Duration = Duration::from_secs(60);
+
     /// A server over fresh temporary folders. Its engine is built but never run, so no scan,
     /// render or process table is touched.
-    fn server_in(dir: &Path) -> Server {
-        let (_stop, stop_rx) = watch::channel(false);
-        let settings = Settings {
+    /// The returned sender keeps the shutdown watch open; dropping it ends the streams.
+    fn server_in(dir: &Path) -> (Server, watch::Sender<bool>) {
+        server_with(dir, |_| {})
+    }
+
+    /// [`server_in`] with `adjust` applied to the settings first.
+    fn server_with(
+        dir: &Path,
+        adjust: impl FnOnce(&mut Settings),
+    ) -> (Server, watch::Sender<bool>) {
+        let (stop, stop_rx) = watch::channel(false);
+        let mut settings = Settings {
             dirs: Dirs {
                 config_default: dir.join("config").join("config.json"),
                 data: dir.join("data"),
@@ -1780,8 +1824,16 @@ mod tests {
             home: dir.to_path_buf(),
             os: Os::current(),
         };
+        adjust(&mut settings);
         let (shared, _engine) = assemble(settings, stop_rx).expect("the daemon assembles");
-        Server::new(shared)
+        (Server::new(shared), stop)
+    }
+
+    fn temp_dir() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("trd-server-unit-")
+            .tempdir()
+            .expect("a temporary directory")
     }
 
     fn marked<T>(message: T, listener: Listener) -> Request<T> {
@@ -1798,7 +1850,7 @@ mod tests {
             .prefix("trd-server-unit-")
             .tempdir()
             .expect("a temporary directory");
-        let server = server_in(dir.path());
+        let (server, _stop) = server_in(dir.path());
 
         let lan = Listener::Lan;
         assert_eq!(
@@ -1992,7 +2044,7 @@ mod tests {
             .prefix("trd-server-unit-")
             .tempdir()
             .expect("a temporary directory");
-        let server = server_in(dir.path());
+        let (server, _stop) = server_in(dir.path());
         for (id, sequence) in [
             ("v1", "alpha"),
             ("v2", "beta"),
@@ -2050,5 +2102,422 @@ mod tests {
         found_ids.sort();
         assert_eq!(found_ids, ["v1", "v3"], "names match without case");
         assert!(!found.more);
+    }
+
+    /// The next message of a stream, under the hang guard.
+    async fn next_of<T>(
+        stream: &mut (impl tokio_stream::Stream<Item = Result<T, Status>> + Unpin),
+    ) -> T {
+        tokio::time::timeout(HANG_GUARD, stream.next())
+            .await
+            .expect("the stream answers")
+            .expect("the stream stays open")
+            .expect("a message")
+    }
+
+    /// A reader that stalls while many revisions are published finds the one message that was
+    /// waiting and then the newest, never a backlog; an unchanged revision is not sent again.
+    #[tokio::test]
+    async fn watch_snapshots_gives_a_slow_reader_the_newest() {
+        let (publish, updates) = watch::channel(1_u64);
+        let (stop, shutdown) = watch::channel(false);
+        // Counts the values the feed has read, so the test knows when it has seen one.
+        let reads = Arc::new(AtomicUsize::new(0));
+        let counted = reads.clone();
+        let rx = feed_snapshots(
+            updates,
+            shutdown,
+            Duration::from_nanos(1),
+            move |revision| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                *revision
+            },
+            |revision| *revision,
+        );
+        // The first message arrives with nothing published and nothing read.
+        tokio::time::timeout(HANG_GUARD, async {
+            while rx.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the current snapshot is sent at once");
+        for revision in 2..=50 {
+            publish.send(revision).expect("the feed listens");
+            tokio::task::yield_now().await;
+            assert_eq!(rx.len(), 1, "one message at most waits for the reader");
+        }
+
+        let mut stream = ReceiverStream::new(rx);
+        assert_eq!(next_of(&mut stream).await, 1, "the one that was waiting");
+        assert_eq!(next_of(&mut stream).await, 50, "then the newest");
+
+        let before = reads.load(Ordering::SeqCst);
+        publish.send(50).expect("the feed listens");
+        tokio::time::timeout(HANG_GUARD, async {
+            while reads.load(Ordering::SeqCst) == before {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the feed reads the repeated revision");
+        assert!(stream.as_mut().try_recv().is_err(), "50 is not sent twice");
+        publish.send(51).expect("the feed listens");
+        assert_eq!(next_of(&mut stream).await, 51);
+
+        stop.send(true).expect("the feed listens");
+        let end = tokio::time::timeout(HANG_GUARD, stream.next())
+            .await
+            .expect("the stream ends")
+            .expect("a last item")
+            .expect_err("a status");
+        assert_eq!(end.code(), tonic::Code::Unavailable);
+    }
+
+    fn write_log(server: &Server, level: LogLevel, message: &str) -> u64 {
+        let row = log_event(
+            &server.shared.store,
+            1,
+            level,
+            "unit",
+            message,
+            &LogFields::default(),
+        )
+        .expect("the row is stored");
+        u64::try_from(row.seq).expect("a positive seq")
+    }
+
+    /// `WatchLog` sends only rows after a non-zero `after_seq`, and `min_level` filters the stored
+    /// rows and the live ones.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn watch_log_filters_by_after_seq_and_level() {
+        let dir = temp_dir();
+        let (server, _stop) = server_in(dir.path());
+        write_log(&server, LogLevel::Error, "old error");
+        let after = write_log(&server, LogLevel::Warn, "the last one seen");
+        let info = write_log(&server, LogLevel::Info, "stored info");
+        let warn = write_log(&server, LogLevel::Warn, "stored warn");
+
+        let watch = |min_level: i32| {
+            server.watch_log(Request::new(pb::WatchLogRequest {
+                after_seq: after,
+                min_level,
+            }))
+        };
+        let mut all = watch(0).await.expect("WatchLog").into_inner();
+        assert_eq!(next_of(&mut all).await.seq, info);
+        assert_eq!(next_of(&mut all).await.seq, warn);
+
+        let mut warnings = watch(pb::LogLevel::LogWarn as i32)
+            .await
+            .expect("WatchLog at WARN")
+            .into_inner();
+        assert_eq!(
+            next_of(&mut warnings).await.seq,
+            warn,
+            "stored INFO is left out"
+        );
+        write_log(&server, LogLevel::Info, "live info");
+        let live = write_log(&server, LogLevel::Error, "live error");
+        assert_eq!(
+            next_of(&mut warnings).await.seq,
+            live,
+            "live INFO is left out"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rendered_videos_limit_defaults_and_caps() {
+        let dir = temp_dir();
+        let (server, _stop) = server_in(dir.path());
+        for index in 0..501 {
+            server
+                .shared
+                .store
+                .put_rendered_video(&video(&format!("v{index}"), "many"))
+                .expect("the row is stored");
+        }
+        for (limit, expected) in [(0, 100), (7, 7), (500, 500), (10_000, 500)] {
+            let page = server
+                .list_rendered_videos(Request::new(pb::ListRenderedVideosRequest {
+                    limit,
+                    ..Default::default()
+                }))
+                .await
+                .expect("a page")
+                .into_inner();
+            assert_eq!(page.videos.len(), expected, "limit {limit}");
+            assert!(page.more);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn list_log_limit_defaults_and_caps() {
+        let dir = temp_dir();
+        let (server, _stop) = server_in(dir.path());
+        for _ in 0..1001 {
+            server
+                .shared
+                .store
+                .insert_log(1, LogLevel::Info, "unit", "row", &LogFields::default())
+                .expect("the row is stored");
+        }
+        for (limit, expected) in [(0, 200), (7, 7), (1000, 1000), (10_000, 1000)] {
+            let page = server
+                .list_log(Request::new(pb::ListLogRequest {
+                    before_seq: 0,
+                    limit,
+                    min_level: 0,
+                }))
+                .await
+                .expect("a page")
+                .into_inner();
+            assert_eq!(page.entries.len(), expected, "limit {limit}");
+            assert!(page.more);
+        }
+    }
+
+    fn finished_job(log_path: &Path) -> RenderJob {
+        RenderJob {
+            id: "r1".to_owned(),
+            sequence_name: "alpha".to_owned(),
+            export_path: "/export".to_owned(),
+            variant_key: "ProResUHQ_25_1280x720".to_owned(),
+            output_filename: "v1.mov".to_owned(),
+            output_path: "/export/v1.mov".to_owned(),
+            partial_path: "/export/v1.partial.mov".to_owned(),
+            plan_json: String::new(),
+            status: JobStatus::Done,
+            suspended_by: None,
+            pid: Some(1),
+            pid_start_time: None,
+            queued_at: 1,
+            started_at: Some(2),
+            finished_at: Some(3),
+            progress_path: None,
+            log_path: Some(log_path.to_string_lossy().into_owned()),
+            adopted: false,
+            foreign: false,
+        }
+    }
+
+    /// `GetRenderDetails` finds a render by its video and by its failure, and `log_tail` holds the
+    /// last 200 lines only.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn render_details_by_video_and_failure_with_the_log_tail() {
+        let dir = temp_dir();
+        let (server, _stop) = server_in(dir.path());
+        let log = dir.path().join("render.log");
+        let text: String = (1..=250).map(|n| format!("line {n}\n")).collect();
+        fs::write(&log, text).expect("the render log");
+        let store = &server.shared.store;
+        store
+            .put_render_job(&finished_job(&log))
+            .expect("the job is stored");
+        store
+            .put_rendered_video(&video("v1", "alpha"))
+            .expect("the video is stored");
+        let failure = store
+            .record_failure(&failure_row(Vec::new()))
+            .expect("the failure is stored");
+
+        use pb::get_render_details_request::Target;
+        for (target, command_line) in [
+            (Target::RenderedVideoId("v1".to_owned()), ""),
+            (Target::FailureId(failure.id), "ffmpeg -i in out"),
+        ] {
+            let details = server
+                .get_render_details(Request::new(pb::GetRenderDetailsRequest {
+                    target: Some(target),
+                }))
+                .await
+                .expect("the details")
+                .into_inner();
+            assert_eq!(details.render_id, "r1");
+            assert_eq!(details.command_line, command_line);
+            assert_eq!(details.log_tail.len(), 200);
+            assert_eq!(details.log_tail[0], "line 51");
+            assert_eq!(details.log_tail[199], "line 250");
+            assert_eq!(details.pid, 0, "a finished render has no pid");
+        }
+    }
+
+    fn failure_row(tool_output: Vec<String>) -> Failure {
+        Failure {
+            id: "f1".to_owned(),
+            output_path: "/export/v1.mov".to_owned(),
+            kind: "FAILURE_DISK_FULL".to_owned(),
+            first_seen: 1,
+            last_seen: 2,
+            occurrences: 1,
+            sequence_name: "alpha".to_owned(),
+            export_path: "/export".to_owned(),
+            output_filename: "v1.mov".to_owned(),
+            variant_key: "ProResUHQ_25_1280x720".to_owned(),
+            summary: "summary".to_owned(),
+            detail: "detail".to_owned(),
+            exit_code: Some(1),
+            command_line: "ffmpeg -i in out".to_owned(),
+            tool_output_json: serde_json::to_string(&tool_output).expect("JSON"),
+            variant_auto_paused: true,
+            render_id: Some("r1".to_owned()),
+        }
+    }
+
+    /// A failure card takes its extra fields from the stored row, with the last 20 output lines.
+    #[test]
+    fn failure_cards_carry_the_stored_row() {
+        let row = failure_row((1..=30).map(|n| n.to_string()).collect());
+        let card = trd_core::snapshot::FailureCard {
+            id: row.id.clone(),
+            first_seen_ms: 1,
+            last_seen_ms: 2,
+            sequence_name: row.sequence_name.clone(),
+            output_filename: row.output_filename.clone(),
+            output_path: row.output_path.clone(),
+            variant_key: row.variant_key.clone(),
+            kind: row.kind.clone(),
+            summary: row.summary.clone(),
+            detail: row.detail.clone(),
+            occurrences: 1,
+        };
+        let message = failure_to_proto(&card, Some(&row));
+        assert_eq!(message.tool_output.len(), 20);
+        assert_eq!(message.tool_output[0], "11");
+        assert!(message.has_exit_code && message.variant_auto_paused);
+        assert_eq!(message.exit_code, 1);
+        assert_eq!(message.command_line, row.command_line);
+        assert_eq!(message.render_id, "r1");
+        let bare = failure_to_proto(&card, None);
+        assert!(bare.tool_output.is_empty() && !bare.has_exit_code);
+    }
+
+    /// A stored thumbnail is returned with its size; a video whose file is gone has none to make.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn thumbnails_are_returned_or_not_found() {
+        let dir = temp_dir();
+        let (server, _stop) = server_in(dir.path());
+        let jpeg = dir.path().join("v1.jpg");
+        fs::write(&jpeg, b"jpeg").expect("a thumbnail");
+        let mut with = video("v1", "alpha");
+        with.thumbnail_path = Some(jpeg.to_string_lossy().into_owned());
+        let mut without = video("v2", "beta");
+        without.output_path = dir.path().join("gone.mov").to_string_lossy().into_owned();
+        for row in [&with, &without] {
+            server
+                .shared
+                .store
+                .put_rendered_video(row)
+                .expect("the row is stored");
+        }
+        let get = |id: &str| {
+            server.get_thumbnail(Request::new(pb::GetThumbnailRequest {
+                rendered_video_id: id.to_owned(),
+            }))
+        };
+        let found = get("v1").await.expect("a thumbnail").into_inner();
+        assert_eq!(found.jpeg, b"jpeg");
+        assert_eq!((found.width, found.height), (480, 270));
+        assert_eq!(
+            get("v2").await.expect_err("none can be made").code(),
+            tonic::Code::NotFound
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn revoked_devices_leave_the_list() {
+        let dir = temp_dir();
+        let (server, _stop) = server_in(dir.path());
+        server
+            .shared
+            .store
+            .put_device(&Device {
+                id: "d1".to_owned(),
+                name: "Phone".to_owned(),
+                platform: "ios".to_owned(),
+                token_sha256: "0".repeat(64),
+                paired_at: 1,
+                last_seen: None,
+                revoked: false,
+            })
+            .expect("the device is stored");
+        let list = || {
+            server.list_paired_devices(marked(pb::ListPairedDevicesRequest {}, Listener::Loopback))
+        };
+        let before = list().await.expect("the list").into_inner().devices;
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].platform, pb::DevicePlatform::Ios as i32);
+        let revoke = || {
+            server.revoke_device(marked(
+                pb::RevokeDeviceRequest {
+                    device_id: "d1".to_owned(),
+                },
+                Listener::Loopback,
+            ))
+        };
+        revoke().await.expect("RevokeDevice");
+        assert!(
+            list()
+                .await
+                .expect("the list")
+                .into_inner()
+                .devices
+                .is_empty()
+        );
+        assert_eq!(
+            revoke().await.expect_err("already revoked").code(),
+            tonic::Code::NotFound
+        );
+    }
+
+    /// The config path comes from `--config`, else the stored setting, else the default, and
+    /// `--codecs` names the codec table.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn config_path_and_codecs_follow_the_flags() {
+        let dir = temp_dir();
+        let state = |server: Server| async move {
+            server
+                .get_config(Request::new(pb::GetConfigRequest {}))
+                .await
+                .expect("GetConfig")
+                .into_inner()
+        };
+
+        let (server, _stop) = server_in(dir.path());
+        let stored = dir.path().join("stored.json");
+        server
+            .shared
+            .store
+            .set_config_path(&stored.to_string_lossy())
+            .expect("the setting");
+        let first = state(server).await;
+        assert_eq!(
+            first.path_source,
+            pb::ConfigPathSource::ConfigPathDefault as i32
+        );
+
+        let (server, _stop) = server_in(dir.path());
+        let second = state(server).await;
+        assert_eq!(
+            second.path_source,
+            pb::ConfigPathSource::ConfigPathSetting as i32
+        );
+        assert_eq!(second.path, stored.to_string_lossy());
+
+        let flag = dir.path().join("flag.json");
+        let table = dir.path().join("table.json");
+        let builtin = serde_json::to_string(&codecs::builtin()).expect("JSON");
+        fs::write(&table, builtin).expect("a codec table");
+        let (server, _stop) = server_with(dir.path(), |settings| {
+            settings.config = Some(flag.clone());
+            settings.codecs = Some(table.clone());
+        });
+        let third = state(server).await;
+        assert_eq!(
+            third.path_source,
+            pb::ConfigPathSource::ConfigPathFlag as i32
+        );
+        assert_eq!(third.path, flag.to_string_lossy());
+        assert_eq!(third.codecs_path, table.to_string_lossy());
     }
 }
