@@ -14,7 +14,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use rusqlite::types::Type;
@@ -74,9 +74,11 @@ impl From<io::Error> for StoreError {
 
 pub type StoreResult<T> = Result<T, StoreError>;
 
-/// The database of the daemon.
+/// The database of the daemon. Clones share one connection and one live log channel, so a clone
+/// given to the engine and one kept by the server see the same rows and the same live log.
+#[derive(Clone)]
 pub struct Store {
-    conn: Mutex<Connection>,
+    conn: Arc<Mutex<Connection>>,
     live: broadcast::Sender<LogRow>,
 }
 
@@ -96,7 +98,7 @@ impl Store {
         schema::migrations().to_latest(&mut conn)?;
         let (live, _) = broadcast::channel(LOG_CHANNEL_CAPACITY);
         Ok(Store {
-            conn: Mutex::new(conn),
+            conn: Arc::new(Mutex::new(conn)),
             live,
         })
     }
@@ -585,6 +587,40 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Up to `limit` stored log rows at `min_level` or above, newest first. `before` is the
+    /// sequence number to page from: only rows with `seq < before` are taken; `0` means the newest.
+    pub fn log_rows_before(
+        &self,
+        before: i64,
+        min_level: LogLevel,
+        limit: i64,
+    ) -> StoreResult<Vec<LogRow>> {
+        // The level names are fixed strings from LogLevel, so they are written into the statement.
+        let levels: Vec<String> = [
+            LogLevel::Debug,
+            LogLevel::Info,
+            LogLevel::Warn,
+            LogLevel::Error,
+        ]
+        .into_iter()
+        .filter(|level| *level >= min_level)
+        .map(|level| format!("'{}'", level.as_str()))
+        .collect();
+        if levels.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT seq, at, level, subject, message, event, sequence_name, output_filename,
+                rendered_video_id, failure_id, video_count, total_bytes
+             FROM log WHERE (?1 <= 0 OR seq < ?1) AND level IN ({})
+             ORDER BY seq DESC LIMIT ?2",
+            levels.join(", ")
+        ))?;
+        let rows = stmt.query_map([before, limit], log_row_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     // retention
 
     /// Applies the retention limits of §6.13 with the default log limits (20 000 rows, 30 days).
@@ -743,8 +779,8 @@ impl SuspendedBy {
     }
 }
 
-/// Level of a log row (§6.14).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Level of a log row (§6.14), in increasing severity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
     Debug,
     Info,

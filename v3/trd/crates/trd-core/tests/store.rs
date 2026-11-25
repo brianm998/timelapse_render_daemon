@@ -501,3 +501,72 @@ fn log_event_writes_both() {
     assert_eq!(live.try_recv().unwrap(), row);
     assert!(live.try_recv().is_err());
 }
+
+/// `log_rows_before` pages newest first by sequence number and keeps only the levels at or above
+/// the minimum; `before` 0 starts from the newest row.
+#[test]
+fn log_rows_before_pages_by_level() {
+    let _trace = trace_guard();
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_store(dir.path());
+    let fields = LogFields::default();
+    let levels = [
+        LogLevel::Info,
+        LogLevel::Debug,
+        LogLevel::Warn,
+        LogLevel::Info,
+        LogLevel::Error,
+    ];
+    let seqs: Vec<i64> = levels
+        .iter()
+        .enumerate()
+        .map(|(at, level)| {
+            store
+                .insert_log(at as i64, *level, "test", "row", &fields)
+                .unwrap()
+                .seq
+        })
+        .collect();
+
+    let newest = store.log_rows_before(0, LogLevel::Debug, 2).unwrap();
+    assert_eq!(
+        newest.iter().map(|row| row.seq).collect::<Vec<_>>(),
+        [seqs[4], seqs[3]],
+        "newest first, two rows"
+    );
+
+    // Paging from the row before the last one, at INFO: the older DEBUG row is left out.
+    let page = store.log_rows_before(seqs[3], LogLevel::Info, 10).unwrap();
+    assert_eq!(
+        page.iter().map(|row| row.seq).collect::<Vec<_>>(),
+        [seqs[2], seqs[0]],
+        "INFO and above, older than the page start, newest first"
+    );
+    let warn_up = store.log_rows_before(0, LogLevel::Warn, 10).unwrap();
+    assert_eq!(
+        warn_up.iter().map(|row| row.level).collect::<Vec<_>>(),
+        [LogLevel::Error, LogLevel::Warn]
+    );
+    assert!(
+        store
+            .log_rows_before(seqs[0], LogLevel::Debug, 10)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// A clone of a store shares its rows and its live log channel: the engine and the server each
+/// hold one, and a row one writes is seen by the other.
+#[test]
+fn store_clones_share_rows_and_live_log() {
+    let _trace = trace_guard();
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_store(dir.path());
+    let other = store.clone();
+    let mut live = other.subscribe_logs();
+    let fields = LogFields::default();
+
+    let row = log_event(&store, 7, LogLevel::Info, "render", "shared", &fields).unwrap();
+    assert_eq!(other.log_rows_after(0).unwrap(), vec![row.clone()]);
+    assert_eq!(live.try_recv().unwrap(), row);
+}

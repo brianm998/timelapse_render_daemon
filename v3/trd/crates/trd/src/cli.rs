@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Timelapse Render Daemon contributors
 
-//! The command line of trd and trdw (spec 1 §5). Only `version` works yet; every other command
+//! The command line of trd and trdw (spec 1 §5). `version` and `daemon` work; every other command
 //! parses and then prints "not implemented yet". The fields are read by the tickets that
 //! implement each command, so they are allowed to be unread until then.
 
@@ -127,43 +127,43 @@ enum Command {
 pub struct DaemonArgs {
     /// Config file; overrides the stored setting for this run.
     #[arg(long, value_name = "PATH")]
-    config: Option<PathBuf>,
+    pub config: Option<PathBuf>,
     /// Codec table; default is video_codecs.json beside the config, else the built-in table.
     #[arg(long, value_name = "PATH")]
-    codecs: Option<PathBuf>,
+    pub codecs: Option<PathBuf>,
     /// Database, identity, thumbnails and render logs.
     #[arg(long, value_name = "PATH")]
-    data_dir: Option<PathBuf>,
+    pub data_dir: Option<PathBuf>,
     /// Directory of trd.log.
     #[arg(long, value_name = "PATH")]
-    log_dir: Option<PathBuf>,
+    pub log_dir: Option<PathBuf>,
     /// Loopback port; 0 lets the OS choose.
     #[arg(long, value_name = "N", default_value_t = 50071)]
-    port: u16,
+    pub port: u16,
     /// LAN TLS listener as ADDR:PORT, or `off`.
     #[arg(long, value_name = "ADDR:PORT", default_value = "0.0.0.0:50072")]
-    lan_bind: String,
+    pub lan_bind: String,
     /// mDNS instance name and ServerInfo name; default is the host name.
     #[arg(long, value_name = "NAME")]
-    advertise_name: Option<String>,
+    pub advertise_name: Option<String>,
     /// Do not advertise over mDNS.
     #[arg(long)]
-    no_mdns: bool,
+    pub no_mdns: bool,
     /// Skip adoption entirely: neither its own renders nor foreign ones.
     #[arg(long)]
-    no_adopt: bool,
+    pub no_adopt: bool,
     /// Re-adopt only renders recorded in its own database.
     #[arg(long)]
-    no_adopt_foreign: bool,
+    pub no_adopt_foreign: bool,
     /// Skip the macOS Full Disk Access guard.
     #[arg(long)]
-    no_fda_check: bool,
+    pub no_fda_check: bool,
     /// Sandbox run: implies --no-adopt-foreign and --no-fda-check; sets ServerInfo.sandbox.
     #[arg(long)]
-    sandbox: bool,
+    pub sandbox: bool,
     /// Log level.
     #[arg(long, value_name = "LEVEL", default_value = "info", value_parser = PossibleValuesParser::new(["debug", "info"]))]
-    log_level: String,
+    pub log_level: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -288,6 +288,7 @@ pub fn run(args: Vec<OsString>, default_subcommand: Option<&str>) -> ExitCode {
             println!("trd {} ({})", env!("CARGO_PKG_VERSION"), platform());
             ExitCode::SUCCESS
         }
+        Some(Command::Daemon(args)) => crate::daemon::run(args),
         Some(other) => {
             eprintln!("{}: not implemented yet", other.name());
             ExitCode::from(1)
