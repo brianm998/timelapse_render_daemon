@@ -605,11 +605,12 @@ fn thumbnail_delete_failed_warns() {
     let thumbs = data.join(THUMBNAILS_DIR);
     fs::create_dir_all(&thumbs).expect("the thumbnails folder");
 
-    // A thumbnail path under a regular file: deleting it fails with something other than NotFound.
-    let blocker = tmp.path().join("not-a-folder");
-    fs::write(&blocker, b"file").expect("the blocking file");
+    // A thumbnail path that is a folder: deleting it fails with something other than NotFound on
+    // every OS. (A path under a regular file reports NotFound on Windows, which is not a failure.)
+    let stuck_path = tmp.path().join("stuck.jpg");
+    fs::create_dir_all(&stuck_path).expect("a folder where the thumbnail should be");
     let mut stuck = video(tmp.path(), "stuck", NOW - 31 * DAY_MS);
-    stuck.thumbnail_path = Some(blocker.join("stuck.jpg").to_string_lossy().into_owned());
+    stuck.thumbnail_path = Some(stuck_path.to_string_lossy().into_owned());
     store.put_rendered_video(&stuck).expect("store the row");
 
     // A second expired row whose thumbnail can be deleted: the failure above does not stop it.
