@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -942,6 +943,25 @@ fn list_entries(
     Ok(entries)
 }
 
+/// How long a directory listing may take before `ListDirectory` answers DEADLINE_EXCEEDED (§7).
+const LIST_LIMIT: Duration = Duration::from_secs(5);
+
+/// Runs `listing` for at most `limit`. A listing that runs out of time answers DEADLINE_EXCEEDED;
+/// otherwise its own result stands. The limit is a parameter so tests can use a limit that
+/// expires at once, without waiting.
+async fn within<T>(
+    limit: Duration,
+    listing: impl Future<Output = Result<T, Status>>,
+) -> Result<T, Status> {
+    match tokio::time::timeout(limit, listing).await {
+        Ok(result) => result,
+        Err(_) => Err(Status::deadline_exceeded(format!(
+            "the directory did not list within {} seconds",
+            limit.as_secs()
+        ))),
+    }
+}
+
 fn io_status(err: &io::Error, path: &str) -> Status {
     match err.kind() {
         io::ErrorKind::NotFound => Status::not_found(format!("{path} does not exist")),
@@ -1653,18 +1673,16 @@ impl TrdService for Server {
         let dir = PathBuf::from(&request.path);
         let include_files = request.include_files;
         let show_hidden = request.show_hidden;
-        let listing =
-            tokio::task::spawn_blocking(move || list_entries(&dir, include_files, show_hidden));
-        let entries = match tokio::time::timeout(Duration::from_secs(5), listing).await {
-            Err(_) => {
-                return Err(Status::deadline_exceeded(
-                    "the directory did not list within 5 seconds",
-                ));
-            }
-            Ok(joined) => joined
+        let path = request.path.clone();
+        let listing = async move {
+            let joined =
+                tokio::task::spawn_blocking(move || list_entries(&dir, include_files, show_hidden))
+                    .await;
+            joined
                 .map_err(internal)?
-                .map_err(|err| io_status(&err, &request.path))?,
+                .map_err(|err| io_status(&err, &path))
         };
+        let entries = within(LIST_LIMIT, listing).await?;
         let parent = Path::new(&request.path)
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -1834,5 +1852,203 @@ mod tests {
                 .code(),
             tonic::Code::Unimplemented
         );
+    }
+
+    #[test]
+    fn sample_rate_defaults_to_four_and_clamps_to_ten() {
+        assert_eq!(sample_rate(0), 4, "zero asks for the default");
+        assert_eq!(sample_rate(1), 1);
+        assert_eq!(sample_rate(7), 7);
+        assert_eq!(sample_rate(10), 10);
+        assert_eq!(sample_rate(11), 10);
+        assert_eq!(sample_rate(u32::MAX), 10);
+    }
+
+    #[test]
+    fn io_errors_map_to_statuses() {
+        let code = |kind| io_status(&io::Error::from(kind), "/somewhere").code();
+        assert_eq!(code(io::ErrorKind::NotFound), tonic::Code::NotFound);
+        assert_eq!(
+            code(io::ErrorKind::PermissionDenied),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(code(io::ErrorKind::TimedOut), tonic::Code::Internal);
+        assert_eq!(code(io::ErrorKind::Other), tonic::Code::Internal);
+    }
+
+    /// A listing that never finishes answers DEADLINE_EXCEEDED once its limit is past. A zero
+    /// limit is past at once, so the test does not wait for the clock.
+    #[tokio::test]
+    async fn a_listing_past_its_limit_is_deadline_exceeded() {
+        let never = std::future::pending::<Result<(), Status>>();
+        let status = within(Duration::ZERO, never)
+            .await
+            .expect_err("the listing times out");
+        assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
+        assert!(status.message().contains("seconds"));
+
+        // A listing that finishes in time keeps its own result, success or failure.
+        assert_eq!(
+            within(LIST_LIMIT, async { Ok(7) })
+                .await
+                .expect("the listing finishes"),
+            7
+        );
+        let failed = within(LIST_LIMIT, async {
+            Err::<(), _>(Status::not_found("gone"))
+        })
+        .await
+        .expect_err("the listing fails");
+        assert_eq!(failed.code(), tonic::Code::NotFound);
+        assert_eq!(LIST_LIMIT, Duration::from_secs(5), "§7 sets 5 s");
+    }
+
+    #[test]
+    fn control_errors_map_to_statuses() {
+        let code = |err| control_status(err).code();
+        assert_eq!(
+            code(ControlError::NotFound("x".to_owned())),
+            tonic::Code::NotFound
+        );
+        assert_eq!(
+            code(ControlError::FailedPrecondition("x".to_owned())),
+            tonic::Code::FailedPrecondition
+        );
+        assert_eq!(
+            code(ControlError::Internal("x".to_owned())),
+            tonic::Code::Internal
+        );
+    }
+
+    #[test]
+    fn config_errors_map_to_statuses() {
+        let code = |err| config_error_status(err).code();
+        assert_eq!(
+            code(ConfigError::StaleRevision {
+                current: "abc".to_owned()
+            }),
+            tonic::Code::FailedPrecondition
+        );
+        assert_eq!(
+            code(ConfigError::Unparseable("expected value".to_owned())),
+            tonic::Code::FailedPrecondition
+        );
+        assert_eq!(
+            code(ConfigError::Io(io::Error::from(io::ErrorKind::Other))),
+            tonic::Code::Internal
+        );
+
+        let refused =
+            config_error_status(ConfigError::Refused(vec![core_config::ConfigIssue::error(
+                "/max_processes/ffmpeg",
+                "must be at least 1",
+            )]));
+        assert_eq!(refused.code(), tonic::Code::InvalidArgument);
+        assert!(
+            refused.message().contains("/max_processes/ffmpeg"),
+            "the message names the field: {}",
+            refused.message()
+        );
+    }
+
+    #[test]
+    fn roots_start_at_the_system_root_and_end_at_home() {
+        let home = Path::new("/home/someone");
+        assert_eq!(roots(Os::Linux, home), ["/", "/home/someone"]);
+        assert_eq!(roots(Os::Linux, Path::new("")), ["/"], "no home, no root");
+        let mac = roots(Os::MacOs, home);
+        assert_eq!(mac.first().map(String::as_str), Some("/"));
+        assert_eq!(mac.last().map(String::as_str), Some("/home/someone"));
+    }
+
+    fn video(id: &str, sequence: &str) -> RenderedVideo {
+        RenderedVideo {
+            id: id.to_owned(),
+            rendered_at: 1,
+            sequence_name: sequence.to_owned(),
+            export_path: "/export".to_owned(),
+            output_filename: format!("{id}.mov"),
+            output_path: format!("/export/{id}.mov"),
+            variant_key: "ProResUHQ_25_1280x720".to_owned(),
+            codec: "ProResUHQ".to_owned(),
+            resolution_label: "1280x720".to_owned(),
+            frame_rate: 25,
+            frame_count: 3,
+            size_bytes: 1,
+            width: 1280,
+            height: 720,
+            duration_seconds: 0.12,
+            render_seconds: 1.0,
+            thumbnail_path: None,
+            xmp_embedded: false,
+            source: "trd".to_owned(),
+        }
+    }
+
+    /// `ListRenderedVideos` pages with `before_id` and no repeats, and searches names without case.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rendered_videos_page_and_search() {
+        let dir = tempfile::Builder::new()
+            .prefix("trd-server-unit-")
+            .tempdir()
+            .expect("a temporary directory");
+        let server = server_in(dir.path());
+        for (id, sequence) in [
+            ("v1", "alpha"),
+            ("v2", "beta"),
+            ("v3", "Alpha_two"),
+            ("v4", "gamma"),
+        ] {
+            server
+                .shared
+                .store
+                .put_rendered_video(&video(id, sequence))
+                .expect("the row is stored");
+        }
+
+        let first = server
+            .list_rendered_videos(Request::new(pb::ListRenderedVideosRequest {
+                limit: 3,
+                ..Default::default()
+            }))
+            .await
+            .expect("the first page")
+            .into_inner();
+        assert_eq!(first.videos.len(), 3);
+        assert!(first.more, "one row is left");
+        let last = first.videos.last().expect("a row").id.clone();
+        let second = server
+            .list_rendered_videos(Request::new(pb::ListRenderedVideosRequest {
+                before_id: last,
+                limit: 3,
+                ..Default::default()
+            }))
+            .await
+            .expect("the second page")
+            .into_inner();
+        assert_eq!(second.videos.len(), 1);
+        assert!(!second.more);
+
+        let mut ids: Vec<String> = first
+            .videos
+            .iter()
+            .chain(second.videos.iter())
+            .map(|video| video.id.clone())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["v1", "v2", "v3", "v4"], "every row once");
+
+        let found = server
+            .list_rendered_videos(Request::new(pb::ListRenderedVideosRequest {
+                search: "ALPHA".to_owned(),
+                ..Default::default()
+            }))
+            .await
+            .expect("the search")
+            .into_inner();
+        let mut found_ids: Vec<String> = found.videos.iter().map(|v| v.id.clone()).collect();
+        found_ids.sort();
+        assert_eq!(found_ids, ["v1", "v3"], "names match without case");
+        assert!(!found.more);
     }
 }
