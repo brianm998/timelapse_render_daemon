@@ -582,11 +582,48 @@ pub struct ProcessEntry {
     pub args: Vec<String>,
     /// Seconds since the Unix epoch.
     pub start_time: u64,
+    /// Whether the process is a zombie: it has ended and is not alive (§6.11).
+    pub zombie: bool,
 }
 
 /// A list of processes, for re-adopting renders (§6.11).
 pub trait ProcessTable {
     fn list(&mut self) -> Vec<ProcessEntry>;
+}
+
+/// Whether `entries` holds a live process `pid` started at `start_time`: an entry with that pid,
+/// that start time and that is not a zombie. A recycled pid has another start time.
+pub fn is_alive_in(entries: &[ProcessEntry], pid: u32, start_time: u64) -> bool {
+    entries
+        .iter()
+        .any(|entry| entry.pid == pid && entry.start_time == start_time && !entry.zombie)
+}
+
+/// The process list of one poll, taken from a [`ProcessTable`] at most once and only when a
+/// process the daemon holds without a handle needs checking (§6.11). A poll that has only children
+/// lists nothing.
+pub struct ProcessSnapshot<'a> {
+    table: &'a mut dyn ProcessTable,
+    entries: Option<Vec<ProcessEntry>>,
+}
+
+impl<'a> ProcessSnapshot<'a> {
+    pub fn new(table: &'a mut dyn ProcessTable) -> ProcessSnapshot<'a> {
+        ProcessSnapshot {
+            table,
+            entries: None,
+        }
+    }
+
+    /// Whether `pid` is a live process started at `start_time`, judged by the table's list.
+    pub fn is_alive(&mut self, pid: u32, start_time: u64) -> bool {
+        if self.entries.is_none() {
+            self.entries = Some(self.table.list());
+        }
+        self.entries
+            .as_deref()
+            .is_some_and(|entries| is_alive_in(entries, pid, start_time))
+    }
 }
 
 /// The operating system's processes, through `sysinfo`.
@@ -632,6 +669,7 @@ impl ProcessTable for SysinfoProcessTable {
                     .map(|arg| arg.to_string_lossy().into_owned())
                     .collect(),
                 start_time: process.start_time(),
+                zombie: is_zombie(&process.status()),
             })
             .collect()
     }
@@ -664,6 +702,7 @@ mod tests {
             name: name.to_owned(),
             args: vec!["-i".to_owned(), "in%04d.png".to_owned()],
             start_time: 1_700_000_000 + u64::from(pid),
+            zombie: false,
         }
     }
 
