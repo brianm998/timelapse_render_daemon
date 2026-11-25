@@ -14,12 +14,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tempfile::TempDir;
-use trd_core::adopt::{ForeignCommand, adopt_foreign, parse_foreign, readopt};
+use trd_core::adopt::{
+    AdoptPolicy, ForeignCommand, StartupReport, adopt_at_startup, adopt_foreign, parse_foreign,
+    readopt,
+};
 use trd_core::codecs::{self, VideoCodecs};
 use trd_core::config::ConfigStore;
 use trd_core::paths::Clock;
 use trd_core::plan::Plan;
-use trd_core::process::{FakeProcessTable, ProcessEntry};
+use trd_core::process::{FakeProcessTable, ProcessEntry, ProcessTable};
 use trd_core::queue::{Ctx, Renders};
 use trd_core::store::{JobStatus, RenderJob, Store};
 use trd_core::thumbs::Thumbnailer;
@@ -322,26 +325,41 @@ fn no_adopt_foreign_keeps_own() {
         .put_render_job(&own_job("job-1", &plan, JobStatus::Running, OWN_PID, START))
         .expect("the row");
     let foreign_output = f.root.join("export").join("foreign.mov");
+    // A parseable foreign ffmpeg: not a .partial.mov and not owned by any row.
     let mut table = FakeProcessTable::new(vec![
         own_entry(&plan, OWN_PID, START),
         foreign_entry(FOREIGN_PID, START + 30, &foreign_output.to_string_lossy()),
     ]);
-
-    // With --no-adopt-foreign, startup runs readopt and not adopt_foreign.
-    let report = readopt(&mut ctx!(f), &mut f.renders, &mut table).expect("readopt");
-    assert_eq!(report.adopted, 1);
-    assert_eq!(
-        f.renders.running_ids(),
-        vec!["job-1".to_owned()],
-        "own render re-adopted"
+    assert!(
+        parse_foreign(&table.list()[1]).is_some(),
+        "the foreign ffmpeg is a render that adopt_foreign would take"
     );
+
+    let policy = AdoptPolicy::from_flags(false, true, false);
+    let report = adopt_at_startup(policy, &mut ctx!(f), &mut f.renders, &mut table)
+        .expect("the start-up adoption");
+
+    assert_eq!(report.own.adopted, 1, "the own render is re-adopted");
+    assert_eq!(report.foreign, 0, "the foreign ffmpeg is not adopted");
+    assert_eq!(f.renders.running_ids(), vec!["job-1".to_owned()]);
     assert!(
         f.renders.foreign_ids().is_empty(),
-        "the foreign ffmpeg is not adopted"
+        "no foreign process is held"
+    );
+    let rows = f.store.render_jobs(None).expect("the rows");
+    assert_eq!(rows.len(), 1, "no row is made for the foreign ffmpeg");
+    assert!(!rows[0].foreign);
+
+    // Not signalled: a process is only ever signalled through a RunningProcess handle held by the
+    // queue, and the foreign ffmpeg has none (it is in neither running nor foreign). FakeProcessTable
+    // has no signalling API, so the foreign entry stays listed and untouched.
+    assert!(
+        table.list().iter().any(|e| e.pid == FOREIGN_PID),
+        "the foreign ffmpeg is still listed"
     );
 
     // The render loop runs over the same table, with the foreign ffmpeg still in it: the own render
-    // stays held and no foreign row appears. Nothing in readopt or the poll signals a process.
+    // stays held and no foreign row appears.
     f.renders
         .tick(&mut ctx!(f), &mut table)
         .expect("a tick with the foreign ffmpeg listed");
@@ -349,7 +367,103 @@ fn no_adopt_foreign_keeps_own() {
     assert!(f.renders.foreign_ids().is_empty(), "still not adopted");
     let rows = f.store.render_jobs(None).expect("the rows");
     assert_eq!(rows.len(), 1, "no row is made for the foreign ffmpeg");
-    assert!(!rows[0].foreign);
+}
+
+#[test]
+fn adopt_all_adopts_foreign() {
+    // The control for no_adopt_foreign_keeps_own: the same table under All adopts the foreign ffmpeg.
+    let mut f = fixture();
+    let plan = plan(&f.root);
+    write_progress(&plan, "frame=12\nfps=25\nprogress=continue\n");
+    write_partial(&plan);
+    f.store
+        .put_render_job(&own_job("job-1", &plan, JobStatus::Running, OWN_PID, START))
+        .expect("the row");
+    let foreign_output = f.root.join("export").join("foreign.mov");
+    let mut table = FakeProcessTable::new(vec![
+        own_entry(&plan, OWN_PID, START),
+        foreign_entry(FOREIGN_PID, START + 30, &foreign_output.to_string_lossy()),
+    ]);
+
+    let policy = AdoptPolicy::from_flags(false, false, false);
+    assert_eq!(policy, AdoptPolicy::All);
+    let report = adopt_at_startup(policy, &mut ctx!(f), &mut f.renders, &mut table)
+        .expect("the start-up adoption");
+
+    assert_eq!(report.own.adopted, 1);
+    assert_eq!(report.foreign, 1, "the foreign ffmpeg is adopted under All");
+    assert_eq!(f.renders.foreign_ids().len(), 1);
+    assert_eq!(f.renders.running_ids(), vec!["job-1".to_owned()]);
+    let rows = f.store.render_jobs(None).expect("the rows");
+    assert_eq!(rows.len(), 2, "the own row and the foreign row");
+    assert_eq!(rows.iter().filter(|row| row.foreign).count(), 1);
+}
+
+#[test]
+fn from_flags_sandbox_implies_own_only() {
+    assert_eq!(
+        AdoptPolicy::from_flags(false, false, true),
+        AdoptPolicy::OwnOnly,
+        "--sandbox implies --no-adopt-foreign"
+    );
+    assert_eq!(
+        AdoptPolicy::from_flags(false, true, false),
+        AdoptPolicy::OwnOnly
+    );
+    assert_eq!(
+        AdoptPolicy::from_flags(false, false, false),
+        AdoptPolicy::All
+    );
+}
+
+#[test]
+fn from_flags_no_adopt_gives_none() {
+    assert_eq!(
+        AdoptPolicy::from_flags(true, false, false),
+        AdoptPolicy::None
+    );
+    assert_eq!(
+        AdoptPolicy::from_flags(true, true, true),
+        AdoptPolicy::None,
+        "--no-adopt wins over the other flags"
+    );
+}
+
+#[test]
+fn policy_none_adopts_nothing() {
+    let mut f = fixture();
+    let plan = plan(&f.root);
+    write_progress(&plan, "frame=12\nfps=25\nprogress=continue\n");
+    write_partial(&plan);
+    f.store
+        .put_render_job(&own_job("job-1", &plan, JobStatus::Running, OWN_PID, START))
+        .expect("the row");
+    let foreign_output = f.root.join("export").join("foreign.mov");
+    let mut table = FakeProcessTable::new(vec![
+        own_entry(&plan, OWN_PID, START),
+        foreign_entry(FOREIGN_PID, START + 30, &foreign_output.to_string_lossy()),
+    ]);
+
+    let report = adopt_at_startup(AdoptPolicy::None, &mut ctx!(f), &mut f.renders, &mut table)
+        .expect("the start-up adoption");
+
+    assert_eq!(
+        report,
+        StartupReport::default(),
+        "nothing is adopted or finished"
+    );
+    assert!(f.renders.running_ids().is_empty());
+    assert!(f.renders.foreign_ids().is_empty());
+    let job = f
+        .store
+        .render_job("job-1")
+        .expect("the row")
+        .expect("a row");
+    assert_eq!(
+        job.status,
+        JobStatus::Running,
+        "the own row is left as it is"
+    );
 }
 
 #[test]

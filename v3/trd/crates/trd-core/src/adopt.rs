@@ -208,6 +208,61 @@ pub fn adopt_foreign(
     Ok(adopted)
 }
 
+/// Which adoption a start-up runs (§6.11, the `--no-adopt` and `--no-adopt-foreign` flags).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdoptPolicy {
+    /// `--no-adopt`: neither own nor foreign renders are adopted.
+    None,
+    /// `--no-adopt-foreign` (implied by `--sandbox`): own renders are re-adopted, foreign ones are not.
+    OwnOnly,
+    /// The default: own renders are re-adopted and foreign ffmpeg renders are watched.
+    All,
+}
+
+impl AdoptPolicy {
+    /// The policy the command-line flags select. `--no-adopt` wins over the others; `--sandbox`
+    /// implies `--no-adopt-foreign` (overview §10 rule 2).
+    pub fn from_flags(no_adopt: bool, no_adopt_foreign: bool, sandbox: bool) -> AdoptPolicy {
+        if no_adopt {
+            AdoptPolicy::None
+        } else if no_adopt_foreign || sandbox {
+            AdoptPolicy::OwnOnly
+        } else {
+            AdoptPolicy::All
+        }
+    }
+}
+
+/// What [`adopt_at_startup`] did: the own renders ([`readopt`]) and the foreign ones adopted by
+/// [`adopt_foreign`]. Both are zero when the policy skips them.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct StartupReport {
+    /// What [`readopt`] did with the rows of trd's own renders.
+    pub own: ReadoptReport,
+    /// How many foreign ffmpeg renders [`adopt_foreign`] adopted.
+    pub foreign: usize,
+}
+
+/// Runs the adoption a start-up's `policy` selects: [`AdoptPolicy::None`] runs nothing,
+/// [`AdoptPolicy::OwnOnly`] runs [`readopt`] only, and [`AdoptPolicy::All`] runs [`readopt`] and then
+/// [`adopt_foreign`]. A foreign process is never signalled by either.
+pub fn adopt_at_startup(
+    policy: AdoptPolicy,
+    ctx: &mut Ctx<'_>,
+    renders: &mut Renders,
+    table: &mut dyn ProcessTable,
+) -> StoreResult<StartupReport> {
+    let mut report = StartupReport::default();
+    if policy == AdoptPolicy::None {
+        return Ok(report);
+    }
+    report.own = readopt(ctx, renders, table)?;
+    if policy == AdoptPolicy::All {
+        report.foreign = adopt_foreign(ctx, renders, table)?;
+    }
+    Ok(report)
+}
+
 /// The table entry that is the process of `job`: same pid, a start time within
 /// [`START_TOLERANCE_SECS`] of the recorded one, not a zombie, and a command line that is this job's
 /// render (its partial path) or, for a foreign row, a foreign ffmpeg. A recycled pid has another
