@@ -848,6 +848,33 @@ fn file_revision(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// The config with every entry the file has, including those a load drops for an ERROR. The last
+/// config that parsed when the file does not parse now.
+fn config_as_written(store: &ConfigStore) -> CoreConfig {
+    fs::read(store.path())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|value| CoreConfig::from_value(&value).ok())
+        .or_else(|| store.config().cloned())
+        .unwrap_or_default()
+}
+
+/// The ERRORs `config` has with the codec table `next` and not with `current`: a codec a
+/// `rendering` entry uses was removed or renamed (§6.2). An ERROR the config already has does not
+/// block a codec edit.
+fn codec_table_errors(
+    config: &CoreConfig,
+    current: &VideoCodecs,
+    next: &VideoCodecs,
+    year: i32,
+) -> Vec<core_config::ConfigIssue> {
+    let before = core_config::validate(config, current, year);
+    core_config::validate(config, next, year)
+        .into_iter()
+        .filter(|issue| issue.is_error() && !before.contains(issue))
+        .collect()
+}
+
 /// Maps a config edit's refusal to a status (§7).
 fn config_error_status(err: ConfigError) -> Status {
     match err {
@@ -1608,6 +1635,7 @@ impl TrdService for Server {
         let table = codecs_from_proto(&request.codecs)?;
         let state = {
             let mut slot = self.shared.lock_config();
+            slot.reload();
             let target = match slot.codecs.path() {
                 Some(path) => path.to_path_buf(),
                 None => codecs::sibling_codecs_path(slot.store.path()),
@@ -1618,6 +1646,15 @@ impl TrdService for Server {
                     "{} changed since it was read (current revision {current:?})",
                     target.display()
                 )));
+            }
+            let errors = codec_table_errors(
+                &config_as_written(&slot.store),
+                slot.codecs.codecs(),
+                &table,
+                SystemClock.year(),
+            );
+            if !errors.is_empty() {
+                return Err(config_error_status(ConfigError::Refused(errors)));
             }
             let value = serde_json::to_value(&table).map_err(internal)?;
             let mut text = core_config::pretty_sorted(&value);
@@ -2519,5 +2556,48 @@ mod tests {
         );
         assert_eq!(third.path, flag.to_string_lossy());
         assert_eq!(third.codecs_path, table.to_string_lossy());
+    }
+
+    #[test]
+    fn codec_table_errors_are_only_the_new_ones() {
+        let render = |codec: &str| core_config::RenderType {
+            codec: codec.to_owned(),
+            frame_rate: 25,
+            resolution: None,
+        };
+        let config = CoreConfig {
+            rendering: vec![render("ProResUHQ"), render("Missing")],
+            ..CoreConfig::default()
+        };
+        let current = codecs::builtin();
+        let mut next = current.clone();
+        next.remove("h264");
+        assert!(
+            codec_table_errors(&config, &current, &next, 2026).is_empty(),
+            "an unused codec goes, and the codec already missing blocks nothing"
+        );
+        next.remove("ProResUHQ");
+        let errors = codec_table_errors(&config, &current, &next, 2026);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].field, "/rendering/0/codec");
+    }
+
+    #[test]
+    fn config_as_written_keeps_entries_a_load_drops() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("config.json");
+        let config = CoreConfig {
+            rendering: vec![core_config::RenderType {
+                codec: "ProResUHQ".to_owned(),
+                frame_rate: 0,
+                resolution: None,
+            }],
+            ..CoreConfig::default()
+        };
+        fs::write(&path, config.to_json_pretty()).expect("config.json");
+        let mut store = ConfigStore::new(path, Arc::new(SystemClock));
+        store.reload_if_changed(&codecs::builtin());
+        assert!(store.config().expect("loaded").rendering.is_empty());
+        assert_eq!(config_as_written(&store).rendering, config.rendering);
     }
 }

@@ -493,7 +493,11 @@ mod server {
     #[tokio::test(flavor = "multi_thread")]
     async fn codecs_and_config_path() {
         let fixture = Fixture::new();
-        fixture.write_config(&empty_config(&fixture));
+        // No `rendering` entry, so the table can be replaced by any other.
+        fixture.write_config(&Config {
+            rendering: Vec::new(),
+            ..empty_config(&fixture)
+        });
         let daemon = Daemon::start(&fixture, &[]);
         let mut client = daemon.client().await;
 
@@ -639,6 +643,89 @@ mod server {
             ),
             Code::InvalidArgument
         );
+    }
+
+    /// `UpdateCodecs` refuses a table that removes or renames a codec a `rendering` entry uses, and
+    /// writes nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn update_codecs_refuses_a_codec_in_use() {
+        let fixture = Fixture::new();
+        fixture.write_config(&empty_config(&fixture));
+        let daemon = Daemon::start(&fixture, &[]);
+        let mut client = daemon.client().await;
+        let builtin = client
+            .get_config(pb::GetConfigRequest {})
+            .await
+            .expect("GetConfig")
+            .into_inner()
+            .codecs;
+        let without: Vec<pb::VideoCodec> = builtin
+            .iter()
+            .filter(|codec| codec.name != "ProResUHQ")
+            .cloned()
+            .collect();
+        assert_eq!(without.len() + 1, builtin.len());
+        let codecs_path = fixture.config_path().with_file_name("video_codecs.json");
+
+        let refused = client
+            .update_codecs(pb::UpdateCodecsRequest {
+                codecs: without.clone(),
+                expected_revision: String::new(),
+            })
+            .await
+            .expect_err("the codec is in use");
+        assert_eq!(refused.code(), Code::InvalidArgument);
+        assert!(!codecs_path.exists(), "a refused edit creates no table");
+
+        let written = client
+            .update_codecs(pb::UpdateCodecsRequest {
+                codecs: builtin.clone(),
+                expected_revision: String::new(),
+            })
+            .await
+            .expect("UpdateCodecs keeping every codec")
+            .into_inner();
+        let bytes_before = fs::read(&codecs_path).expect("video_codecs.json");
+
+        let mut renamed = builtin.clone();
+        for codec in &mut renamed {
+            if codec.name == "ProResUHQ" {
+                codec.name = "Renamed".to_owned();
+            }
+        }
+        for table in [without, renamed] {
+            let refused = client
+                .update_codecs(pb::UpdateCodecsRequest {
+                    codecs: table,
+                    expected_revision: written.codecs_revision.clone(),
+                })
+                .await
+                .expect_err("the codec is in use");
+            assert_eq!(refused.code(), Code::InvalidArgument);
+            assert!(
+                refused.message().contains("/rendering/0/codec")
+                    && refused.message().contains("ProResUHQ"),
+                "the message lists the issue: {}",
+                refused.message()
+            );
+            assert_eq!(
+                fs::read(&codecs_path).expect("video_codecs.json"),
+                bytes_before,
+                "a refused edit writes nothing"
+            );
+        }
+
+        let unused_removed: Vec<pb::VideoCodec> = builtin
+            .into_iter()
+            .filter(|codec| codec.name == "ProResUHQ")
+            .collect();
+        client
+            .update_codecs(pb::UpdateCodecsRequest {
+                codecs: unused_removed,
+                expected_revision: written.codecs_revision,
+            })
+            .await
+            .expect("codecs no entry uses can be removed");
     }
 
     /// `GetServerInfo` reports the sandbox when the daemon runs with `--sandbox`.
