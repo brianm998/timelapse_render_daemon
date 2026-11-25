@@ -13,9 +13,12 @@ mod server {
     use std::fs;
     use std::io::{BufRead, BufReader};
     use std::path::{Path, PathBuf};
-    use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
+    use std::process::{Child, ChildStdout, Command, Stdio};
+    #[cfg(unix)]
+    use std::process::ExitStatus;
     use std::time::{Duration, Instant};
 
+    #[cfg(unix)]
     use serde_json::json;
     use tempfile::TempDir;
     use tonic::transport::Channel;
@@ -128,6 +131,7 @@ mod server {
                 .expect("the loopback listener accepts")
         }
 
+        #[cfg(unix)]
         fn pid(&self) -> u32 {
             self.child.id()
         }
@@ -146,6 +150,7 @@ mod server {
         }
 
         /// Waits for the process to exit, under the hang guard.
+        #[cfg(unix)]
         fn wait(&mut self) -> ExitStatus {
             let deadline = Instant::now() + HANG_GUARD;
             loop {
@@ -229,6 +234,7 @@ mod server {
 
     /// Makes one sequence `shot` (three raw frames, three exported frames) and returns the release file
     /// that holds the fake render until it exists.
+    #[cfg(unix)]
     fn one_sequence(fixture: &Fixture) -> PathBuf {
         let raw = fixture.path("source/shot");
         let export = fixture.path("export/LRT_shot");
