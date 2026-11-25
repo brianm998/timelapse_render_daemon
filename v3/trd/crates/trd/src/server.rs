@@ -184,6 +184,33 @@ async fn wait_shutdown(shutdown: &mut watch::Receiver<bool>) {
     let _ = shutdown.wait_for(|stopped| *stopped).await;
 }
 
+/// How long a stream stopped by shutdown waits to deliver its UNAVAILABLE. A client that does not
+/// read must not hold the daemon's shutdown, so the wait is bounded.
+const SHUTDOWN_NOTICE_WAIT: Duration = Duration::from_secs(1);
+
+/// Sends `item` unless shutdown starts first. False when the stream should end: shutdown started,
+/// or the client has gone.
+async fn send_unless_stopped<T>(
+    tx: &mpsc::Sender<Result<T, Status>>,
+    item: Result<T, Status>,
+    shutdown: &mut watch::Receiver<bool>,
+) -> bool {
+    tokio::select! {
+        sent = tx.send(item) => sent.is_ok(),
+        () = wait_shutdown(shutdown) => false,
+    }
+}
+
+/// Ends a stream that shutdown stopped with UNAVAILABLE. Does nothing when shutdown has not started.
+async fn end_for_shutdown<T>(
+    tx: &mpsc::Sender<Result<T, Status>>,
+    shutdown: &watch::Receiver<bool>,
+) {
+    if *shutdown.borrow() {
+        let _ = tokio::time::timeout(SHUTDOWN_NOTICE_WAIT, tx.send(Err(shutting_down()))).await;
+    }
+}
+
 fn control_status(err: ControlError) -> Status {
     match err {
         ControlError::NotFound(message) => Status::not_found(message),
@@ -1016,48 +1043,50 @@ impl TrdService for Server {
         let mut shutdown = shared.shutdown.clone();
         let (tx, rx) = mpsc::channel(4);
         tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(period);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            // The first tick of an interval is immediate; the next ones pace the messages.
-            ticker.tick().await;
-            let current = updates.borrow_and_update().clone();
-            let mut sent = current.revision;
-            if tx
-                .send(Ok(shared.snapshot_message(&current)))
-                .await
-                .is_err()
-            {
-                return;
-            }
-            loop {
-                tokio::select! {
-                    changed = updates.changed() => {
-                        if changed.is_err() {
-                            return;
-                        }
-                    }
-                    () = wait_shutdown(&mut shutdown) => {
-                        let _ = tx.send(Err(shutting_down())).await;
-                        return;
-                    }
-                }
-                tokio::select! {
-                    _ = ticker.tick() => {}
-                    () = wait_shutdown(&mut shutdown) => {
-                        let _ = tx.send(Err(shutting_down())).await;
-                        return;
-                    }
-                }
-                // Only the newest snapshot is sent, once per revision.
-                let latest = updates.borrow_and_update().clone();
-                if latest.revision == sent {
-                    continue;
-                }
-                sent = latest.revision;
-                if tx.send(Ok(shared.snapshot_message(&latest))).await.is_err() {
+            async {
+                let mut ticker = tokio::time::interval(period);
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                // The first tick of an interval is immediate; the next ones pace the messages.
+                ticker.tick().await;
+                let current = updates.borrow_and_update().clone();
+                let mut sent = current.revision;
+                if !send_unless_stopped(&tx, Ok(shared.snapshot_message(&current)), &mut shutdown)
+                    .await
+                {
                     return;
                 }
+                loop {
+                    tokio::select! {
+                        changed = updates.changed() => {
+                            if changed.is_err() {
+                                return;
+                            }
+                        }
+                        () = wait_shutdown(&mut shutdown) => return,
+                    }
+                    tokio::select! {
+                        _ = ticker.tick() => {}
+                        () = wait_shutdown(&mut shutdown) => return,
+                    }
+                    // Only the newest snapshot is sent, once per revision.
+                    let latest = updates.borrow_and_update().clone();
+                    if latest.revision == sent {
+                        continue;
+                    }
+                    sent = latest.revision;
+                    if !send_unless_stopped(
+                        &tx,
+                        Ok(shared.snapshot_message(&latest)),
+                        &mut shutdown,
+                    )
+                    .await
+                    {
+                        return;
+                    }
+                }
             }
+            .await;
+            end_for_shutdown(&tx, &shutdown).await;
         });
         Ok(Response::new(ReceiverStream::new(rx)))
     }
@@ -1239,6 +1268,7 @@ impl TrdService for Server {
                 tx: &mpsc::Sender<Result<pb::LogEntry, Status>>,
                 last: &mut i64,
                 min: LogLevel,
+                shutdown: &mut watch::Receiver<bool>,
             ) -> bool {
                 let rows = match shared.store.log_rows_after(*last) {
                     Ok(rows) => rows,
@@ -1252,51 +1282,61 @@ impl TrdService for Server {
                         continue;
                     }
                     *last = row.seq;
-                    if at_least(row.level, min) && tx.send(Ok(log_to_proto(&row))).await.is_err() {
+                    if at_least(row.level, min)
+                        && !send_unless_stopped(tx, Ok(log_to_proto(&row)), shutdown).await
+                    {
                         return false;
                     }
                 }
                 true
             }
 
-            // Subscribed before the backlog is read: a row written in between is in both, and
-            // `last` keeps it from being sent twice.
-            if !catch_up(&shared, &tx, &mut last, min).await {
-                return;
-            }
-            loop {
-                tokio::select! {
-                    received = live.recv() => match received {
-                        Ok(row) => {
-                            if row.seq <= last {
-                                continue;
+            async {
+                // Subscribed before the backlog is read: a row written in between is in both, and
+                // `last` keeps it from being sent twice.
+                if !catch_up(&shared, &tx, &mut last, min, &mut shutdown).await {
+                    return;
+                }
+                loop {
+                    tokio::select! {
+                        received = live.recv() => match received {
+                            Ok(row) => {
+                                if row.seq <= last {
+                                    continue;
+                                }
+                                if row.seq > last + 1
+                                    && !catch_up(&shared, &tx, &mut last, min, &mut shutdown).await
+                                {
+                                    return;
+                                }
+                                if row.seq <= last {
+                                    continue;
+                                }
+                                last = row.seq;
+                                if at_least(row.level, min)
+                                    && !send_unless_stopped(
+                                        &tx,
+                                        Ok(log_to_proto(&row)),
+                                        &mut shutdown,
+                                    )
+                                    .await
+                                {
+                                    return;
+                                }
                             }
-                            if row.seq > last + 1 && !catch_up(&shared, &tx, &mut last, min).await {
-                                return;
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                if !catch_up(&shared, &tx, &mut last, min, &mut shutdown).await {
+                                    return;
+                                }
                             }
-                            if row.seq <= last {
-                                continue;
-                            }
-                            last = row.seq;
-                            if at_least(row.level, min)
-                                && tx.send(Ok(log_to_proto(&row))).await.is_err()
-                            {
-                                return;
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                            if !catch_up(&shared, &tx, &mut last, min).await {
-                                return;
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                    },
-                    () = wait_shutdown(&mut shutdown) => {
-                        let _ = tx.send(Err(shutting_down())).await;
-                        return;
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                        },
+                        () = wait_shutdown(&mut shutdown) => return,
                     }
                 }
             }
+            .await;
+            end_for_shutdown(&tx, &shutdown).await;
         });
         Ok(Response::new(ReceiverStream::new(rx)))
     }

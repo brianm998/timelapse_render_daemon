@@ -271,6 +271,59 @@ fn thumbnail_concurrency() {
 }
 
 #[test]
+fn thumbnail_share_caps_all_handles() {
+    let tmp = TempDir::new().expect("a temporary directory");
+    let store = open_store(tmp.path());
+    let data = tmp.path().join("data");
+    let counters = Arc::new(Counters::default());
+    let rendezvous = Arc::new(Rendezvous::new());
+
+    let shared = Arc::clone(&counters);
+    let met = Arc::clone(&rendezvous);
+    let runner: Runner = Box::new(move |args| {
+        shared.calls.fetch_add(1, Ordering::SeqCst);
+        let now = shared.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        shared.peak.fetch_max(now, Ordering::SeqCst);
+        met.meet();
+        let result = fs::write(output_of(args), b"jpeg").map_err(|err| err.to_string());
+        shared.in_flight.fetch_sub(1, Ordering::SeqCst);
+        result
+    });
+    let original = Thumbnailer::new(&data, runner);
+    // Two handles on one thumbnailer: the cap is shared, so they must not get two gates.
+    let other = original.share();
+
+    let videos: Vec<RenderedVideo> = (0..6)
+        .map(|index| video(tmp.path(), &format!("render-{index}"), NOW))
+        .collect();
+    for render in &videos {
+        fs::write(&render.output_path, b"render").expect("the rendered file");
+        store.put_rendered_video(render).expect("store the row");
+    }
+
+    let (original, other, store) = (&original, &other, &store);
+    thread::scope(|scope| {
+        let handles: Vec<_> = videos
+            .iter()
+            .enumerate()
+            .map(|(index, render)| {
+                let handle = if index % 2 == 0 { original } else { other };
+                scope.spawn(move || handle.make(store, render, NOW))
+            })
+            .collect();
+        for handle in handles {
+            assert!(handle.join().expect("no panic").expect("make"));
+        }
+    });
+
+    assert_eq!(counters.calls.load(Ordering::SeqCst), 6);
+    assert!(
+        counters.peak.load(Ordering::SeqCst) <= 2,
+        "two thumbnails run at once across all handles, never more"
+    );
+}
+
+#[test]
 fn thumbnail_on_demand() {
     let tmp = TempDir::new().expect("a temporary directory");
     let store = open_store(tmp.path());

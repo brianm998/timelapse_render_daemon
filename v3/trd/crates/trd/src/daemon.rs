@@ -202,6 +202,8 @@ pub fn assemble(
         })
     };
 
+    // One thumbnailer: the engine and the server share its slot gate (MAX_CONCURRENT_THUMBNAILS).
+    let thumbs = Thumbnailer::new(&settings.dirs.data, thumbnail_runner(shared_tools.clone()));
     let (engine, handle) = Engine::new(EngineOptions {
         store: store.clone(),
         config_path,
@@ -217,7 +219,7 @@ pub fn assemble(
         now_ms: Arc::new(now_ms),
         table: Box::new(SysinfoProcessTable::new()),
         policy: settings.policy,
-        thumbs: Thumbnailer::new(&settings.dirs.data, thumbnail_runner(shared_tools.clone())),
+        thumbs: thumbs.share(),
         env: Vec::new(),
         history_path,
     });
@@ -234,7 +236,7 @@ pub fn assemble(
     let shared = Arc::new(Shared {
         handle,
         store,
-        thumbs: Thumbnailer::new(&settings.dirs.data, thumbnail_runner(shared_tools.clone())),
+        thumbs,
         tools: shared_tools,
         config: Mutex::new(slot),
         server_id,
