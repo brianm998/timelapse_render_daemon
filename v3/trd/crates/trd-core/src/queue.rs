@@ -29,7 +29,7 @@ use crate::events::{EVENT_RENDER_STARTED, EVENT_SEQUENCE_READY};
 use crate::exif::{self, Histogram};
 use crate::pipeline::{self, job_failure};
 use crate::plan::{self, FAILURE_NOT_QUEUEABLE, Plan, PlanRequest};
-use crate::process::{self, RunningProcess};
+use crate::process::{self, ProcessTable, RunningProcess};
 use crate::progress::ProgressReader;
 use crate::scan::{ExportSequence, ScanResult};
 use crate::store::{
@@ -71,6 +71,9 @@ pub struct Renders {
     pub(crate) env: Vec<(String, String)>,
     /// Running and suspended jobs by job id. A suspended job keeps its slot (§6.8).
     pub(crate) running: BTreeMap<String, Active>,
+    /// Foreign ffmpeg renders this daemon watches (§6.11 step 2), by job id. They take no slot of
+    /// the caps and are never signalled.
+    pub(crate) foreign: BTreeMap<String, RunningProcess>,
     /// The histogram of each sequence that has queued jobs, by sequence name.
     pub(crate) histograms: BTreeMap<String, Histogram>,
     /// When each sequence was first sighted (ms), from the engine (§6.7 promotion order).
@@ -91,6 +94,7 @@ impl Renders {
             thumbs,
             env: Vec::new(),
             running: BTreeMap::new(),
+            foreign: BTreeMap::new(),
             histograms: BTreeMap::new(),
             first_seen: BTreeMap::new(),
             known_sequences: BTreeSet::new(),
@@ -108,6 +112,11 @@ impl Renders {
     /// The ids of the jobs whose process this queue holds, running or suspended.
     pub fn running_ids(&self) -> Vec<String> {
         self.running.keys().cloned().collect()
+    }
+
+    /// The ids of the foreign renders this queue watches (§6.11 step 2).
+    pub fn foreign_ids(&self) -> Vec<String> {
+        self.foreign.keys().cloned().collect()
     }
 
     /// The latest complete progress block of a job this queue holds.
@@ -138,8 +147,9 @@ impl Renders {
 
     /// One pass of the render loop: reaps the processes that ended, sweeps stale partials when due,
     /// and promotes queued jobs within the caps.
-    pub fn tick(&mut self, ctx: &mut Ctx<'_>) -> StoreResult<()> {
-        self.poll_running(ctx)?;
+    pub fn tick(&mut self, ctx: &mut Ctx<'_>, table: &mut dyn ProcessTable) -> StoreResult<()> {
+        self.poll_running(ctx, table)?;
+        self.poll_foreign(ctx, table)?;
         if self.next_sweep_ms.is_some_and(|due| ctx.now_ms >= due) {
             self.sweep(ctx)?;
         }

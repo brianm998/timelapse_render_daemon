@@ -32,7 +32,7 @@ mod queue {
     use trd_core::paths::Clock;
     use trd_core::pipeline::{RENDER_LOG_LIMIT, retain_render_logs};
     use trd_core::plan;
-    use trd_core::process::{self, ProcessState};
+    use trd_core::process::{self, FakeProcessTable, ProcessState};
     use trd_core::queue::{Ctx, Renders, SWEEP_INTERVAL_MS};
     use trd_core::scan::{ExportSequence, RawSequence, ScanResult};
     use trd_core::store::{
@@ -293,7 +293,11 @@ mod queue {
         /// One tick of the render loop, the clock moving on by a millisecond.
         fn tick(&mut self) {
             self.now += 1;
-            self.renders.tick(&mut ctx!(self)).expect("a tick");
+            // The queue's own renders are children, so the table lists nothing.
+            let mut table = FakeProcessTable::new(Vec::new());
+            self.renders
+                .tick(&mut ctx!(self), &mut table)
+                .expect("a tick");
             self.check_caps();
         }
 
