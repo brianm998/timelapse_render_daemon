@@ -464,7 +464,9 @@ fn read_pipe_on_thread<R: Read + Send + 'static>(mut pipe: R) -> mpsc::Receiver<
 /// kept it open, so this takes the chunks up to the end of the pipe or `PIPE_GRACE`, whichever
 /// comes first. When the grace expires first, the bytes received so far are returned and any
 /// later output from a grandchild is dropped: the deadline is checked on every chunk, so queued
-/// chunks cannot extend it. Empty when there was no pipe.
+/// chunks cannot extend it. This is a behaviour change from develop, where the join received one
+/// `Vec` sent only after EOF, so an expired grace returned an empty `Vec`. Empty when there was
+/// no pipe.
 fn join_pipe(reader: Option<mpsc::Receiver<Vec<u8>>>) -> Vec<u8> {
     let Some(receiver) = reader else {
         return Vec::new();
