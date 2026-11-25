@@ -51,8 +51,15 @@
   `fda.rs`; the other titles and fixes are the engine's own wording.
 - Tools are resolved at start-up and every five minutes; a tool that is missing or broken raises
   `tool:<name>` until a later check finds it.
-- Pause-all: `controls.rs` skips a `running` row whose `foreign` flag is set. Without this a global
-  pause suspended an adopted ffmpeg the daemon does not own, against §6.11 step 3 and TRD-16 A10.
+- Foreign renders are left alone by all three pause paths in `controls.rs`: pause-all, pause
+  sequence and pause variant each skip a job whose `foreign` flag is set. Pause-all suspends only
+  rows it did not adopt; pause sequence and pause variant end only the daemon's own renders and
+  leave an adopted one running. Without this, a global pause suspended an adopted ffmpeg the daemon
+  does not own, and pausing a sequence or variant ended it, both against §6.11 step 3 and TRD-16
+  A10 ("only an explicit `StopRender` on its job ends it"). Visible effect: a card can show
+  `STAGE_PAUSED` while its adopted render keeps running, because the pause is recorded in config
+  and the adopted render is not part of the pause. `foreign_render_left_alone` covers this: it
+  pauses the sequence after the global pause and checks the render is still running.
 - Histograms: a complete sequence without a sidecar or cached histogram starts an EXIF collection on a
   blocking thread. A failed collection is tried again after a minute. Its result is written by
   `exif::write_sidecar` and kept in memory per raw directory.
@@ -63,5 +70,7 @@
 
 The ticket's listed files are `engine.rs`, `snapshot.rs`, `problems.rs`, `events.rs` and
 `tests/engine.rs`. Two more files are outside that list, and both are required by mason: the stage
-note `docs/stages/s1090.md` and this record. The one code change outside the list is `controls.rs`
-(the pause-all guard above, which A10 needs). No other file outside the list changes.
+note `docs/stages/s1090.md` and this record. The one code change outside the list is `controls.rs`:
+the foreign-render guard in `pause_all_rendering`, `pause_sequence` and `pause_variant`. A10 needs
+it, because §6.11 step 3 says only an explicit stop ends an adopted render, and the controls are
+where a pause would otherwise signal or end one. No other file outside the list changes.
