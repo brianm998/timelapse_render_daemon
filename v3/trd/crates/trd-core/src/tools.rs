@@ -10,8 +10,9 @@
 //! broken.
 
 use std::ffi::OsString;
+use std::fmt;
 use std::fs::File;
-use std::io::Read;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -346,49 +347,22 @@ fn starts_with_shebang(path: &Path) -> bool {
 
 /// The real version probe: runs the command with `flag` and waits at most `PROBE_TIMEOUT`.
 fn run_version_command(command: &ToolCommand, flag: &str) -> Result<String, String> {
-    let mut child = command
-        .command()
-        .arg(flag)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|err| format!("cannot start: {err}"))?;
-    let deadline = Instant::now() + PROBE_TIMEOUT;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!(
-                        "{flag} did not finish within {} s",
-                        PROBE_TIMEOUT.as_secs()
-                    ));
-                }
-                thread::sleep(PROBE_POLL);
-            }
-            Err(err) => return Err(format!("cannot wait: {err}")),
-        }
-    };
-    let mut stdout = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        let _ = pipe.read_to_string(&mut stdout);
-    }
-    if !status.success() {
-        let mut stderr = String::new();
-        if let Some(mut pipe) = child.stderr.take() {
-            let _ = pipe.read_to_string(&mut stderr);
-        }
+    let mut probe = command.command();
+    probe.arg(flag);
+    let output = bounded_output(probe, PROBE_TIMEOUT).map_err(|err| match err {
+        BoundedError::TimedOut(_) => format!("{flag} {err}"),
+        other => other.to_string(),
+    })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         let stderr = stderr.trim();
         return Err(if stderr.is_empty() {
-            format!("{flag} exited with {status}")
+            format!("{flag} exited with {}", output.status)
         } else {
-            format!("{flag} exited with {status}: {stderr}")
+            format!("{flag} exited with {}: {stderr}", output.status)
         });
     }
-    stdout
+    String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
@@ -399,18 +373,43 @@ fn run_version_command(command: &ToolCommand, flag: &str) -> Result<String, Stri
 /// Runs `command` to completion with an empty standard input, killing it when it has not finished
 /// within `timeout`. Its output comes back whatever its exit status; only a failure to start,
 /// to wait, or the timeout is an `Err`.
-pub fn run_bounded(
+pub fn run_bounded(command: Command, timeout: Duration) -> Result<std::process::Output, String> {
+    bounded_output(command, timeout).map_err(|err| err.to_string())
+}
+
+/// Why a bounded run produced no output.
+#[derive(Debug)]
+enum BoundedError {
+    Start(io::Error),
+    Wait(io::Error),
+    TimedOut(Duration),
+}
+
+impl fmt::Display for BoundedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BoundedError::Start(err) => write!(f, "cannot start: {err}"),
+            BoundedError::Wait(err) => write!(f, "cannot wait: {err}"),
+            BoundedError::TimedOut(timeout) => {
+                write!(f, "did not finish within {} s", timeout.as_secs())
+            }
+        }
+    }
+}
+
+/// The engine of [`run_bounded`] and the version probe. Both pipes are drained by reader threads
+/// from the start, so a child that writes a lot cannot block on a full pipe, and the wait for the
+/// bytes after the child has exited is bounded: a grandchild that keeps a pipe open cannot hang it.
+fn bounded_output(
     mut command: Command,
     timeout: Duration,
-) -> Result<std::process::Output, String> {
+) -> Result<std::process::Output, BoundedError> {
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|err| format!("cannot start: {err}"))?;
-    // Drain both pipes while the child runs: a child that writes more than a pipe buffer holds
-    // would otherwise block forever and only be stopped by the timeout.
+        .map_err(BoundedError::Start)?;
     let stdout_reader = child.stdout.take().map(read_pipe_on_thread);
     let stderr_reader = child.stderr.take().map(read_pipe_on_thread);
     let deadline = Instant::now() + timeout;
@@ -423,17 +422,17 @@ pub fn run_bounded(
                     let _ = child.wait();
                     // The reader threads end on their own once the pipes close; they are not
                     // joined, so a grandchild that keeps a pipe open cannot delay the error.
-                    return Err(format!("did not finish within {} s", timeout.as_secs()));
+                    return Err(BoundedError::TimedOut(timeout));
                 }
                 thread::sleep(PROBE_POLL);
             }
-            Err(err) => return Err(format!("cannot wait: {err}")),
+            Err(err) => return Err(BoundedError::Wait(err)),
         }
     };
-    let stdout = join_pipe(stdout_reader);
-    let stderr = join_pipe(stderr_reader);
     // The child has exited; its pipes close with it unless a grandchild kept one open, so the
     // bytes are waited for only up to PIPE_GRACE and a stray holder cannot block past the timeout.
+    let stdout = join_pipe(stdout_reader);
+    let stderr = join_pipe(stderr_reader);
     Ok(std::process::Output {
         status,
         stdout,
@@ -441,23 +440,40 @@ pub fn run_bounded(
     })
 }
 
-/// Reads a child's pipe to its end on a thread; the bytes arrive on the returned channel.
+/// Reads a child's pipe on a thread, sending each chunk as it arrives, so the bytes read so far
+/// are available even while the pipe is still open.
 fn read_pipe_on_thread<R: Read + Send + 'static>(mut pipe: R) -> mpsc::Receiver<Vec<u8>> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = pipe.read_to_end(&mut bytes);
-        let _ = sender.send(bytes);
+        let mut chunk = [0u8; 8192];
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => {
+                    if sender.send(chunk[..read].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
     });
     receiver
 }
 
-/// The bytes a reader collected, waiting at most `PIPE_GRACE`. Empty when there was no pipe, the
-/// pipe stayed open past the grace period, or the reader failed.
+/// The bytes a reader collected. Once the child has exited its pipe closes unless a grandchild
+/// kept it open, so this takes the chunks up to the end of the pipe or `PIPE_GRACE`, whichever
+/// comes first. Empty when there was no pipe.
 fn join_pipe(reader: Option<mpsc::Receiver<Vec<u8>>>) -> Vec<u8> {
-    reader
-        .and_then(|receiver| receiver.recv_timeout(PIPE_GRACE).ok())
-        .unwrap_or_default()
+    let Some(receiver) = reader else {
+        return Vec::new();
+    };
+    let deadline = Instant::now() + PIPE_GRACE;
+    let mut bytes = Vec::new();
+    while let Ok(chunk) = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+    {
+        bytes.extend_from_slice(&chunk);
+    }
+    bytes
 }
 
 #[cfg(test)]
@@ -897,6 +913,21 @@ mod tests {
         let err = run_version_command(&command, "-version").unwrap_err();
         assert!(err.contains("-version exited with"), "{err}");
         assert!(err.contains("no such codec"), "{err}");
+    }
+
+    /// A grandchild that inherits the probe's stdout keeps the pipe open after the probe exits. The
+    /// probe must still answer with what the probe printed, rather than wait for the grandchild.
+    #[cfg(unix)]
+    #[test]
+    fn unix_probe_does_not_wait_for_a_grandchild_holding_the_pipe() {
+        let tree = Tree::new();
+        let script = tree.root().join("fake-tool");
+        write_script(&script, "sleep 3 &\necho 'ffmpeg version 7.1'");
+        let command = shell_script_command(&script);
+        assert_eq!(
+            run_version_command(&command, "-version"),
+            Ok("ffmpeg version 7.1".to_string())
+        );
     }
 
     #[test]
