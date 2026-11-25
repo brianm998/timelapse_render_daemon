@@ -29,7 +29,7 @@ use crate::events::{EVENT_RENDER_STARTED, EVENT_SEQUENCE_READY};
 use crate::exif::{self, Histogram};
 use crate::pipeline::{self, job_failure};
 use crate::plan::{self, FAILURE_NOT_QUEUEABLE, Plan, PlanRequest};
-use crate::process::{self, RunningProcess};
+use crate::process::{self, ProcessTable, RunningProcess};
 use crate::progress::ProgressReader;
 use crate::scan::{ExportSequence, ScanResult};
 use crate::store::{
@@ -147,9 +147,9 @@ impl Renders {
 
     /// One pass of the render loop: reaps the processes that ended, sweeps stale partials when due,
     /// and promotes queued jobs within the caps.
-    pub fn tick(&mut self, ctx: &mut Ctx<'_>) -> StoreResult<()> {
-        self.poll_running(ctx)?;
-        self.poll_foreign(ctx)?;
+    pub fn tick(&mut self, ctx: &mut Ctx<'_>, table: &mut dyn ProcessTable) -> StoreResult<()> {
+        self.poll_running(ctx, table)?;
+        self.poll_foreign(ctx, table)?;
         if self.next_sweep_ms.is_some_and(|due| ctx.now_ms >= due) {
             self.sweep(ctx)?;
         }

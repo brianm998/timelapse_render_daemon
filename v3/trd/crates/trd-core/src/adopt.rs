@@ -209,13 +209,15 @@ pub fn adopt_foreign(
 }
 
 /// The table entry that is the process of `job`: same pid, a start time within
-/// [`START_TOLERANCE_SECS`] of the recorded one, and a command line that is this job's render (its
-/// partial path) or, for a foreign row, a foreign ffmpeg. A recycled pid has another start time.
+/// [`START_TOLERANCE_SECS`] of the recorded one, not a zombie, and a command line that is this job's
+/// render (its partial path) or, for a foreign row, a foreign ffmpeg. A recycled pid has another
+/// start time.
 fn find_live<'a>(job: &RenderJob, entries: &'a [ProcessEntry]) -> Option<&'a ProcessEntry> {
     let pid = u32::try_from(job.pid?).ok()?;
     let recorded = job.pid_start_time?;
     entries.iter().find(|entry| {
         entry.pid == pid
+            && !entry.zombie
             && (entry.start_time as i64 - recorded).abs() <= START_TOLERANCE_SECS
             && if job.foreign {
                 parse_foreign(entry).is_some()

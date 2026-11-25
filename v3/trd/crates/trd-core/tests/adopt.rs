@@ -194,6 +194,7 @@ fn own_entry(plan: &Plan, pid: u32, start: i64) -> ProcessEntry {
             plan.partial_path.clone(),
         ],
         start_time: start as u64,
+        zombie: false,
     }
 }
 
@@ -212,6 +213,7 @@ fn foreign_entry(pid: u32, start: i64, output: &str) -> ProcessEntry {
             output.to_owned(),
         ],
         start_time: start as u64,
+        zombie: false,
     }
 }
 
@@ -325,9 +327,8 @@ fn no_adopt_foreign_keeps_own() {
         foreign_entry(FOREIGN_PID, START + 30, &foreign_output.to_string_lossy()),
     ]);
 
-    // With --no-adopt-foreign only readopt runs.
+    // With --no-adopt-foreign, startup runs readopt and not adopt_foreign.
     let report = readopt(&mut ctx!(f), &mut f.renders, &mut table).expect("readopt");
-
     assert_eq!(report.adopted, 1);
     assert_eq!(
         f.renders.running_ids(),
@@ -338,8 +339,73 @@ fn no_adopt_foreign_keeps_own() {
         f.renders.foreign_ids().is_empty(),
         "the foreign ffmpeg is not adopted"
     );
+
+    // The render loop runs over the same table, with the foreign ffmpeg still in it: the own render
+    // stays held and no foreign row appears. Nothing in readopt or the poll signals a process.
+    f.renders
+        .tick(&mut ctx!(f), &mut table)
+        .expect("a tick with the foreign ffmpeg listed");
+    assert_eq!(f.renders.running_ids(), vec!["job-1".to_owned()]);
+    assert!(f.renders.foreign_ids().is_empty(), "still not adopted");
     let rows = f.store.render_jobs(None).expect("the rows");
     assert_eq!(rows.len(), 1, "no row is made for the foreign ffmpeg");
+    assert!(!rows[0].foreign);
+}
+
+#[test]
+fn adopted_render_reaped_by_table() {
+    let mut f = fixture();
+    let plan = plan(&f.root);
+    // The progress file ends already: when the process is gone the render succeeded.
+    write_progress(&plan, "frame=3\nfps=25\nprogress=end\n");
+    write_partial(&plan);
+    f.store
+        .put_render_job(&own_job("job-1", &plan, JobStatus::Running, OWN_PID, START))
+        .expect("the row");
+    let mut table = FakeProcessTable::new(vec![own_entry(&plan, OWN_PID, START)]);
+    readopt(&mut ctx!(f), &mut f.renders, &mut table).expect("readopt");
+
+    // While the table lists the process alive, the poll keeps holding it.
+    f.renders
+        .poll_running(&mut ctx!(f), &mut table)
+        .expect("a poll");
+    assert_eq!(f.renders.running_ids(), vec!["job-1".to_owned()]);
+
+    // Once the table no longer lists it, the poll reaps it as a success.
+    let mut gone = FakeProcessTable::new(Vec::new());
+    f.renders
+        .poll_running(&mut ctx!(f), &mut gone)
+        .expect("a poll");
+    assert!(f.renders.running_ids().is_empty());
+    let job = f
+        .store
+        .render_job("job-1")
+        .expect("the row")
+        .expect("a row");
+    assert_eq!(job.status, JobStatus::Done);
+}
+
+#[test]
+fn zombie_render_is_not_adopted() {
+    let mut f = fixture();
+    let plan = plan(&f.root);
+    write_progress(&plan, "frame=3\nfps=25\nprogress=continue\n");
+    write_partial(&plan);
+    f.store
+        .put_render_job(&own_job("job-1", &plan, JobStatus::Running, OWN_PID, START))
+        .expect("the row");
+    // The pid is still listed, but as a zombie: it has ended.
+    let mut zombie = own_entry(&plan, OWN_PID, START);
+    zombie.zombie = true;
+    let mut table = FakeProcessTable::new(vec![zombie]);
+
+    let report = readopt(&mut ctx!(f), &mut f.renders, &mut table).expect("readopt");
+
+    assert_eq!(report.adopted, 0, "a zombie is not alive");
+    assert!(f.renders.running_ids().is_empty());
+    let failures = f.store.failures().expect("the failures");
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].kind, "FAILURE_PRODUCED_NO_OUTPUT");
 }
 
 #[test]
@@ -430,8 +496,9 @@ fn adopt_foreign_adopts_and_finishes_by_output() {
 
     // The process is gone and its output exists: the render succeeded, with source ADOPTED.
     fs::write(&output, b"video").expect("the output");
+    let mut gone = FakeProcessTable::new(Vec::new());
     f.renders
-        .poll_foreign(&mut ctx!(f))
+        .poll_foreign(&mut ctx!(f), &mut gone)
         .expect("the foreign render is reaped");
 
     assert!(f.renders.foreign_ids().is_empty());
@@ -458,8 +525,10 @@ fn foreign_render_without_output_fails() {
     )]);
     adopt_foreign(&mut ctx!(f), &mut f.renders, &mut table).expect("adopt");
 
+    // The process has ended and no output was written.
+    let mut gone = FakeProcessTable::new(Vec::new());
     f.renders
-        .poll_foreign(&mut ctx!(f))
+        .poll_foreign(&mut ctx!(f), &mut gone)
         .expect("the foreign render is reaped");
 
     let rows = f.store.render_jobs(None).expect("the rows");

@@ -24,7 +24,7 @@ use crate::events::{
 use crate::exif::Histogram;
 use crate::paths::expand_year_path;
 use crate::plan::{self, Plan};
-use crate::process::{self, ExitInfo};
+use crate::process::{ExitInfo, ProcessSnapshot, ProcessTable};
 use crate::queue::{Active, Ctx, Renders, in_flight_jobs, is_paused_variant, note};
 use crate::store::{
     Failure, JobStatus, LogFields, LogLevel, RenderJob, RenderedVideo, Store, StoreResult,
@@ -44,15 +44,21 @@ pub const FAILURE_LOG_EVERY: i64 = 25;
 pub const FULL_REPORT_OCCURRENCES: i64 = 3;
 
 impl Renders {
-    /// Reads the progress of every running job and reaps the ones whose process has ended.
-    pub fn poll_running(&mut self, ctx: &mut Ctx<'_>) -> StoreResult<()> {
+    /// Reads the progress of every running job and reaps the ones whose process has ended. An
+    /// adopted process is checked in `table` (§6.11); a child reports its own exit.
+    pub fn poll_running(
+        &mut self,
+        ctx: &mut Ctx<'_>,
+        table: &mut dyn ProcessTable,
+    ) -> StoreResult<()> {
+        let mut snapshot = ProcessSnapshot::new(table);
         for id in self.running_ids() {
             let polled = match self.running.get_mut(&id) {
                 None => continue,
                 Some(active) => {
                     // Progress is best effort: a missing or unreadable file leaves the last block.
                     let _ = active.progress.poll();
-                    poll_process(active)
+                    poll_process(active, &mut snapshot)
                 }
             };
             let exit = match polled {
@@ -86,13 +92,18 @@ impl Renders {
 
     /// Reaps the foreign renders whose process has ended (§6.11 step 2). The output's existence
     /// decides the job.
-    pub fn poll_foreign(&mut self, ctx: &mut Ctx<'_>) -> StoreResult<()> {
-        let ended: Vec<String> = self
-            .foreign
-            .iter()
-            .filter(|(_, watched)| !process::is_alive(watched.pid, watched.start_time))
-            .map(|(id, _)| id.clone())
-            .collect();
+    pub fn poll_foreign(
+        &mut self,
+        ctx: &mut Ctx<'_>,
+        table: &mut dyn ProcessTable,
+    ) -> StoreResult<()> {
+        let mut snapshot = ProcessSnapshot::new(table);
+        let mut ended: Vec<String> = Vec::new();
+        for (id, watched) in &self.foreign {
+            if !snapshot.is_alive(watched.pid, watched.start_time) {
+                ended.push(id.clone());
+            }
+        }
         for id in ended {
             self.foreign.remove(&id);
             let Some(job) = ctx.store.render_job(&id)? else {
@@ -808,11 +819,14 @@ pub(crate) fn tool_output_json(lines: &[String]) -> String {
 /// The exit of a process the queue holds (§6.6 step 3, §6.11). A child reports its own status. An
 /// adopted process has no handle: it is alive while its pid has the recorded start time. Once it is
 /// gone its exit is unknown, except that a progress file ending in `progress=end` reads as exit 0.
-fn poll_process(active: &mut Active) -> io::Result<Option<ExitInfo>> {
+fn poll_process(
+    active: &mut Active,
+    snapshot: &mut ProcessSnapshot<'_>,
+) -> io::Result<Option<ExitInfo>> {
     if active.process.is_child() {
         return active.process.try_wait();
     }
-    if process::is_alive(active.process.pid, active.process.start_time) {
+    if snapshot.is_alive(active.process.pid, active.process.start_time) {
         return Ok(None);
     }
     let ended = active.progress.latest().is_some_and(|block| block.ended);
