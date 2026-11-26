@@ -214,10 +214,12 @@ mod tests {
         let bytes = std::fs::read(&file).expect("the task file is written");
         assert_eq!(&bytes[..2], &[0xFFu8, 0xFE]);
         let xml = decode_task(&bytes).expect("UTF-16 LE with a mark");
-        assert!(
-            xml.contains("<Command>\"/opt/trd/trdw.exe\"</Command>"),
-            "{xml}"
+        // Compare against the path the code builds: Windows joins with `\`, Unix with `/`.
+        let command = format!(
+            "<Command>\"{}\"</Command>",
+            trdw_path(Path::new("/opt/trd/trd.exe")).display()
         );
+        assert!(xml.contains(&command), "{xml}");
         assert!(xml.contains("<Arguments>daemon</Arguments>"), "{xml}");
         assert_eq!(
             runner.calls(),
@@ -242,10 +244,11 @@ mod tests {
         assert_eq!(files_under(home.path()), Vec::<PathBuf>::new());
         let xml = task_xml(&t);
         let listing = write_listing(&task_file(&t), encode_task(&xml).len(), &xml);
-        assert!(
-            listing.contains("<Command>\"/opt/trd/trdw.exe\"</Command>"),
-            "{listing}"
+        let command = format!(
+            "<Command>\"{}\"</Command>",
+            trdw_path(Path::new("/opt/trd/trd.exe")).display()
         );
+        assert!(listing.contains(&command), "{listing}");
         assert!(
             listing.contains("<Arguments>daemon</Arguments>"),
             "{listing}"
