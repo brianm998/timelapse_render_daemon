@@ -3,7 +3,8 @@
 
 //! The command line of trd and trdw (spec 1 §5). `version` and `daemon` run the daemon; `scan
 //! --once` runs offline; every other command except `service` is a client of the running daemon
-//! over the loopback listener (`--address`, plaintext). `service` is not implemented yet (TRD-21).
+//! over the loopback listener (`--address`, plaintext). `service` installs and controls the
+//! per-user autostart (spec 1 §10).
 
 #![allow(dead_code)]
 
@@ -28,6 +29,7 @@ use trd_core::scan::{RealFs, ScanResult, Scanner};
 use trd_proto::trd::v1 as pb;
 use trd_proto::trd::v1::trd_service_client::TrdServiceClient;
 
+use crate::service;
 use crate::status_view::{self, Style};
 
 /// Default address of the loopback listener.
@@ -223,13 +225,13 @@ enum ServiceAction {
 pub struct ServiceArgs {
     /// Print what would be done, change nothing.
     #[arg(long)]
-    dry_run: bool,
+    pub dry_run: bool,
     /// Config file the service starts with.
     #[arg(long, value_name = "PATH")]
-    config: Option<PathBuf>,
+    pub config: Option<PathBuf>,
     /// trd binary the service starts.
     #[arg(long, value_name = "PATH")]
-    binary: Option<PathBuf>,
+    pub binary: Option<PathBuf>,
 }
 
 impl Command {
@@ -314,10 +316,12 @@ pub fn run(args: Vec<OsString>, default_subcommand: Option<&str>) -> ExitCode {
             eprintln!("trd: scan needs --once; the daemon scans by itself");
             ExitCode::from(2)
         }
-        Some(Command::Service { .. }) => {
-            eprintln!("service: not implemented yet");
-            ExitCode::from(1)
-        }
+        Some(Command::Service { action }) => match action {
+            ServiceAction::Install(args) => service::run(service::Verb::Install, &args),
+            ServiceAction::Uninstall(args) => service::run(service::Verb::Uninstall, &args),
+            ServiceAction::Status(args) => service::run(service::Verb::Status, &args),
+            ServiceAction::Restart(args) => service::run(service::Verb::Restart, &args),
+        },
         Some(other) => finish(run_client(&address, other)),
     }
 }

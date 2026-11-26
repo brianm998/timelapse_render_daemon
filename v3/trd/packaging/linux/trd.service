@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+[Unit]
+Description=Timelapse Render Daemon
+[Service]
+ExecStart=@EXEC_START@
+Restart=on-failure
+RestartSec=10
+KillMode=process
+[Install]
+WantedBy=default.target

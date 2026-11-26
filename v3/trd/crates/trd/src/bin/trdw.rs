@@ -17,6 +17,8 @@ mod mdns;
 mod pairing;
 #[path = "../server.rs"]
 mod server;
+#[path = "../service/mod.rs"]
+mod service;
 #[path = "../status_view.rs"]
 mod status_view;
 #[path = "../tls.rs"]

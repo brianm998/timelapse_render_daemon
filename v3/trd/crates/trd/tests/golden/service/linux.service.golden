@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+[Unit]
+Description=Timelapse Render Daemon
+[Service]
+ExecStart=/usr/lib/trd/trd daemon --config /home/example/.config/trd/config.json
+Restart=on-failure
+RestartSec=10
+KillMode=process
+[Install]
+WantedBy=default.target
