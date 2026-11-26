@@ -11,6 +11,8 @@ mod auth;
 mod cli;
 #[path = "../daemon.rs"]
 mod daemon;
+#[path = "../mdns.rs"]
+mod mdns;
 #[path = "../pairing.rs"]
 mod pairing;
 #[path = "../server.rs"]

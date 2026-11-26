@@ -1992,6 +1992,7 @@ mod tests {
             home: dir.to_path_buf(),
             os: Os::current(),
             lan: None,
+            mdns: false,
         };
         adjust(&mut settings);
         let table = Box::new(FakeProcessTable::new(Vec::new()));

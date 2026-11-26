@@ -39,6 +39,7 @@ use trd_proto::trd::v1::trd_service_server::TrdServiceServer;
 
 use crate::auth::{Revocations, lan_interceptor};
 use crate::cli::DaemonArgs;
+use crate::mdns;
 use crate::pairing::Pairing;
 use crate::server::{ConfigSlot, PathSource, Server, Shared, SharedTools, mark_loopback, now_ms};
 use crate::tls;
@@ -69,6 +70,8 @@ pub struct Settings {
     pub os: Os,
     /// The LAN listener's address, when `--lan-bind` is not `off` (§8.2).
     pub lan: Option<SocketAddr>,
+    /// Whether the service is advertised over mDNS: false with `--no-mdns` (§8.4).
+    pub mdns: bool,
 }
 
 /// Runs `trd daemon` until it is told to stop. Returns the process exit code.
@@ -117,6 +120,7 @@ async fn serve(args: DaemonArgs) -> ExitCode {
         }
     };
     let settings = settings_from(&args, dirs.clone(), Env::system().home, Os::current());
+    let mdns_wanted = mdns::wanted(settings.mdns, settings.lan);
     let table = Box::new(SysinfoProcessTable::new());
     let (shared, engine) = match assemble(settings, table, stop_rx.clone()) {
         Ok(parts) => parts,
@@ -175,6 +179,8 @@ async fn serve(args: DaemonArgs) -> ExitCode {
     }
     let lan_task = lan_addr
         .map(|addr| tokio::spawn(run_lan(addr, lan_first, shared.clone(), stop_rx.clone())));
+    // The service is advertised once the LAN port is known; the task withdraws it when stopped.
+    let mdns_task = mdns_wanted.then(|| mdns::spawn(shared.clone(), stop_rx.clone()));
 
     // The one line the clients and the tests wait for. It is flushed before anything else runs.
     println!("TRD_LISTENING loopback=127.0.0.1:{port} lan={lan_state}");
@@ -202,6 +208,13 @@ async fn serve(args: DaemonArgs) -> ExitCode {
             .is_err()
     {
         tracing::warn!("the LAN listener did not stop in time; exiting anyway");
+    }
+    if let Some(task) = mdns_task
+        && tokio::time::timeout(ENGINE_STOP_TIMEOUT, task)
+            .await
+            .is_err()
+    {
+        tracing::warn!("the mDNS advertisement did not withdraw in time; exiting anyway");
     }
     stop_engine(&shared, engine_task).await;
     code
@@ -232,6 +245,7 @@ fn settings_from(args: &DaemonArgs, dirs: Dirs, home: PathBuf, os: Os) -> Settin
         home,
         os,
         lan: lan_bind_of(&args.lan_bind).ok().flatten(),
+        mdns: !args.no_mdns,
     }
 }
 
@@ -643,6 +657,15 @@ mod tests {
             .await
             .expect("the stop ends the wait");
         assert!(ended.is_none());
+    }
+
+    /// `--no-mdns` turns the advertisement off; the LAN listener's `off` does too (§8.4).
+    #[test]
+    fn mdns_is_off_with_no_mdns_and_follows_the_lan_listener() {
+        assert!(settings(&[]).mdns);
+        assert!(!settings(&["--no-mdns"]).mdns);
+        let lan_off = settings(&["--lan-bind", "off"]);
+        assert!(!mdns::wanted(lan_off.mdns, lan_off.lan));
     }
 
     #[test]
