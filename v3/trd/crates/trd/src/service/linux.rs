@@ -101,7 +101,7 @@ impl Service for SystemdUser {
             );
         } else {
             let text = render_unit(&t.binary, t.config.as_deref());
-            t.write_file(&unit, text.as_bytes())?;
+            t.write_file(&unit, text.as_bytes(), &text)?;
         }
         t.exec_ok("systemctl", &["--user", "daemon-reload"])?;
         t.exec_ok("systemctl", &["--user", "enable", "--now", UNIT])?;

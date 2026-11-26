@@ -141,17 +141,21 @@ pub struct Target<'a> {
     pub runner: &'a dyn CommandRunner,
 }
 
+/// What a dry run prints for one file: its path and size, then its contents, ending in a newline.
+pub fn write_listing(path: &Path, len: usize, shown: &str) -> String {
+    let mut out = format!("would write {} ({len} bytes):\n{shown}", path.display());
+    if !shown.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
 impl Target<'_> {
-    /// Writes a file and creates its folder. Under dry-run it prints the file instead.
-    pub fn write_file(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
+    /// Writes a file and creates its folder. `shown` is the text a dry run prints for it: the
+    /// file's contents before any encoding, so a UTF-16 task file still shows readable XML.
+    pub fn write_file(&self, path: &Path, bytes: &[u8], shown: &str) -> Result<(), String> {
         if self.dry_run {
-            println!("would write {} ({} bytes):", path.display(), bytes.len());
-            if let Ok(text) = std::str::from_utf8(bytes) {
-                print!("{text}");
-                if !text.ends_with('\n') {
-                    println!();
-                }
-            }
+            print!("{}", write_listing(path, bytes.len(), shown));
             return Ok(());
         }
         if let Some(parent) = path.parent() {
@@ -495,6 +499,26 @@ mod tests {
             "dry-run wrote files"
         );
         assert!(!recording.calls().is_empty(), "dry-run printed no commands");
+    }
+
+    #[test]
+    fn dry_run_listing_shows_the_readable_task_xml() {
+        let xml = windows::render_task("EXAMPLE\\example", Path::new("C:\\trd\\trdw.exe"), None);
+        let bytes = windows::encode_task(&xml);
+        let listing = write_listing(Path::new("C:\\x\\task.xml"), bytes.len(), &xml);
+        assert!(
+            listing.contains("<Command>"),
+            "listing has no task XML: {listing}"
+        );
+        assert!(
+            listing.contains("EXAMPLE\\example"),
+            "listing lost the user: {listing}"
+        );
+        assert!(listing.starts_with(&format!(
+            "would write C:\\x\\task.xml ({} bytes):\n",
+            bytes.len()
+        )));
+        assert!(listing.ends_with('\n'));
     }
 
     #[test]

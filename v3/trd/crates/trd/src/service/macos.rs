@@ -87,7 +87,7 @@ impl Service for LaunchAgent {
         }
         let plist = user_plist(t);
         let text = render_plist(&t.binary, t.config.as_deref());
-        t.write_file(&plist, text.as_bytes())?;
+        t.write_file(&plist, text.as_bytes(), &text)?;
         let domain = format!("gui/{}", t.uid);
         let path = plist.display().to_string();
         t.exec_ok("launchctl", &["bootstrap", domain.as_str(), path.as_str()])?;

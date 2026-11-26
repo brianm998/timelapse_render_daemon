@@ -133,7 +133,7 @@ impl Service for LogonTask {
     fn install(&self, t: &Target) -> Result<(), String> {
         let file = task_file(t);
         let xml = render_task(&t.user, &trdw_path(&t.binary), t.config.as_deref());
-        t.write_file(&file, &encode_task(&xml))?;
+        t.write_file(&file, &encode_task(&xml), &xml)?;
         let path = file.display().to_string();
         t.exec_ok(
             "schtasks",
