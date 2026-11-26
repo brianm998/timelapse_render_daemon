@@ -1,0 +1,23 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+#
+# Debian maintainer script of the trd package (overview §10.2). On remove it disables the user
+# unit for every user's login, when systemd is running. An upgrade leaves the enablement alone:
+# postinst enables it again anyway. A failed disable does not block the removal.
+set -e
+
+unit=trd.service
+# TRD_SYSTEMD_RUN_DIR lets test-maintainer-scripts.sh point the check at a fake directory.
+run_dir="${TRD_SYSTEMD_RUN_DIR:-/run/systemd/system}"
+
+case "$1" in
+  remove)
+    if command -v systemctl >/dev/null 2>&1 && [ -d "$run_dir" ]; then
+      systemctl --global disable "$unit" \
+        || echo "trd: could not disable $unit; run 'systemctl --global disable trd.service' by hand" >&2
+    fi
+    ;;
+esac
+
+exit 0
