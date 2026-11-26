@@ -135,8 +135,10 @@ mod cli_client {
             "image_name_prefix": "",
             "image_sequence_dirname_prefix": "",
             "rendering": [{"codec": "h264", "frame_rate": 30}],
-            // Only `rescan` scans again within a test, so its effect can be read back.
-            "scan_interval_seconds": 3600,
+            // The engine reaps a finished histogram (and so starts a complete sequence's render) only
+            // on a tick, and ticks come every scan interval. A long interval would leave every
+            // complete sequence in `collecting metadata` for the whole test.
+            "scan_interval_seconds": 0.5,
         });
         fs::write(config, text.to_string()).expect("the config file");
     }
