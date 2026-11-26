@@ -122,7 +122,7 @@ gitc() { git -C "$R" -c user.name=test -c user.email=test@example.invalid -c com
 diff_repo() { # diff_repo <n>: sets R to a fresh repository with one commit on its default branch
   R="$work/diffrepo$1"
   mkdir -p "$R/v3"
-  git init -q "$R"
+  git init -q -b trunk "$R"  # pinned: the default branch must not be develop
   echo base > "$R/v3/base.txt"
   gitc add -A
   gitc commit -q -m base
