@@ -758,14 +758,32 @@ mod server {
             .expect("ListDirectory of the roots")
             .into_inner();
         assert!(roots.entries.is_empty());
+        // §7: "/" on Unix, every drive on Windows; the one holding the temporary directory is
+        // the root every OS must list.
+        let system_root = fixture
+            .root
+            .path()
+            .ancestors()
+            .last()
+            .expect("a path has a root")
+            .to_string_lossy()
+            .into_owned();
         assert!(
-            roots.roots.iter().any(|root| root == "/"),
-            "{:?}",
+            roots
+                .roots
+                .iter()
+                .any(|root| root.eq_ignore_ascii_case(&system_root)),
+            "{system_root} is a root: {:?}",
             roots.roots
         );
-        if let Some(home) = std::env::var_os("HOME") {
+        // The daemon inherits this environment and finds home the same way.
+        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
             let home = home.to_string_lossy().into_owned();
-            assert!(roots.roots.contains(&home), "the home folder is a root");
+            assert_eq!(
+                roots.roots.last(),
+                Some(&home),
+                "the home folder is the last root"
+            );
         }
 
         let dir = fixture.path("browse");
