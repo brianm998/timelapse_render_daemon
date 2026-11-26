@@ -26,7 +26,7 @@ use trd_core::dirs::{Dirs, Env, Os};
 use trd_core::engine::{Engine, EngineOptions, MacDiskAccess};
 use trd_core::logging;
 use trd_core::paths::{SystemClock, resolve_config_path};
-use trd_core::process::SysinfoProcessTable;
+use trd_core::process::{ProcessTable, SysinfoProcessTable};
 use trd_core::scan::RealFs;
 use trd_core::store::Store;
 use trd_core::thumbs::{Runner, Thumbnailer, run_ffmpeg};
@@ -102,7 +102,8 @@ async fn serve(args: DaemonArgs) -> ExitCode {
         );
     }
     let settings = settings_from(&args, dirs.clone(), Env::system().home, Os::current());
-    let (shared, engine) = match assemble(settings, stop_rx.clone()) {
+    let table = Box::new(SysinfoProcessTable::new());
+    let (shared, engine) = match assemble(settings, table, stop_rx.clone()) {
         Ok(parts) => parts,
         Err(message) => {
             tracing::error!(error = %message, "trd cannot start");
@@ -190,9 +191,11 @@ fn server_name(advertise: Option<String>) -> String {
 
 /// Builds the engine and the shared state of the server from `settings`. Opens the database,
 /// resolves the config path and the codec table, and resolves the tools. Nothing is scanned until
-/// the engine runs.
+/// the engine runs. The caller supplies the process table the engine reads: the daemon passes the
+/// operating system's, in-process tests a fake one.
 pub fn assemble(
     settings: Settings,
+    table: Box<dyn ProcessTable + Send>,
     shutdown: watch::Receiver<bool>,
 ) -> Result<(Arc<Shared>, Engine), String> {
     let database = settings.dirs.database();
@@ -242,7 +245,7 @@ pub fn assemble(
         scan_fs: Arc::new(RealFs),
         clock: Arc::new(SystemClock),
         now_ms: Arc::new(now_ms),
-        table: Box::new(SysinfoProcessTable::new()),
+        table,
         policy: settings.policy,
         thumbs: thumbs.share(),
         env: Vec::new(),

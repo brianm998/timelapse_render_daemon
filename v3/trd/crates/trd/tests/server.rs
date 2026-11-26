@@ -1188,6 +1188,27 @@ mod server {
         }
     }
 
+    /// Reads `stream` until it ends, and returns how it ended: `Ok` for a clean end.
+    #[cfg(unix)]
+    async fn drain<T>(mut stream: tonic::Streaming<T>) -> Result<(), Status> {
+        while stream.message().await?.is_some() {}
+        Ok(())
+    }
+
+    /// Kills the fake render when dropped, so a failed assertion does not leave it running.
+    #[cfg(unix)]
+    struct KillOnDrop(i32);
+
+    #[cfg(unix)]
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            // SAFETY: the pid is the fake ffmpeg this test's daemon started; only that is ended.
+            unsafe {
+                libc::kill(self.0, libc::SIGKILL);
+            }
+        }
+    }
+
     /// SIGTERM ends the streams with UNAVAILABLE, leaves a running render alive (A4), and exits 0.
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
@@ -1250,6 +1271,7 @@ mod server {
             .into_inner();
         let render_pid = details.pid;
         assert!(render_pid > 0, "a running render has a pid");
+        let _render = KillOnDrop(render_pid);
         assert_eq!(details.status, pb::VariantStatus::VariantRunning as i32);
 
         // A control that does not apply to a running render: FAILED_PRECONDITION.
@@ -1269,7 +1291,7 @@ mod server {
             .await
             .expect("WatchSnapshots")
             .into_inner();
-        let mut logs = client
+        let logs = client
             .watch_log(pb::WatchLogRequest {
                 after_seq: 0,
                 min_level: 0,
@@ -1282,6 +1304,10 @@ mod server {
             .await
             .expect("the snapshot stream answers")
             .expect("the current snapshot");
+        // Both streams are read while the daemon stops: an unread message would leave no room for
+        // the UNAVAILABLE that ends a stream.
+        let snapshots_end = tokio::spawn(drain(snapshots));
+        let logs_end = tokio::spawn(drain(logs));
 
         let status = daemon.terminate();
         assert!(
@@ -1290,32 +1316,20 @@ mod server {
         );
 
         // Both streams end with UNAVAILABLE, not with a silent end.
-        let end_of_snapshots = loop {
-            match snapshots.message().await {
-                Ok(Some(_)) => continue,
-                other => break other,
-            }
-        };
-        assert_eq!(code_of(end_of_snapshots), Code::Unavailable);
-        let end_of_logs = loop {
-            match logs.message().await {
-                Ok(Some(_)) => continue,
-                other => break other,
-            }
-        };
-        assert_eq!(code_of(end_of_logs), Code::Unavailable);
+        for (name, end) in [("snapshot", snapshots_end), ("log", logs_end)] {
+            let end = tokio::time::timeout(HANG_GUARD, end)
+                .await
+                .unwrap_or_else(|_| panic!("the {name} stream did not end"))
+                .expect("the draining task");
+            assert_eq!(code_of(end), Code::Unavailable, "the {name} stream");
+        }
 
         // The render the daemon started is still alive; it was not signalled.
-        let pid = render_pid;
         // SAFETY: signal 0 only checks that the pid exists; the render is the one this test's daemon started.
-        let alive = unsafe { libc::kill(pid, 0) } == 0;
+        let alive = unsafe { libc::kill(render_pid, 0) } == 0;
         assert!(
             alive,
             "the render {render_pid} is still running after the daemon stopped"
         );
-        // SAFETY: the pid is the fake ffmpeg this test's daemon started; it is ended here, after the check.
-        unsafe {
-            libc::kill(pid, libc::SIGKILL);
-        }
     }
 }

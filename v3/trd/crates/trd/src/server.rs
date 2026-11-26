@@ -1829,12 +1829,13 @@ mod tests {
     use tokio_stream::StreamExt;
     use trd_core::adopt::AdoptPolicy;
     use trd_core::dirs::Dirs;
+    use trd_core::process::FakeProcessTable;
 
     /// Stops a test that waits for a state that never comes. It is not a timing assertion.
     const HANG_GUARD: Duration = Duration::from_secs(60);
 
-    /// A server over fresh temporary folders. Its engine is built but never run, so no scan,
-    /// render or process table is touched.
+    /// A server over fresh temporary folders, with an empty fake process table. Its engine is
+    /// built but never run, so no scan or render happens.
     /// The returned sender keeps the shutdown watch open; dropping it ends the streams.
     fn server_in(dir: &Path) -> (Server, watch::Sender<bool>) {
         server_with(dir, |_| {})
@@ -1862,7 +1863,8 @@ mod tests {
             os: Os::current(),
         };
         adjust(&mut settings);
-        let (shared, _engine) = assemble(settings, stop_rx).expect("the daemon assembles");
+        let table = Box::new(FakeProcessTable::new(Vec::new()));
+        let (shared, _engine) = assemble(settings, table, stop_rx).expect("the daemon assembles");
         (Server::new(shared), stop)
     }
 
