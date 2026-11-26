@@ -259,6 +259,7 @@ fn build_engine(
         thumbs,
         env: vec![("TRD_FAKE_FFMPEG".to_owned(), fake_script.to_string())],
         history_path: None,
+        external_problems: Default::default(),
     })
 }
 

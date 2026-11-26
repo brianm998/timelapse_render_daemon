@@ -501,6 +501,19 @@ impl Store {
         Ok(())
     }
 
+    /// Sets `last_seen` of the device with `id` to `now_ms`, unless it is revoked. Writes only that
+    /// column, so a revoke that lands meanwhile is not undone.
+    pub fn touch_device(&self, id: &str, now_ms: i64) -> StoreResult<()> {
+        self.conn().execute(
+            "UPDATE devices SET last_seen = :last_seen WHERE id = :id AND revoked = 0",
+            named_params! {
+                ":id": id,
+                ":last_seen": now_ms,
+            },
+        )?;
+        Ok(())
+    }
+
     /// The device with `id`.
     pub fn device(&self, id: &str) -> StoreResult<Option<Device>> {
         Ok(self

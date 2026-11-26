@@ -10,8 +10,10 @@
 use std::env;
 use std::future::Future;
 use std::io::{self, Write};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -19,6 +21,7 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::TcpListenerStream;
+use tonic::transport::{Identity as TonicIdentity, ServerTlsConfig};
 use tracing::Level;
 
 use trd_core::adopt::AdoptPolicy;
@@ -26,6 +29,7 @@ use trd_core::dirs::{Dirs, Env, Os};
 use trd_core::engine::{Engine, EngineOptions, MacDiskAccess};
 use trd_core::logging;
 use trd_core::paths::{SystemClock, resolve_config_path};
+use trd_core::problems::{ID_LAN, Problem, lan_problem};
 use trd_core::process::{ProcessTable, SysinfoProcessTable};
 use trd_core::scan::RealFs;
 use trd_core::store::Store;
@@ -33,11 +37,19 @@ use trd_core::thumbs::{Runner, Thumbnailer, run_ffmpeg};
 use trd_core::tools::Tools;
 use trd_proto::trd::v1::trd_service_server::TrdServiceServer;
 
+use crate::auth::{Revocations, lan_interceptor};
 use crate::cli::DaemonArgs;
+use crate::pairing::Pairing;
 use crate::server::{ConfigSlot, PathSource, Server, Shared, SharedTools, mark_loopback, now_ms};
+use crate::tls;
+
+/// The problems the LAN listener raises, shared with the engine (§8.2).
+type ExternalProblems = Arc<Mutex<Vec<Problem>>>;
 
 /// How long the loopback listener waits before it binds again after a failure.
 const BIND_RETRY: Duration = Duration::from_secs(30);
+/// How long the LAN listener waits before it binds again after a failure (§8.2).
+const LAN_BIND_RETRY: Duration = Duration::from_secs(30);
 /// How long the engine gets to end after the server stops.
 const ENGINE_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -55,6 +67,8 @@ pub struct Settings {
     pub sandbox: bool,
     pub home: PathBuf,
     pub os: Os,
+    /// The LAN listener's address, when `--lan-bind` is not `off` (§8.2).
+    pub lan: Option<SocketAddr>,
 }
 
 /// Runs `trd daemon` until it is told to stop. Returns the process exit code.
@@ -95,12 +109,13 @@ async fn serve(args: DaemonArgs) -> ExitCode {
     };
 
     let (stop_tx, stop_rx) = watch::channel(false);
-    if args.lan_bind != "off" {
-        tracing::warn!(
-            lan_bind = %args.lan_bind,
-            "the LAN listener is not built yet (TRD-18); --lan-bind is ignored"
-        );
-    }
+    let lan_addr = match lan_bind_of(&args.lan_bind) {
+        Ok(lan_addr) => lan_addr,
+        Err(message) => {
+            eprintln!("trd: {message}");
+            return ExitCode::from(2);
+        }
+    };
     let settings = settings_from(&args, dirs.clone(), Env::system().home, Os::current());
     let table = Box::new(SysinfoProcessTable::new());
     let (shared, engine) = match assemble(settings, table, stop_rx.clone()) {
@@ -141,10 +156,30 @@ async fn serve(args: DaemonArgs) -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    // The LAN listener's first bind is tried now, so the line below can say whether it is up. A
+    // busy address does not hold up the loopback listener: the LAN side keeps trying in the back-
+    // ground, and the problem is reported until it binds.
+    let lan_first = match lan_addr {
+        Some(addr) => try_bind_lan(addr, &shared.external_problems).await,
+        None => None,
+    };
+    let lan_state = match (&lan_first, lan_addr) {
+        (Some(listener), _) => listener
+            .local_addr()
+            .map_or_else(|_| "retrying".to_owned(), |addr| addr.to_string()),
+        (None, Some(_)) => "retrying".to_owned(),
+        (None, None) => "off".to_owned(),
+    };
+    if let Some(bound) = lan_first.as_ref().and_then(|l| l.local_addr().ok()) {
+        shared.lan_port.store(bound.port(), AtomicOrdering::SeqCst);
+    }
+    let lan_task = lan_addr
+        .map(|addr| tokio::spawn(run_lan(addr, lan_first, shared.clone(), stop_rx.clone())));
+
     // The one line the clients and the tests wait for. It is flushed before anything else runs.
-    println!("TRD_LISTENING loopback=127.0.0.1:{port} lan=off");
+    println!("TRD_LISTENING loopback=127.0.0.1:{port} lan={lan_state}");
     let _ = std::io::stdout().flush();
-    tracing::info!(port, "the loopback listener is serving");
+    tracing::info!(port, lan = %lan_state, "the loopback listener is serving");
 
     let service = TrdServiceServer::with_interceptor(Server::new(shared.clone()), mark_loopback);
     let mut stop = stop_rx;
@@ -161,8 +196,26 @@ async fn serve(args: DaemonArgs) -> ExitCode {
             ExitCode::from(1)
         }
     };
+    if let Some(task) = lan_task
+        && tokio::time::timeout(ENGINE_STOP_TIMEOUT, task)
+            .await
+            .is_err()
+    {
+        tracing::warn!("the LAN listener did not stop in time; exiting anyway");
+    }
     stop_engine(&shared, engine_task).await;
     code
+}
+
+/// The `--lan-bind` address: `None` for `off`. An address that does not parse is an error.
+fn lan_bind_of(value: &str) -> Result<Option<SocketAddr>, String> {
+    if value == "off" {
+        return Ok(None);
+    }
+    value
+        .parse::<SocketAddr>()
+        .map(Some)
+        .map_err(|_| format!("--lan-bind must be ADDR:PORT or off, not {value:?}"))
 }
 
 /// The settings the `trd daemon` flags give (§5). `--sandbox` implies `--no-adopt-foreign` and
@@ -178,6 +231,7 @@ fn settings_from(args: &DaemonArgs, dirs: Dirs, home: PathBuf, os: Os) -> Settin
         sandbox: args.sandbox,
         home,
         os,
+        lan: lan_bind_of(&args.lan_bind).ok().flatten(),
     }
 }
 
@@ -232,6 +286,7 @@ pub fn assemble(
 
     // One thumbnailer: the engine and the server share its slot gate (MAX_CONCURRENT_THUMBNAILS).
     let thumbs = Thumbnailer::new(&settings.dirs.data, thumbnail_runner(shared_tools.clone()));
+    let external_problems: ExternalProblems = Arc::new(Mutex::new(Vec::new()));
     let (engine, handle) = Engine::new(EngineOptions {
         store: store.clone(),
         config_path,
@@ -250,12 +305,20 @@ pub fn assemble(
         thumbs: thumbs.share(),
         env: Vec::new(),
         history_path,
+        external_problems: external_problems.clone(),
     });
 
     let server_id = store
         .server_id()
         .map_err(|err| format!("cannot read the server identity: {err}"))?;
     let server_name = server_name(settings.advertise_name);
+    let identity = match settings.lan {
+        Some(_) => Some(
+            tls::load_or_create(&settings.dirs.data, &tls::subject_names(&server_name))
+                .map_err(|err| format!("cannot load the TLS identity: {err}"))?,
+        ),
+        None => None,
+    };
     let shared = Arc::new(Shared {
         handle,
         store,
@@ -268,6 +331,12 @@ pub fn assemble(
         shutdown,
         home: settings.home,
         os: settings.os,
+        identity,
+        lan_addresses: tls::lan_ipv4_addresses(),
+        lan_port: std::sync::atomic::AtomicU16::new(0),
+        pairing: Mutex::new(Pairing::default()),
+        revocations: Revocations::default(),
+        external_problems,
     });
     Ok((shared, engine))
 }
@@ -328,6 +397,102 @@ async fn bind_retrying(
             _ = stop.wait_for(|stopped| *stopped) => return None,
         }
     }
+}
+
+/// Binds the LAN listener once. Its problem is raised when the bind fails and cleared when it works.
+async fn try_bind_lan(addr: SocketAddr, problems: &ExternalProblems) -> Option<TcpListener> {
+    match TcpListener::bind(addr).await {
+        Ok(listener) => {
+            set_lan_problem(problems, None);
+            Some(listener)
+        }
+        Err(err) => {
+            tracing::error!(%addr, error = %err, "the LAN listener cannot bind; trying again later");
+            set_lan_problem(problems, Some(err.to_string()));
+            None
+        }
+    }
+}
+
+/// Tries the LAN bind again every `delay` until it works. None when a stop is requested first.
+async fn lan_listener_retrying(
+    addr: SocketAddr,
+    delay: Duration,
+    mut stop: watch::Receiver<bool>,
+    problems: ExternalProblems,
+) -> Option<TcpListener> {
+    loop {
+        tokio::select! {
+            () = tokio::time::sleep(delay) => {}
+            _ = stop.wait_for(|stopped| *stopped) => return None,
+        }
+        if let Some(listener) = try_bind_lan(addr, &problems).await {
+            return Some(listener);
+        }
+    }
+}
+
+/// Sets the LAN problem: raised with `error` as its detail, or removed when `error` is `None`.
+fn set_lan_problem(problems: &ExternalProblems, error: Option<String>) {
+    let mut list = problems.lock().unwrap_or_else(PoisonError::into_inner);
+    list.retain(|problem| problem.id != ID_LAN);
+    if let Some(error) = error {
+        list.push(lan_problem(&error));
+    }
+}
+
+/// The LAN listener's task: serves TLS on `first` (or on the address once it binds) until stop.
+async fn run_lan(
+    addr: SocketAddr,
+    first: Option<TcpListener>,
+    shared: Arc<Shared>,
+    stop: watch::Receiver<bool>,
+) {
+    let listener = match first {
+        Some(listener) => listener,
+        None => {
+            let problems = shared.external_problems.clone();
+            match lan_listener_retrying(addr, LAN_BIND_RETRY, stop.clone(), problems).await {
+                Some(listener) => {
+                    if let Ok(bound) = listener.local_addr() {
+                        shared.lan_port.store(bound.port(), AtomicOrdering::SeqCst);
+                    }
+                    listener
+                }
+                None => return,
+            }
+        }
+    };
+    tracing::info!(addr = ?listener.local_addr().ok(), "the LAN listener is serving");
+    if let Err(err) = serve_lan(listener, shared, stop).await {
+        tracing::error!(error = %err, "the LAN listener stopped with an error");
+    }
+}
+
+/// Serves the trd.v1 service over TLS on `listener`, with the LAN interceptor, until stop.
+async fn serve_lan(
+    listener: TcpListener,
+    shared: Arc<Shared>,
+    mut stop: watch::Receiver<bool>,
+) -> Result<(), tonic::transport::Error> {
+    let Some(identity) = shared.identity.as_ref() else {
+        return Ok(());
+    };
+    let tls = ServerTlsConfig::new().identity(TonicIdentity::from_pem(
+        identity.cert_pem.as_bytes(),
+        identity.key_pem.as_bytes(),
+    ));
+    let service = TrdServiceServer::with_interceptor(
+        Server::new(shared.clone()),
+        lan_interceptor(shared.clone()),
+    );
+    tonic::transport::Server::builder()
+        .tls_config(tls)?
+        .add_service(service)
+        .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async move {
+            let _ = stop.wait_for(|stopped| *stopped).await;
+        })
+        .await
 }
 
 /// Stops the engine: it drops its handles and signals no process. Waits a little for it to end.
@@ -478,6 +643,70 @@ mod tests {
             .await
             .expect("the stop ends the wait");
         assert!(ended.is_none());
+    }
+
+    #[test]
+    fn lan_bind_is_an_address_or_off() {
+        assert_eq!(lan_bind_of("off"), Ok(None));
+        assert_eq!(
+            lan_bind_of("127.0.0.1:0"),
+            Ok(Some(SocketAddr::from(([127, 0, 0, 1], 0))))
+        );
+        assert!(lan_bind_of("nowhere").is_err());
+        assert_eq!(settings(&["--lan-bind", "off"]).lan, None);
+        assert_eq!(
+            settings(&["--lan-bind", "127.0.0.1:50072"]).lan,
+            Some(SocketAddr::from(([127, 0, 0, 1], 50072)))
+        );
+    }
+
+    /// A busy LAN port raises PROBLEM_LAN_LISTENER_FAILED, and freeing the port clears it (§8.2).
+    #[tokio::test]
+    async fn a_busy_lan_port_raises_the_problem_until_it_is_freed() {
+        let (holder, port) = busy_port();
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        let problems: ExternalProblems = Arc::new(Mutex::new(Vec::new()));
+
+        assert!(
+            try_bind_lan(addr, &problems).await.is_none(),
+            "the port is busy"
+        );
+        let raised = problems.lock().expect("the problems").clone();
+        assert_eq!(raised.len(), 1);
+        assert_eq!(raised[0].id, "lan");
+        assert_eq!(raised[0].kind, "PROBLEM_LAN_LISTENER_FAILED");
+
+        drop(holder);
+        let listener = try_bind_lan(addr, &problems)
+            .await
+            .expect("the freed port binds");
+        assert!(problems.lock().expect("the problems").is_empty());
+        drop(listener);
+    }
+
+    /// The LAN listener keeps trying every delay until the port is free.
+    #[tokio::test]
+    async fn the_lan_listener_retries_until_the_port_is_free() {
+        let (holder, port) = busy_port();
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        let problems: ExternalProblems = Arc::new(Mutex::new(Vec::new()));
+        let (_stop, stop_rx) = watch::channel(false);
+        let mut retrying = pin!(lan_listener_retrying(
+            addr,
+            Duration::from_millis(5),
+            stop_rx,
+            problems.clone(),
+        ));
+        // One poll leaves the retry waiting for its delay.
+        let first = poll_fn(|cx| Poll::Ready(retrying.as_mut().poll(cx))).await;
+        assert!(first.is_pending());
+        drop(holder);
+        let listener = tokio::time::timeout(HANG_GUARD, retrying)
+            .await
+            .expect("a later attempt binds")
+            .expect("no stop was requested");
+        assert_eq!(listener.local_addr().expect("an address").port(), port);
+        assert!(problems.lock().expect("the problems").is_empty());
     }
 
     /// The handlers exist once `stop_signal` returns: a SIGTERM raised before the future is ever

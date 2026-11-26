@@ -21,7 +21,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, oneshot, watch};
@@ -146,6 +146,9 @@ pub struct EngineOptions {
     pub env: Vec<(String, String)>,
     /// The Swift history file to import once (§6.17), if any.
     pub history_path: Option<PathBuf>,
+    /// Problems the trd crate raises (the LAN listener's). Read at each snapshot; the crate owns
+    /// the list and adds or removes its entries.
+    pub external_problems: Arc<Mutex<Vec<Problem>>>,
 }
 
 /// A command for the run loop.
@@ -204,6 +207,7 @@ pub struct Engine {
     disk_access: Box<dyn DiskAccess>,
     fda_checked: Option<Instant>,
     fda_missing: bool,
+    external_problems: Arc<Mutex<Vec<Problem>>>,
     scanner: Scanner,
     renders: Renders,
     table: Box<dyn ProcessTable + Send>,
@@ -294,6 +298,7 @@ impl Engine {
             disk_access: options.disk_access,
             fda_checked: None,
             fda_missing: false,
+            external_problems: options.external_problems,
             scanner,
             renders,
             table: options.table,
@@ -805,6 +810,11 @@ impl Engine {
                 out.push(problems::path_problem(problem));
             }
         }
+        let external = self
+            .external_problems
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        out.extend(external.iter().cloned());
         out
     }
 

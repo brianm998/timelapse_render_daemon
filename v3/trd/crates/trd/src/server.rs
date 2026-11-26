@@ -19,7 +19,8 @@ use std::fs;
 use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicU16, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::{mpsc, watch};
@@ -36,7 +37,7 @@ use trd_core::diagnosis::FailureKind as DiagnosedKind;
 use trd_core::dirs::Os;
 use trd_core::engine::{Control, EngineHandle};
 use trd_core::paths::{Clock, SystemClock};
-use trd_core::problems::Severity as ProblemSeverity;
+use trd_core::problems::{Problem, Severity as ProblemSeverity};
 use trd_core::snapshot::{
     Phase as SnapPhase, SequenceCard, Snapshot, Stage as SnapStage, VariantRow,
     VariantStatus as SnapVariantStatus,
@@ -49,6 +50,10 @@ use trd_core::thumbs::{Thumbnailer, ensure_thumbnail};
 use trd_core::tools::{ToolProblem, Tools};
 use trd_proto::trd::v1 as pb;
 use trd_proto::trd::v1::trd_service_server::TrdService;
+
+use crate::auth::{Caller, Revocations, UntilRevoked, authorize, revocation_of, until_revoked};
+use crate::pairing::{Pairing, Refusal, new_code, new_device};
+use crate::tls::Identity;
 
 /// The tools as the daemon last resolved them. The engine writes them, the thumbnailer and the
 /// server read them.
@@ -115,6 +120,18 @@ pub struct Shared {
     pub shutdown: watch::Receiver<bool>,
     pub home: PathBuf,
     pub os: Os,
+    /// The LAN listener's certificate, when `--lan-bind` is not `off` (§8.1).
+    pub identity: Option<Identity>,
+    /// The non-loopback IPv4 addresses `StartPairing` reports (§8.3).
+    pub lan_addresses: Vec<String>,
+    /// The port the LAN listener is bound to; 0 while it is off or not bound (§7 `ServerInfo`).
+    pub lan_port: AtomicU16,
+    /// The one pairing code that can be valid (§8.3).
+    pub pairing: Mutex<Pairing>,
+    /// The revocation signal of each device, for the streams it has open (§8.3).
+    pub revocations: Revocations,
+    /// The problems the LAN listener raises, read by the engine at each snapshot (§8.2).
+    pub external_problems: Arc<Mutex<Vec<Problem>>>,
 }
 
 impl Shared {
@@ -173,6 +190,28 @@ fn require_loopback<T>(request: &Request<T>) -> Result<(), Status> {
         Listener::Lan => Err(Status::permission_denied(
             "device calls are only served on the loopback listener",
         )),
+    }
+}
+
+/// The certificate fingerprint the LAN listener serves, or nothing while it is off.
+fn fingerprint(shared: &Shared) -> String {
+    shared
+        .identity
+        .as_ref()
+        .map(|identity| identity.fingerprint.clone())
+        .unwrap_or_default()
+}
+
+/// The status of a refused `Pair` (§8.3).
+fn refusal_status(refusal: Refusal) -> Status {
+    match refusal {
+        Refusal::NoCode => Status::unauthenticated(
+            "there is no valid pairing code; StartPairing issues one on loopback",
+        ),
+        Refusal::Wrong => Status::unauthenticated("the pairing code is wrong"),
+        Refusal::TooManyWrong => Status::resource_exhausted(
+            "too many wrong codes; the code is invalid and StartPairing issues a new one",
+        ),
     }
 }
 
@@ -1001,8 +1040,9 @@ fn io_status(err: &io::Error, path: &str) -> Status {
 
 // ── the service ──────────────────────────────────────────────────────────────
 
-/// A stream of messages, fed by a task that ends when the client goes or the daemon stops.
-type Messages<T> = ReceiverStream<Result<T, Status>>;
+/// A stream of messages, fed by a task that ends when the client goes or the daemon stops. On the
+/// LAN it also ends with `UNAUTHENTICATED` when the device is revoked (§8.3).
+type Messages<T> = UntilRevoked<ReceiverStream<Result<T, Status>>>;
 
 /// The rate a `WatchSnapshots` stream samples at: 0 is 4, the rest clamp to 1..=10 (§7).
 fn sample_rate(requested: u32) -> u32 {
@@ -1128,10 +1168,10 @@ impl TrdService for Server {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             api_version: 1,
             platform: crate::cli::platform(),
-            cert_fingerprint_sha256: String::new(),
-            lan_port: 0,
+            cert_fingerprint_sha256: fingerprint(shared),
+            lan_port: u32::from(shared.lan_port.load(AtomicOrdering::SeqCst)),
             caller_is_local: listener_of(&request) == Listener::Loopback,
-            caller_is_paired: false,
+            caller_is_paired: request.extensions().get::<Caller>().is_some(),
             tools,
             sandbox: shared.sandbox,
         }))
@@ -1139,17 +1179,54 @@ impl TrdService for Server {
 
     async fn pair(
         &self,
-        _request: Request<pb::PairRequest>,
+        request: Request<pb::PairRequest>,
     ) -> Result<Response<pb::PairResponse>, Status> {
-        Err(Status::unimplemented(
-            "pairing arrives with TRD-18 (the LAN listener)",
-        ))
+        let request = request.into_inner();
+        let platform = match request.platform() {
+            pb::DevicePlatform::Ios => "ios",
+            pb::DevicePlatform::Android => "android",
+            pb::DevicePlatform::Desktop => "desktop",
+            pb::DevicePlatform::Unspecified => {
+                return Err(Status::invalid_argument("the device platform is required"));
+            }
+        };
+        let name = request.device_name.trim();
+        if name.is_empty() {
+            return Err(Status::invalid_argument("the device name is required"));
+        }
+        let shared = &self.shared;
+        let now = now_ms();
+        // The name is checked first, so a request that will be refused does not use up the code.
+        let redeemed = shared
+            .pairing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .redeem(now, &request.code);
+        if let Err(refusal) = redeemed {
+            tracing::info!(?refusal, "a pairing was refused");
+            return Err(refusal_status(refusal));
+        }
+        let (device, token) = new_device(name, platform, now);
+        shared.store.put_device(&device).map_err(internal)?;
+        shared.log(
+            LogLevel::Info,
+            "pairing",
+            "device paired",
+            &LogFields::default(),
+        );
+        Ok(Response::new(pb::PairResponse {
+            token,
+            device_id: device.id,
+            server_id: shared.server_id.clone(),
+            server_name: shared.server_name.clone(),
+        }))
     }
 
     async fn get_snapshot(
         &self,
-        _request: Request<pb::GetSnapshotRequest>,
+        request: Request<pb::GetSnapshotRequest>,
     ) -> Result<Response<pb::Snapshot>, Status> {
+        authorize(&request)?;
         let snap = self.shared.handle.snapshot();
         Ok(Response::new(self.shared.snapshot_message(&snap)))
     }
@@ -1160,8 +1237,10 @@ impl TrdService for Server {
         &self,
         request: Request<pb::WatchSnapshotsRequest>,
     ) -> Result<Response<Self::WatchSnapshotsStream>, Status> {
+        authorize(&request)?;
         let rate = sample_rate(request.get_ref().max_per_second);
         let period = Duration::from_millis(1000 / u64::from(rate));
+        let revoked = revocation_of(&request);
         let shared = self.shared.clone();
         let rx = feed_snapshots(
             shared.handle.subscribe(),
@@ -1170,13 +1249,17 @@ impl TrdService for Server {
             |snap| snap.revision,
             move |snap| shared.snapshot_message(snap),
         );
-        Ok(Response::new(ReceiverStream::new(rx)))
+        Ok(Response::new(until_revoked(
+            ReceiverStream::new(rx),
+            revoked,
+        )))
     }
 
     async fn list_rendered_videos(
         &self,
         request: Request<pb::ListRenderedVideosRequest>,
     ) -> Result<Response<pb::ListRenderedVideosResponse>, Status> {
+        authorize(&request)?;
         let request = request.into_inner();
         let limit = videos_limit(request.limit);
         let search = request.search.to_lowercase();
@@ -1217,6 +1300,7 @@ impl TrdService for Server {
         &self,
         request: Request<pb::GetThumbnailRequest>,
     ) -> Result<Response<pb::Thumbnail>, Status> {
+        authorize(&request)?;
         let id = request.into_inner().rendered_video_id;
         let shared = self.shared.clone();
         let made = tokio::task::spawn_blocking(
@@ -1257,6 +1341,7 @@ impl TrdService for Server {
         &self,
         request: Request<pb::GetRenderDetailsRequest>,
     ) -> Result<Response<pb::RenderDetails>, Status> {
+        authorize(&request)?;
         use pb::get_render_details_request::Target;
         let store = &self.shared.store;
         let target = request.into_inner().target.ok_or_else(|| {
@@ -1306,6 +1391,7 @@ impl TrdService for Server {
         &self,
         request: Request<pb::ListLogRequest>,
     ) -> Result<Response<pb::ListLogResponse>, Status> {
+        authorize(&request)?;
         let request = request.into_inner();
         let limit = log_limit(request.limit);
         let min = min_level_of(request.min_level);
@@ -1329,6 +1415,8 @@ impl TrdService for Server {
         &self,
         request: Request<pb::WatchLogRequest>,
     ) -> Result<Response<Self::WatchLogStream>, Status> {
+        authorize(&request)?;
+        let revoked = revocation_of(&request);
         let request = request.into_inner();
         let min = min_level_of(request.min_level);
         let shared = self.shared.clone();
@@ -1414,13 +1502,17 @@ impl TrdService for Server {
             .await;
             end_for_shutdown(&tx, &shutdown).await;
         });
-        Ok(Response::new(ReceiverStream::new(rx)))
+        Ok(Response::new(until_revoked(
+            ReceiverStream::new(rx),
+            revoked,
+        )))
     }
 
     async fn set_global_pause(
         &self,
         request: Request<pb::SetGlobalPauseRequest>,
     ) -> Result<Response<pb::Ack>, Status> {
+        authorize(&request)?;
         let control = if request.into_inner().paused {
             Control::PauseAllRendering
         } else {
@@ -1433,6 +1525,7 @@ impl TrdService for Server {
         &self,
         request: Request<pb::SequenceRef>,
     ) -> Result<Response<pb::Ack>, Status> {
+        authorize(&request)?;
         let name = request.into_inner().sequence_name;
         self.control(Control::PauseSequence(name)).await
     }
@@ -1441,6 +1534,7 @@ impl TrdService for Server {
         &self,
         request: Request<pb::SequenceRef>,
     ) -> Result<Response<pb::Ack>, Status> {
+        authorize(&request)?;
         let name = request.into_inner().sequence_name;
         self.control(Control::ResumeSequence(name)).await
     }
@@ -1449,6 +1543,7 @@ impl TrdService for Server {
         &self,
         request: Request<pb::VariantRef>,
     ) -> Result<Response<pb::Ack>, Status> {
+        authorize(&request)?;
         let request = request.into_inner();
         self.control(Control::PauseVariant {
             sequence: request.sequence_name,
@@ -1461,6 +1556,7 @@ impl TrdService for Server {
         &self,
         request: Request<pb::VariantRef>,
     ) -> Result<Response<pb::Ack>, Status> {
+        authorize(&request)?;
         let request = request.into_inner();
         self.control(Control::ResumeVariant {
             sequence: request.sequence_name,
@@ -1473,6 +1569,7 @@ impl TrdService for Server {
         &self,
         request: Request<pb::RenderRef>,
     ) -> Result<Response<pb::Ack>, Status> {
+        authorize(&request)?;
         let id = request.into_inner().render_id;
         self.control(Control::SuspendRender(id)).await
     }
@@ -1481,6 +1578,7 @@ impl TrdService for Server {
         &self,
         request: Request<pb::RenderRef>,
     ) -> Result<Response<pb::Ack>, Status> {
+        authorize(&request)?;
         let id = request.into_inner().render_id;
         self.control(Control::ResumeRender(id)).await
     }
@@ -1489,6 +1587,7 @@ impl TrdService for Server {
         &self,
         request: Request<pb::RenderRef>,
     ) -> Result<Response<pb::Ack>, Status> {
+        authorize(&request)?;
         let id = request.into_inner().render_id;
         self.control(Control::StopRender(id)).await
     }
@@ -1497,6 +1596,7 @@ impl TrdService for Server {
         &self,
         request: Request<pb::VariantRef>,
     ) -> Result<Response<pb::Ack>, Status> {
+        authorize(&request)?;
         let request = request.into_inner();
         self.control(Control::Retry {
             sequence: request.sequence_name,
@@ -1509,14 +1609,16 @@ impl TrdService for Server {
         &self,
         request: Request<pb::FailureRef>,
     ) -> Result<Response<pb::Ack>, Status> {
+        authorize(&request)?;
         let id = request.into_inner().failure_id;
         self.control(Control::DismissFailure(id)).await
     }
 
     async fn dismiss_all_failures(
         &self,
-        _request: Request<pb::DismissAllFailuresRequest>,
+        request: Request<pb::DismissAllFailuresRequest>,
     ) -> Result<Response<pb::Ack>, Status> {
+        authorize(&request)?;
         let ids: Vec<String> = self
             .shared
             .store
@@ -1533,15 +1635,17 @@ impl TrdService for Server {
 
     async fn rescan_now(
         &self,
-        _request: Request<pb::RescanNowRequest>,
+        request: Request<pb::RescanNowRequest>,
     ) -> Result<Response<pb::Ack>, Status> {
+        authorize(&request)?;
         self.control(Control::RescanNow).await
     }
 
     async fn get_config(
         &self,
-        _request: Request<pb::GetConfigRequest>,
+        request: Request<pb::GetConfigRequest>,
     ) -> Result<Response<pb::ConfigState>, Status> {
+        authorize(&request)?;
         let mut slot = self.shared.lock_config();
         slot.reload();
         Ok(Response::new(config_state(&slot, now_ms())))
@@ -1551,6 +1655,7 @@ impl TrdService for Server {
         &self,
         request: Request<pb::ValidateConfigRequest>,
     ) -> Result<Response<pb::ValidateConfigResponse>, Status> {
+        authorize(&request)?;
         let request = request.into_inner();
         let config = config_from_proto(&request.config.unwrap_or_default());
         let table = if request.codecs.is_empty() {
@@ -1578,6 +1683,7 @@ impl TrdService for Server {
         &self,
         request: Request<pb::UpdateConfigRequest>,
     ) -> Result<Response<pb::ConfigState>, Status> {
+        authorize(&request)?;
         let request = request.into_inner();
         let new_config = config_from_proto(&request.config.unwrap_or_default());
         let state = {
@@ -1631,6 +1737,7 @@ impl TrdService for Server {
         &self,
         request: Request<pb::UpdateCodecsRequest>,
     ) -> Result<Response<pb::ConfigState>, Status> {
+        authorize(&request)?;
         let request = request.into_inner();
         let table = codecs_from_proto(&request.codecs)?;
         let state = {
@@ -1684,6 +1791,7 @@ impl TrdService for Server {
         &self,
         request: Request<pb::SetConfigPathRequest>,
     ) -> Result<Response<pb::ConfigState>, Status> {
+        authorize(&request)?;
         let request = request.into_inner();
         if !core_config::is_absolute_path(&request.path) {
             return Err(Status::invalid_argument("the config path must be absolute"));
@@ -1723,6 +1831,7 @@ impl TrdService for Server {
         &self,
         request: Request<pb::ListDirectoryRequest>,
     ) -> Result<Response<pb::ListDirectoryResponse>, Status> {
+        authorize(&request)?;
         let request = request.into_inner();
         let roots = roots(self.shared.os, &self.shared.home);
         if request.path.is_empty() {
@@ -1766,16 +1875,32 @@ impl TrdService for Server {
         &self,
         request: Request<pb::StartPairingRequest>,
     ) -> Result<Response<pb::StartPairingResponse>, Status> {
+        authorize(&request)?;
         require_loopback(&request)?;
-        Err(Status::unimplemented(
-            "pairing arrives with TRD-18 (the LAN listener)",
-        ))
+        let shared = &self.shared;
+        let issued = shared
+            .pairing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .issue(now_ms(), new_code());
+        // The code itself is never logged.
+        tracing::info!("pairing code issued");
+        Ok(Response::new(pb::StartPairingResponse {
+            code: issued.code,
+            expires_at_ms: issued.expires_at_ms,
+            server_id: shared.server_id.clone(),
+            server_name: shared.server_name.clone(),
+            cert_fingerprint_sha256: fingerprint(shared),
+            lan_port: u32::from(shared.lan_port.load(AtomicOrdering::SeqCst)),
+            lan_addresses: shared.lan_addresses.clone(),
+        }))
     }
 
     async fn list_paired_devices(
         &self,
         request: Request<pb::ListPairedDevicesRequest>,
     ) -> Result<Response<pb::ListPairedDevicesResponse>, Status> {
+        authorize(&request)?;
         require_loopback(&request)?;
         let devices = self
             .shared
@@ -1793,6 +1918,7 @@ impl TrdService for Server {
         &self,
         request: Request<pb::RevokeDeviceRequest>,
     ) -> Result<Response<pb::Ack>, Status> {
+        authorize(&request)?;
         require_loopback(&request)?;
         let id = request.into_inner().device_id;
         let mut device = self
@@ -1804,6 +1930,7 @@ impl TrdService for Server {
             .ok_or_else(|| Status::not_found(format!("no paired device {id}")))?;
         device.revoked = true;
         self.shared.store.put_device(&device).map_err(internal)?;
+        self.shared.revocations.revoke(&id);
         Ok(Response::new(pb::Ack {}))
     }
 }
@@ -1861,6 +1988,7 @@ mod tests {
             sandbox: false,
             home: dir.to_path_buf(),
             os: Os::current(),
+            lan: None,
         };
         adjust(&mut settings);
         let table = Box::new(FakeProcessTable::new(Vec::new()));
@@ -1881,8 +2009,17 @@ mod tests {
         request
     }
 
-    /// Device RPCs answer PERMISSION_DENIED for a LAN-marked request, and work on loopback.
-    /// A request with no marker counts as LAN.
+    /// A LAN request from a paired device: the interceptor has attached its caller.
+    fn paired<T>(message: T) -> Request<T> {
+        let mut request = marked(message, Listener::Lan);
+        request.extensions_mut().insert(Caller {
+            revoked: watch::channel(false).1,
+        });
+        request
+    }
+
+    /// Device RPCs answer UNAUTHENTICATED on the LAN without a paired device's caller (A2), and
+    /// PERMISSION_DENIED with one. Loopback works.
     #[tokio::test(flavor = "multi_thread")]
     async fn lan_requests_are_refused_for_devices() {
         let dir = tempfile::Builder::new()
@@ -1896,36 +2033,49 @@ mod tests {
             server
                 .list_paired_devices(marked(pb::ListPairedDevicesRequest {}, lan))
                 .await
-                .expect_err("LAN is refused")
+                .expect_err("LAN without a token is refused")
                 .code(),
-            tonic::Code::PermissionDenied
-        );
-        assert_eq!(
-            server
-                .revoke_device(marked(
-                    pb::RevokeDeviceRequest {
-                        device_id: "any".to_owned()
-                    },
-                    lan
-                ))
-                .await
-                .expect_err("LAN is refused")
-                .code(),
-            tonic::Code::PermissionDenied
+            tonic::Code::Unauthenticated
         );
         assert_eq!(
             server
                 .start_pairing(marked(pb::StartPairingRequest {}, lan))
                 .await
-                .expect_err("LAN is refused")
+                .expect_err("LAN without a token is refused")
                 .code(),
-            tonic::Code::PermissionDenied
+            tonic::Code::Unauthenticated
         );
         assert_eq!(
             server
                 .list_paired_devices(Request::new(pb::ListPairedDevicesRequest {}))
                 .await
                 .expect_err("an unmarked request is refused")
+                .code(),
+            tonic::Code::Unauthenticated
+        );
+        assert_eq!(
+            server
+                .list_paired_devices(paired(pb::ListPairedDevicesRequest {}))
+                .await
+                .expect_err("a paired device is refused device RPCs")
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            server
+                .revoke_device(paired(pb::RevokeDeviceRequest {
+                    device_id: "any".to_owned()
+                }))
+                .await
+                .expect_err("a paired device is refused device RPCs")
+                .code(),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            server
+                .start_pairing(paired(pb::StartPairingRequest {}))
+                .await
+                .expect_err("a paired device cannot start pairing")
                 .code(),
             tonic::Code::PermissionDenied
         );
@@ -1935,12 +2085,13 @@ mod tests {
             .list_paired_devices(marked(pb::ListPairedDevicesRequest {}, loopback))
             .await
             .expect("loopback lists the devices");
-        let status = server
+        let code = server
             .start_pairing(marked(pb::StartPairingRequest {}, loopback))
             .await
-            .expect_err("pairing is not built yet");
-        assert_eq!(status.code(), tonic::Code::Unimplemented);
-        assert!(status.message().contains("TRD-18"), "{status:?}");
+            .expect("loopback starts pairing")
+            .into_inner()
+            .code;
+        assert_eq!(code.len(), 6);
     }
 
     #[test]
