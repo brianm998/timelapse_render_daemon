@@ -713,7 +713,7 @@ Recently rendered (newest 1 of 12)
         );
 
         // The config path moves; the log records it as its newest line.
-        let moved = fixture.path("moved/config.json");
+        let moved = fixture.path("moved").join("config.json");
         assert_success(&client(
             &address,
             &["config", "set-path", moved.to_str().expect("a UTF-8 path")],
