@@ -19,6 +19,8 @@ mod pairing;
 mod server;
 #[path = "../service/mod.rs"]
 mod service;
+#[path = "../status_view.rs"]
+mod status_view;
 #[path = "../tls.rs"]
 mod tls;
 

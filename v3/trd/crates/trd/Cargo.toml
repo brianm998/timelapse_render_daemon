@@ -29,6 +29,8 @@ uuid.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
 sysinfo.workspace = true
+chrono.workspace = true
+crossterm.workspace = true
 mdns-sd.workspace = true
 
 [target.'cfg(unix)'.dependencies]
