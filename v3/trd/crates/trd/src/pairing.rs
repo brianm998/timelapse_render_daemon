@@ -67,8 +67,19 @@ impl Pairing {
     }
 
     /// Redeems `presented` at `now_ms`. The correct code is consumed. A wrong one counts toward
-    /// [`MAX_WRONG_CODES`], and the last of those clears the code.
+    /// [`MAX_WRONG_CODES`], and the last of those clears the code. The daemon itself uses
+    /// [`Pairing::verify`] and [`Pairing::consume`] so that it can refuse bad arguments first.
+    #[cfg(test)]
     pub fn redeem(&mut self, now_ms: i64, presented: &str) -> Result<(), Refusal> {
+        self.verify(now_ms, presented)?;
+        self.consume();
+        Ok(())
+    }
+
+    /// Checks `presented` at `now_ms` without consuming a correct code, so the caller can still
+    /// refuse the request for other reasons before it uses the code. A wrong code counts toward
+    /// [`MAX_WRONG_CODES`] exactly as in [`Pairing::redeem`].
+    pub fn verify(&mut self, now_ms: i64, presented: &str) -> Result<(), Refusal> {
         let Some(pending) = self.pending.as_mut() else {
             return Err(Refusal::NoCode);
         };
@@ -77,7 +88,6 @@ impl Pairing {
             return Err(Refusal::NoCode);
         }
         if same_code(&pending.code, presented) {
-            self.pending = None;
             return Ok(());
         }
         pending.wrong += 1;
@@ -86,6 +96,11 @@ impl Pairing {
             return Err(Refusal::TooManyWrong);
         }
         Err(Refusal::Wrong)
+    }
+
+    /// Clears the held code, if any. Call it only after [`Pairing::verify`] succeeded.
+    pub fn consume(&mut self) {
+        self.pending = None;
     }
 }
 
@@ -153,6 +168,18 @@ mod tests {
         issued(&mut pairing, "123456");
         assert_eq!(pairing.redeem(T0, "123456"), Ok(()));
         assert_eq!(pairing.redeem(T0, "123456"), Err(Refusal::NoCode));
+    }
+
+    /// `verify` accepts the correct code without consuming it, so a request refused for its
+    /// arguments does not use the code up; `consume` then clears it.
+    #[test]
+    fn verify_does_not_consume_the_correct_code() {
+        let mut pairing = Pairing::default();
+        issued(&mut pairing, "123456");
+        assert_eq!(pairing.verify(T0, "123456"), Ok(()));
+        assert_eq!(pairing.verify(T0, "123456"), Ok(()));
+        pairing.consume();
+        assert_eq!(pairing.verify(T0, "123456"), Err(Refusal::NoCode));
     }
 
     /// Code expiry on a fake clock: valid just before the lifetime, refused at it.

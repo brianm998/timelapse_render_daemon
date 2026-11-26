@@ -1182,6 +1182,16 @@ impl TrdService for Server {
         request: Request<pb::PairRequest>,
     ) -> Result<Response<pb::PairResponse>, Status> {
         let request = request.into_inner();
+        let shared = &self.shared;
+        let now = now_ms();
+        // The code is the authentication, so it is checked before the arguments: a request with
+        // no valid code is UNAUTHENTICATED whatever it contains. The correct code is consumed
+        // only once the arguments are also valid, so a bad request does not use up the code.
+        let mut pairing = shared.pairing.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Err(refusal) = pairing.verify(now, &request.code) {
+            tracing::info!(?refusal, "a pairing was refused");
+            return Err(refusal_status(refusal));
+        }
         let platform = match request.platform() {
             pb::DevicePlatform::Ios => "ios",
             pb::DevicePlatform::Android => "android",
@@ -1194,18 +1204,8 @@ impl TrdService for Server {
         if name.is_empty() {
             return Err(Status::invalid_argument("the device name is required"));
         }
-        let shared = &self.shared;
-        let now = now_ms();
-        // The name is checked first, so a request that will be refused does not use up the code.
-        let redeemed = shared
-            .pairing
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .redeem(now, &request.code);
-        if let Err(refusal) = redeemed {
-            tracing::info!(?refusal, "a pairing was refused");
-            return Err(refusal_status(refusal));
-        }
+        pairing.consume();
+        drop(pairing);
         let (device, token) = new_device(name, platform, now);
         shared.store.put_device(&device).map_err(internal)?;
         shared.log(
