@@ -1,6 +1,7 @@
 # 1130 — `.mason/**` no longer selects t0-mason in development
 
-Status: accepted (TRD-1177)
+Status: chosen by the implementing agent; not yet confirmed by the owner (TRD-1177). The owner may
+reverse it, for example by making impact respect level bindings in mason instead.
 
 Problem: task 1162 moved t0-mason to level t0-owner, bound to test_step and batch only. The impact
 map entry `".mason/**" = ["t0-workflows", "t0-mason"]` still names it, and impact selection does
@@ -12,8 +13,10 @@ Options:
 - Drop t0-mason from the `.mason/**` impact entry. Change made in this repository.
 - Make impact respect level bindings. Change made in mason itself, not in this repository.
 
-Decision: drop t0-mason from the `.mason/**` impact entry, in `.mason/mason.toml` and in the
-matching block of `v3/1-trd-core-daemon.md` §11.3. The entry is now `["t0-workflows"]`.
+Decision (provisional, pending owner confirmation): drop t0-mason from the `.mason/**` impact
+entry, in `.mason/mason.toml` and in the matching block of `v3/1-trd-core-daemon.md` §11.3. The
+entry is now `["t0-workflows"]`. The task asked for an owner decision between the two options; the
+unattended run could not obtain it, so this choice can be reversed once the owner confirms.
 
 Why this is enough: t0-mason stays in `[step.test]`'s suites list and keeps its `[suite.t0-mason]`
 binding and command, so test_step still runs it on the owner's Mac, and batch still runs it there.
