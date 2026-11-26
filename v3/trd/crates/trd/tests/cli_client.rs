@@ -96,6 +96,12 @@ mod cli_client {
         /// holding one of them: the sequence is in progress and never renders. Returns the config
         /// path, written under `config/`.
         fn with_sequence(&self) -> PathBuf {
+            self.sequence_with(1)
+        }
+
+        /// As [`Fixture::with_sequence`], with the first `exported` frames in the export folder.
+        /// Three exported frames make the sequence complete, so its rendering starts.
+        fn sequence_with(&self, exported: u32) -> PathBuf {
             let source = self.path("source").join(SEQUENCE);
             let export = self.path("export");
             fs::create_dir_all(&source).expect("the source folder");
@@ -103,7 +109,13 @@ mod cli_client {
             for frame in 1..=3 {
                 fs::write(source.join(format!("frame_{frame:04}.tif")), b"raw").expect("a frame");
             }
-            fs::write(export.join(SEQUENCE).join("frame_0001.tif"), b"out").expect("a frame");
+            for frame in 1..=exported {
+                fs::write(
+                    export.join(SEQUENCE).join(format!("frame_{frame:04}.tif")),
+                    b"out",
+                )
+                .expect("a frame");
+            }
             let config = self.path("config/config.json");
             fs::create_dir_all(config.parent().expect("a parent")).expect("the config folder");
             write_config(&config, &self.path("source"), &export);
@@ -123,6 +135,8 @@ mod cli_client {
             "image_name_prefix": "",
             "image_sequence_dirname_prefix": "",
             "rendering": [{"codec": "h264", "frame_rate": 30}],
+            // Only `rescan` scans again within a test, so its effect can be read back.
+            "scan_interval_seconds": 3600,
         });
         fs::write(config, text.to_string()).expect("the config file");
     }
@@ -138,6 +152,11 @@ mod cli_client {
     impl Daemon {
         /// Starts the daemon for `fixture` with `config` and waits for its `TRD_LISTENING` line.
         fn start(fixture: &Fixture, config: &Path) -> Daemon {
+            Daemon::start_with_env(fixture, config, &[])
+        }
+
+        /// As [`Daemon::start`], with `env` added to the daemon's environment (and so its renders').
+        fn start_with_env(fixture: &Fixture, config: &Path, env: &[(&str, String)]) -> Daemon {
             let mut child = Command::new(env!("CARGO_BIN_EXE_trd"))
                 .arg("daemon")
                 .args(["--port", "0"])
@@ -151,6 +170,7 @@ mod cli_client {
                 .arg(config)
                 .env("TRD_FFMPEG_DIR", fixture.path("tools"))
                 .env("TRD_EXIFTOOL_DIR", fixture.path("tools"))
+                .envs(env.iter().map(|(key, value)| (*key, value.as_str())))
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -584,7 +604,15 @@ Recently rendered (newest 1 of 12)
             .into_inner();
         assert!(!snapshot.global_pause);
 
+        // A rescan runs a scan: the snapshot's last scan completes later than before it.
+        let before = snapshot_where(&mut grpc, |snapshot| snapshot.last_scan_completed_ms > 0)
+            .await
+            .last_scan_completed_ms;
         assert_success(&client(&address, &["rescan"]));
+        snapshot_where(&mut grpc, |snapshot| {
+            snapshot.last_scan_completed_ms > before
+        })
+        .await;
 
         // Per-render and retry controls refuse ids the daemon does not know.
         for args in [
@@ -602,13 +630,12 @@ Recently rendered (newest 1 of 12)
             );
         }
 
-        // Failures: none yet; dismissing an unknown one is refused; dismiss-all succeeds.
+        // Failures: none yet; dismissing an unknown one is refused.
         let out = client(&address, &["failures"]);
         assert_success(&out);
         assert!(stdout_of(&out).contains("no failures"));
         let out = client(&address, &["failures", "--dismiss", "no-such-failure"]);
         assert_eq!(out.status.code(), Some(1));
-        assert_success(&client(&address, &["failures", "--dismiss-all"]));
 
         // Config: the raw file, its path, and a new path read back.
         let out = client(&address, &["config", "show"]);
@@ -699,6 +726,147 @@ Recently rendered (newest 1 of 12)
             .expect("a log line")
             .to_owned();
         assert!(last.contains("config path set to"), "newest last: {last}");
+    }
+
+    /// The daemon's fake tools: the fake exiftool reports one camera model for each frame of the
+    /// fixture sequence, and the fake ffmpeg behaves as `ffmpeg` says.
+    fn fake_tools_env(ffmpeg: Value) -> Vec<(&'static str, String)> {
+        let rows: serde_json::Map<String, Value> = (1..=3)
+            .map(|frame| (format!("frame_{frame:04}.tif"), json!({"Model": "Model-A"})))
+            .collect();
+        vec![
+            ("TRD_FAKE_EXIFTOOL", json!({"rows": rows}).to_string()),
+            ("TRD_FAKE_FFMPEG", ffmpeg.to_string()),
+        ]
+    }
+
+    /// The fixture sequence's rendering variant in `snapshot`, once the sequence is in progress.
+    fn variant_of(snapshot: &pb::Snapshot) -> Option<&pb::VariantRow> {
+        snapshot
+            .in_progress
+            .iter()
+            .filter(|card| card.name == SEQUENCE)
+            .flat_map(|card| card.variants.iter())
+            .find(|row| row.variant_key == VARIANT)
+    }
+
+    /// Waits until the fixture variant has `status`, and returns its row.
+    async fn variant_with_status(grpc: &mut Client, status: pb::VariantStatus) -> pb::VariantRow {
+        let snapshot = snapshot_where(grpc, |snapshot| {
+            variant_of(snapshot).is_some_and(|row| row.status == status as i32)
+        })
+        .await;
+        variant_of(&snapshot).expect("the variant").clone()
+    }
+
+    /// Waits for a failure card, and returns its id.
+    async fn first_failure_id(grpc: &mut Client) -> String {
+        snapshot_where(grpc, |snapshot| !snapshot.failures.is_empty())
+            .await
+            .failures[0]
+            .id
+            .clone()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn render_controls_and_retry_change_the_render() {
+        let fixture = Fixture::new();
+        let config = fixture.sequence_with(3);
+        // The fake ffmpeg holds each render until the release file exists.
+        let release = fixture.path("release");
+        let daemon = Daemon::start_with_env(
+            &fixture,
+            &config,
+            &fake_tools_env(json!({"wait_for_file": release.to_string_lossy()})),
+        );
+        let address = daemon.address.clone();
+        let mut grpc = daemon.grpc().await;
+        let running = variant_with_status(&mut grpc, pb::VariantStatus::VariantRunning).await;
+        let render_id = running.render_id.clone();
+        assert!(!render_id.is_empty(), "a running render has an id");
+
+        assert_success(&client(
+            &address,
+            &["render", "suspend", render_id.as_str()],
+        ));
+        variant_with_status(&mut grpc, pb::VariantStatus::VariantSuspended).await;
+
+        assert_success(&client(&address, &["render", "resume", render_id.as_str()]));
+        variant_with_status(&mut grpc, pb::VariantStatus::VariantRunning).await;
+
+        // Stopping ends the render and pauses its variant, so the next scan does not queue it.
+        assert_success(&client(&address, &["render", "stop", render_id.as_str()]));
+        variant_with_status(&mut grpc, pb::VariantStatus::VariantPaused).await;
+        let paused = config_of(&mut grpc).await.paused_variants;
+        assert!(
+            paused
+                .iter()
+                .any(|v| v.sequence_name == SEQUENCE && v.variant_key == VARIANT),
+            "paused variants: {paused:?}"
+        );
+
+        // Retry clears the pause, and the variant is queued and rendering again.
+        assert_success(&client(&address, &["retry", SEQUENCE, VARIANT]));
+        assert!(config_of(&mut grpc).await.paused_variants.is_empty());
+        let again = variant_with_status(&mut grpc, pb::VariantStatus::VariantRunning).await;
+        assert_ne!(again.render_id, render_id, "retry starts a new render");
+
+        // Let the held render finish before the daemon is dropped.
+        fs::write(&release, b"").expect("the release file");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failure_controls_change_the_failure_cards() {
+        let fixture = Fixture::new();
+        let config = fixture.sequence_with(3);
+        // Every render fails with exit status 3.
+        let daemon = Daemon::start_with_env(
+            &fixture,
+            &config,
+            &fake_tools_env(json!({"exit_code": 3, "stderr_lines": ["fake failure"]})),
+        );
+        let address = daemon.address.clone();
+        let mut grpc = daemon.grpc().await;
+        let first = first_failure_id(&mut grpc).await;
+
+        let out = client(&address, &["failures"]);
+        assert_success(&out);
+        assert!(
+            stdout_of(&out).contains(first.as_str()),
+            "{}",
+            stdout_of(&out)
+        );
+
+        assert_success(&client(
+            &address,
+            &["failures", "--dismiss", first.as_str()],
+        ));
+        snapshot_where(&mut grpc, |snapshot| {
+            snapshot.failures.iter().all(|card| card.id != first)
+        })
+        .await;
+
+        // Retry queues the failed variant again, so the render fails once more, on a card of its own.
+        assert_success(&client(&address, &["retry", SEQUENCE, VARIANT]));
+        let second = snapshot_where(&mut grpc, |snapshot| {
+            snapshot.failures.iter().any(|card| card.id != first)
+        })
+        .await
+        .failures
+        .iter()
+        .find(|card| card.id != first)
+        .expect("a new failure card")
+        .id
+        .clone();
+        let out = client(&address, &["failures"]);
+        assert!(
+            stdout_of(&out).contains(second.as_str()),
+            "{}",
+            stdout_of(&out)
+        );
+
+        assert_success(&client(&address, &["failures", "--dismiss-all"]));
+        snapshot_where(&mut grpc, |snapshot| snapshot.failures.is_empty()).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
