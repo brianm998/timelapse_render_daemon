@@ -513,7 +513,7 @@ async fn watch_status(client: &mut Client, style: Style) -> Result<(), Failed> {
         .watch_snapshots(pb::WatchSnapshotsRequest { max_per_second: 2 })
         .await?
         .into_inner();
-    print_raw("\x1b[?1049h");
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen);
     let result = loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break Ok(()),
@@ -521,7 +521,11 @@ async fn watch_status(client: &mut Client, style: Style) -> Result<(), Failed> {
                 Ok(Some(snapshot)) => {
                     let now = now_ms();
                     let lines = status_view::render(&snapshot, style, now, utc_offset_at(now));
-                    print_raw("\x1b[H\x1b[2J");
+                    let _ = crossterm::execute!(
+                        std::io::stdout(),
+                        crossterm::cursor::MoveTo(0, 0),
+                        crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
+                    );
                     print_lines(&lines);
                 }
                 Ok(None) => break Ok(()),
@@ -529,7 +533,7 @@ async fn watch_status(client: &mut Client, style: Style) -> Result<(), Failed> {
             },
         }
     };
-    print_raw("\x1b[?1049l");
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen);
     result
 }
 
