@@ -18,6 +18,8 @@ use crate::tools::ToolProblem;
 pub const ID_CONFIG: &str = "config";
 /// The id of the problem for config.json entries that were ignored.
 pub const ID_CONFIG_ISSUES: &str = "config-issues";
+/// The id of the problem of a LAN listener that cannot bind (§8.2).
+pub const ID_LAN: &str = "lan";
 
 /// How bad a problem is. The proto's `SEVERITY_ERROR` is the higher one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -224,6 +226,24 @@ pub fn codec_problem(codec: &str) -> Problem {
     }
 }
 
+/// The problem of the LAN listener that cannot bind (`PROBLEM_LAN_LISTENER_FAILED`, §8.2). The trd
+/// crate raises it: `error` is the bind error.
+pub fn lan_problem(error: &str) -> Problem {
+    Problem {
+        id: ID_LAN.to_owned(),
+        severity: Severity::Error,
+        kind: "PROBLEM_LAN_LISTENER_FAILED",
+        title: "The LAN listener is not running".to_owned(),
+        detail: format!(
+            "trd cannot bind the LAN address: {error}. Paired devices cannot reach trd until it can. trd tries again every 30 seconds."
+        ),
+        fix: "Free the address named by --lan-bind, or start trd with another --lan-bind address."
+            .to_owned(),
+        paths: Vec::new(),
+        since_ms: 0,
+    }
+}
+
 /// The problem of a configured folder that cannot be read (`PROBLEM_PATH_UNREACHABLE`).
 pub fn path_problem(problem: &PathProblem) -> Problem {
     Problem {
@@ -271,6 +291,15 @@ mod tests {
         assert!(set.get("fda").is_none());
         set.reconcile(300, vec![problem("fda", Severity::Error)]);
         assert_eq!(set.get("fda").map(|p| p.since_ms), Some(300));
+    }
+
+    #[test]
+    fn the_lan_problem_is_an_error_that_names_the_bind_error() {
+        let problem = lan_problem("address already in use");
+        assert_eq!(problem.id, ID_LAN);
+        assert_eq!(problem.severity, Severity::Error);
+        assert_eq!(problem.kind, "PROBLEM_LAN_LISTENER_FAILED");
+        assert!(problem.detail.contains("address already in use"));
     }
 
     #[test]

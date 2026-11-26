@@ -5,14 +5,22 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+#[path = "../auth.rs"]
+mod auth;
 #[path = "../cli.rs"]
 mod cli;
 #[path = "../daemon.rs"]
 mod daemon;
+#[path = "../mdns.rs"]
+mod mdns;
+#[path = "../pairing.rs"]
+mod pairing;
 #[path = "../server.rs"]
 mod server;
 #[path = "../service/mod.rs"]
 mod service;
+#[path = "../tls.rs"]
+mod tls;
 
 fn main() -> std::process::ExitCode {
     cli::run(std::env::args_os().collect(), Some("daemon"))

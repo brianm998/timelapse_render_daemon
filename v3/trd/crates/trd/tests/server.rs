@@ -301,19 +301,19 @@ mod server {
             "the fake tools resolve"
         );
 
-        // Pairing arrives with TRD-18.
+        // Pairing (TRD-18): with no code issued, Pair is refused; StartPairing issues one.
         let pair = client
             .pair(pb::PairRequest::default())
             .await
-            .expect_err("pairing is not built yet");
-        let start = client
+            .expect_err("no pairing code was issued");
+        assert_eq!(pair.code(), Code::Unauthenticated, "{pair:?}");
+        let started = client
             .start_pairing(pb::StartPairingRequest {})
             .await
-            .expect_err("pairing is not built yet");
-        for status in [pair, start] {
-            assert_eq!(status.code(), Code::Unimplemented);
-            assert!(status.message().contains("TRD-18"), "{status:?}");
-        }
+            .expect("loopback starts pairing")
+            .into_inner();
+        assert_eq!(started.code.len(), 6);
+        assert_eq!(started.lan_port, 0, "the LAN listener is off");
 
         let devices = client
             .list_paired_devices(pb::ListPairedDevicesRequest {})
