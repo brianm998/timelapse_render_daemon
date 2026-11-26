@@ -5,6 +5,7 @@
 
 mod auth;
 mod cli;
+mod daemon;
 mod mdns;
 mod pairing;
 mod server;

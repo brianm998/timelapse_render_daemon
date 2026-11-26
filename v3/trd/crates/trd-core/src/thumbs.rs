@@ -11,7 +11,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use crate::store::{LogFields, LogLevel, RenderedVideo, Store, StoreResult, log_event};
 use crate::tools::ToolCommand;
@@ -137,8 +137,9 @@ pub fn run_ffmpeg(tool: &ToolCommand, args: &[String]) -> Result<(), String> {
 /// Makes poster frames into `<data>/thumbnails/<video id>.jpg`, two at a time.
 pub struct Thumbnailer {
     dir: PathBuf,
-    gate: SlotGate,
-    runner: Runner,
+    // Shared between the handles from `share`, so one concurrency cap covers all of them.
+    gate: Arc<SlotGate>,
+    runner: Arc<Runner>,
 }
 
 impl Thumbnailer {
@@ -146,14 +147,24 @@ impl Thumbnailer {
     pub fn new(data_dir: &Path, runner: Runner) -> Thumbnailer {
         Thumbnailer {
             dir: data_dir.join(THUMBNAILS_DIR),
-            gate: SlotGate::new(MAX_CONCURRENT_THUMBNAILS),
-            runner,
+            gate: Arc::new(SlotGate::new(MAX_CONCURRENT_THUMBNAILS)),
+            runner: Arc::new(runner),
         }
     }
 
     /// A thumbnailer that runs the resolved ffmpeg `ffmpeg`.
     pub fn with_tool(data_dir: &Path, ffmpeg: ToolCommand) -> Thumbnailer {
         Thumbnailer::new(data_dir, Box::new(move |args| run_ffmpeg(&ffmpeg, args)))
+    }
+
+    /// Another handle on this thumbnailer. It shares the same slot gate and runner, so the
+    /// concurrency cap holds across every handle, not per handle.
+    pub fn share(&self) -> Thumbnailer {
+        Thumbnailer {
+            dir: self.dir.clone(),
+            gate: Arc::clone(&self.gate),
+            runner: Arc::clone(&self.runner),
+        }
     }
 
     /// The folder the thumbnails are written to.
@@ -182,7 +193,7 @@ impl Thumbnailer {
                     &output,
                 );
                 let _slot = self.gate.acquire();
-                match (self.runner)(&args) {
+                match (*self.runner)(&args) {
                     Ok(()) if output.is_file() => Ok(()),
                     Ok(()) => Err(format!("ffmpeg wrote no file at {}", output.display())),
                     Err(message) => Err(message),
