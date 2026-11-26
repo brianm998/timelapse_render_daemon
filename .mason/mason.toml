@@ -105,8 +105,6 @@ pass_regex = "^T0-MAKEFILES-OK$"
 level = "t0"
 
 [suite.t0-mason]
-# remote = false: runs the installed mason, which the node (marmot) does not have.
-remote = false
 command = "bash v3/scripts/suite.sh t0-mason 2>&1"
 parser = "regex"
 pass_regex = "^T0-MASON-OK$"
