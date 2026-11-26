@@ -73,6 +73,9 @@ gate = "v3-gate"
 exclude = []
 
 [suite.t0-diff-check]
+# remote = false: it diffs against origin/develop, which the node (marmot) checkout does not carry
+# (TRD-1187). It stays here until the node fetches origin/develop.
+remote = false
 command = "bash v3/scripts/suite.sh t0-diff-check 2>&1"
 parser = "regex"
 pass_regex = "^T0-DIFF-OK$"

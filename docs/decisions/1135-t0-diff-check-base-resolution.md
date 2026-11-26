@@ -12,3 +12,7 @@ passing a diff that checks one commit.
 
 Decision: the operational fix for a checkout without `origin/develop` (node marmot) is for the
 node to fetch `origin/develop`. The gate does not work around a missing ref.
+
+Until node marmot's checkout carries origin/develop, `.mason/mason.toml` marks t0-diff-check
+`remote = false`, as it does the iOS and Android suites, so the gate runs on the coordinator where
+the ref exists. Drop that line once the node fetches origin/develop.
