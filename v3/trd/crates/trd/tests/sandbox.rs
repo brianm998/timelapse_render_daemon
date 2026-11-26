@@ -11,7 +11,7 @@
 //! reaches, under a hang guard.
 
 mod sandbox {
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::io::{BufRead, BufReader};
     use std::path::{Path, PathBuf};
@@ -64,9 +64,33 @@ mod sandbox {
         }
     }
 
+    /// The Python 3 interpreter: `PYTHON` when set (the Makefile's variable), else the first of
+    /// `python3` and `python` that is Python 3. Windows runners often have only `python`.
+    fn python() -> OsString {
+        if let Some(chosen) = std::env::var_os("PYTHON") {
+            return chosen;
+        }
+        for candidate in ["python3", "python"] {
+            let is_python3 = Command::new(candidate)
+                .args([
+                    "-c",
+                    "import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)",
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if is_python3 {
+                return OsString::from(candidate);
+            }
+        }
+        OsString::from("python3")
+    }
+
     /// Runs `sandbox.py` with `args` and the fake tools, and returns its output.
     fn sandbox(fixture: &Fixture, args: &[&OsStr]) -> Output {
-        Command::new("python3")
+        Command::new(python())
             .arg("-I")
             .arg(SCRIPT)
             .args(args)
@@ -76,7 +100,7 @@ mod sandbox {
             .env_remove("TRD_FAKE_FFPROBE")
             .stdin(Stdio::null())
             .output()
-            .expect("python3 runs sandbox.py")
+            .expect("the Python 3 interpreter runs sandbox.py")
     }
 
     /// Runs `sandbox.py` with the sandbox folder `dir` and `extra` arguments, and asserts success.

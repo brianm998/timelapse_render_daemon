@@ -462,13 +462,11 @@ def cmd_init(args):
         print("sandbox OK: %s" % root)
         return 0
 
-    created_root = False
+    # Decide what to do before anything is removed or written.
+    remove_old_tree = False
     if os.path.lexists(root):
         if os.path.isfile(paths["marker"]):
-            if args.reset:
-                shutil.rmtree(root)
-                created_root = True
-            else:
+            if not args.reset:
                 problems = check_tree(paths)
                 if problems:
                     raise SandboxError(
@@ -477,17 +475,23 @@ def cmd_init(args):
                     )
                 print("sandbox already present: %s" % root)
                 return 0
+            remove_old_tree = True
         elif args.reset:
             raise SandboxError("%s has no %s marker; refusing to remove it" % (root, MARKER_NAME))
         elif os.listdir(root):
             raise SandboxError(
                 "%s is not empty and has no %s marker; refusing to use it" % (root, MARKER_NAME)
             )
-    else:
-        created_root = True
+    created_root = remove_old_tree or not os.path.lexists(root)
 
-    # Resolve every tool before anything is written.
-    tools = {"ffmpeg": resolve_tool("ffmpeg"), "exiftool": resolve_tool("exiftool")}
+    # Resolve every tool before the old tree is removed, so a missing tool leaves it intact.
+    tools = {
+        "ffmpeg": resolve_tool("ffmpeg"),
+        "ffprobe": resolve_tool("ffprobe"),
+        "exiftool": resolve_tool("exiftool"),
+    }
+    if remove_old_tree:
+        shutil.rmtree(root)
     try:
         build(paths, tools)
         problems = check_tree(paths)
