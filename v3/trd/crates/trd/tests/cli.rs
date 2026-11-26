@@ -33,9 +33,11 @@ fn service_without_an_action_is_a_usage_error() {
     let out = trd(&["service"]);
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8(out.stderr).expect("utf-8 output");
-    // clap takes the usage name from argv[0]'s file name, so the binary is `trd.exe` on Windows.
-    let usage = format!("Usage: trd{} service", std::env::consts::EXE_SUFFIX);
-    assert!(stderr.contains(&usage), "unexpected stderr: {stderr}");
+    // clap names the binary as run: `trd` on Unix, `trd.exe` on Windows.
+    assert!(
+        stderr.contains("Usage: trd") && stderr.contains(" service [OPTIONS] <COMMAND>"),
+        "unexpected stderr: {stderr}"
+    );
 }
 
 #[test]
