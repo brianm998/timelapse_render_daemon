@@ -10,7 +10,6 @@
 //! both come from those bytes.
 
 use std::fs;
-use std::io::Write;
 use std::net::IpAddr;
 use std::path::Path;
 
@@ -166,6 +165,7 @@ fn write_file(path: &Path, text: &str, private: bool) -> Result<(), String> {
 
 #[cfg(unix)]
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let mut file = fs::OpenOptions::new()
         .write(true)
