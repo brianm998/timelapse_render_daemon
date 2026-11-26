@@ -649,8 +649,11 @@ Recently rendered (newest 1 of 12)
         );
         let code = pairing["code"].as_str().expect("the code").to_owned();
         assert_eq!(code.len(), 6);
+        // With `--lan-bind off` the daemon serves no certificate, so the fingerprint is empty
+        // and so is its prefix; otherwise the prefix is the first 16 characters.
         let fingerprint = pairing["fingerprint"].as_str().expect("the fingerprint");
-        assert_eq!(pairing["fingerprint_prefix"], &fingerprint[..16]);
+        let expected_prefix: String = fingerprint.chars().take(16).collect();
+        assert_eq!(pairing["fingerprint_prefix"], expected_prefix.as_str());
 
         let paired = grpc
             .pair(pb::PairRequest {
