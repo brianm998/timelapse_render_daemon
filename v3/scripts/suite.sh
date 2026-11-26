@@ -75,7 +75,25 @@ native_ffmpeg_target() {
 
 case "$suite" in
   t0-diff-check)
-    base="$(git merge-base HEAD origin/develop)"
+    # A node's checkout may lack origin/develop (or be shallow): try the usual
+    # base refs, then the parent commit, then the empty tree.
+    base=""
+    for ref in ${MASON_BASE:-} origin/develop develop; do
+      if git rev-parse --verify --quiet "$ref^{commit}" >/dev/null; then
+        base="$(git merge-base HEAD "$ref" 2>/dev/null || true)"
+        [ -n "$base" ] && break
+      fi
+    done
+    if [ -z "$base" ]; then
+      if git rev-parse --verify --quiet "HEAD^{commit}" >/dev/null &&
+         git rev-parse --verify --quiet "HEAD^1" >/dev/null; then
+        echo "suite.sh: no develop base ref; checking the last commit only" >&2
+        base="$(git rev-parse HEAD^1)"
+      else
+        echo "suite.sh: no develop base ref and no parent; checking the whole tree" >&2
+        base="$(git hash-object -t tree /dev/null)"
+      fi
+    fi
     git diff --check "$base"
     echo T0-DIFF-OK ;;
   t0-spdx)
