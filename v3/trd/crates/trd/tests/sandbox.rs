@@ -263,14 +263,10 @@ mod sandbox {
         );
     }
 
-    /// A3: a daemon started on the tree renders B's three variants, fails C, never shows D or E,
-    /// and deletes G's export folder after G's renders.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn daemon_renders_fails_and_hides_sequences() {
-        let fixture = Fixture::new();
-        let tree = fixture.tree();
-        build_tree(&fixture);
-        let daemon = Daemon::start(&fixture, &tree);
+    /// Polls the daemon until B has its three renders, C has failed, G has its three renders and
+    /// G's export folder is gone. Checks every snapshot on the way for D and E, and fails at the
+    /// hang guard.
+    async fn run_until_settled(daemon: &Daemon, tree: &Path) {
         let mut client = daemon.client().await;
 
         let started = Instant::now();
@@ -316,5 +312,41 @@ mod sandbox {
             );
             tokio::time::sleep(POLL).await;
         }
+    }
+
+    /// A3: a daemon started on the tree renders B's three variants, fails C, never shows D or E,
+    /// and deletes G's export folder after G's renders.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn daemon_renders_fails_and_hides_sequences() {
+        let fixture = Fixture::new();
+        let tree = fixture.tree();
+        build_tree(&fixture);
+        let daemon = Daemon::start(&fixture, &tree);
+        run_until_settled(&daemon, &tree).await;
+    }
+
+    /// After a daemon run has deleted G's export folder, `init` without `--reset` still accepts the
+    /// tree (spec §12: init is idempotent), and `--check` passes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn init_accepts_tree_after_daemon_run() {
+        let fixture = Fixture::new();
+        let tree = fixture.tree();
+        let dir = tree.as_path();
+        build_tree(&fixture);
+        {
+            let daemon = Daemon::start(&fixture, &tree);
+            run_until_settled(&daemon, &tree).await;
+        }
+        assert!(
+            !tree.join(G_EXPORT).exists(),
+            "the daemon deleted G's export"
+        );
+
+        let printed = expect_ok(&fixture, dir, "init", &[]);
+        assert!(
+            printed.contains("sandbox already present"),
+            "init reuses the tree: {printed:?}"
+        );
+        expect_ok(&fixture, dir, "init", &["--check"]);
     }
 }

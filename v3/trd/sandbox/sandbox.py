@@ -57,6 +57,10 @@ RAW_SEQUENCES = [
 ]
 F_NAME = RAW_NAME_PREFIX + "f"
 
+# Letters whose export folder the daemon deletes after its renders (delete_sequence_after_render_regexes
+# "-merge$"). After a daemon run their export is absent, or holds every frame; it is never partial.
+DELETED_AFTER_RENDER = ("G",)
+
 # The three outputs of sequence D, already in master/ so the daemon never queues it.
 D_NAME = RAW_NAME_PREFIX + "d"
 D_OUTPUTS = [
@@ -418,7 +422,12 @@ def check_tree(paths):
     for letter, raw_name, frames in RAW_SEQUENCES[1:]:
         export_dir = os.path.join(paths["export"], export_name(raw_name))
         found = count_matching(export_dir, FILE_RE_EXPORT)
-        if found != frames:
+        if letter in DELETED_AFTER_RENDER:
+            if found not in (None, 0, frames):
+                problems.append(
+                    "export %s (%s): %s frames, want none or %d" % (letter, raw_name, found, frames)
+                )
+        elif found != frames:
             problems.append("export %s (%s): %s frames, want %d" % (letter, raw_name, found, frames))
     c_frame = os.path.join(paths["export"], export_name(RAW_SEQUENCES[2][1]), EXPORT_FRAME_PATTERN % C_TRUNCATED_FRAME)
     if os.path.isfile(c_frame) and os.path.getsize(c_frame) != C_TRUNCATED_BYTES:
