@@ -1935,14 +1935,12 @@ mod tests {
             .list_paired_devices(marked(pb::ListPairedDevicesRequest {}, loopback))
             .await
             .expect("loopback lists the devices");
-        assert_eq!(
-            server
-                .start_pairing(marked(pb::StartPairingRequest {}, loopback))
-                .await
-                .expect_err("pairing is not built yet")
-                .code(),
-            tonic::Code::Unimplemented
-        );
+        let status = server
+            .start_pairing(marked(pb::StartPairingRequest {}, loopback))
+            .await
+            .expect_err("pairing is not built yet");
+        assert_eq!(status.code(), tonic::Code::Unimplemented);
+        assert!(status.message().contains("TRD-18"), "{status:?}");
     }
 
     #[test]

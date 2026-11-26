@@ -302,14 +302,18 @@ mod server {
         );
 
         // Pairing arrives with TRD-18.
-        assert_eq!(
-            code_of(client.pair(pb::PairRequest::default()).await),
-            Code::Unimplemented
-        );
-        assert_eq!(
-            code_of(client.start_pairing(pb::StartPairingRequest {}).await),
-            Code::Unimplemented
-        );
+        let pair = client
+            .pair(pb::PairRequest::default())
+            .await
+            .expect_err("pairing is not built yet");
+        let start = client
+            .start_pairing(pb::StartPairingRequest {})
+            .await
+            .expect_err("pairing is not built yet");
+        for status in [pair, start] {
+            assert_eq!(status.code(), Code::Unimplemented);
+            assert!(status.message().contains("TRD-18"), "{status:?}");
+        }
 
         let devices = client
             .list_paired_devices(pb::ListPairedDevicesRequest {})
