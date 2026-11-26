@@ -19,8 +19,23 @@ develop develop-daemon:
 	@echo "sandbox arrives with TRD-28"
 	@exit 1
 
+# On macOS `release` writes the installer of spec 1 §10.1 to dist/trd. It needs the ffmpeg and exiftool
+# bundles (make release in v3/ffmpeg and v3/exiftool first). It is signed and notarized only when the
+# variables are set: SIGN_APP and SIGN_PKG (the Developer ID identities) and APPLE_API_KEY_PATH (the
+# notary key; the key id and issuer come from the environment too). CI passes these itself
+# (v3-trd-build.yml, TRD-27). Elsewhere `release` is the plain cargo build.
+PKG_VERSION ?= $(shell cat ../VERSION)
+NATIVE_FFMPEG = $(shell ../ffmpeg/build.sh --print-native)
+PKG_FLAGS = $(if $(SIGN_APP),--sign-app "$(SIGN_APP)") $(if $(SIGN_PKG),--sign-installer "$(SIGN_PKG)") $(if $(APPLE_API_KEY_PATH),--notarize)
+
 release:
-	$(CARGO) build --release --locked
+	if [ "$$(uname -s)" = Darwin ]; then \
+		bash packaging/macos/build-pkg.sh --version $(PKG_VERSION) \
+			--ffmpeg-dir ../ffmpeg/dist/$(NATIVE_FFMPEG) --exiftool-dir ../exiftool/dist/unix \
+			--out dist/trd $(PKG_FLAGS); \
+	else \
+		$(CARGO) build --release --locked; \
+	fi
 
 clean:
 	$(CARGO) clean
