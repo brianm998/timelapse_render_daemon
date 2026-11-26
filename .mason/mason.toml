@@ -163,6 +163,8 @@ level = "t1"
 uses = { test-suite = 1 }
 
 [suite.android-test]
+# remote = false: the node (marmot) may lack the Android SDK.
+remote = false
 command = "bash v3/scripts/suite.sh android-test 2>&1"
 parser = "junit"
 results_file = "v3/clients/kotlin/build/mason-android-results.xml"
@@ -171,6 +173,8 @@ level = "t1"
 uses = { test-suite = 1 }
 
 [suite.ios-kit-test]
+# remote = false: needs Xcode, which the node (marmot) does not have.
+remote = false
 command = "bash v3/scripts/suite.sh ios-kit-test 2>&1"
 parser = "xctest"
 min_tests = 1
@@ -178,6 +182,8 @@ level = "t1"
 uses = { test-suite = 1 }
 
 [suite.ios-build]
+# remote = false: needs Xcode, which the node (marmot) does not have.
+remote = false
 command = "bash v3/scripts/suite.sh ios-build 2>&1"
 parser = "regex"
 pass_regex = "^test (.+) \\.\\.\\. ok$"
