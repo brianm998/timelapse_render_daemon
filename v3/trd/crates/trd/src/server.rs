@@ -2004,7 +2004,7 @@ mod tests {
     }
 
     fn marked<T>(message: T, listener: Listener) -> Request<T> {
-        let mut request = loopback(message);
+        let mut request = Request::new(message);
         request.extensions_mut().insert(listener);
         request
     }
