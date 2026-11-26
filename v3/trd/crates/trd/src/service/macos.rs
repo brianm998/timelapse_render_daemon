@@ -90,6 +90,10 @@ impl Service for LaunchAgent {
         t.write_file(&plist, text.as_bytes(), &text)?;
         let domain = format!("gui/{}", t.uid);
         let path = plist.display().to_string();
+        // A previous install may still be loaded, and bootstrap refuses a label that is loaded.
+        // Booting it out first makes install re-runnable; when nothing is loaded this fails, which
+        // is expected, so its result is ignored.
+        let _ = t.exec("launchctl", &["bootout", service_name(t).as_str()]);
         t.exec_ok("launchctl", &["bootstrap", domain.as_str(), path.as_str()])?;
         t.report(&format!("installed {} and started it", plist.display()));
         Ok(())
@@ -166,8 +170,56 @@ mod tests {
         );
         assert_eq!(
             runner.calls(),
-            [format!("launchctl bootstrap gui/501 {}", plist.display())]
+            [
+                "launchctl bootout gui/501/com.timelapserender.trd".to_string(),
+                format!("launchctl bootstrap gui/501 {}", plist.display()),
+            ]
         );
+    }
+
+    #[test]
+    fn reinstall_boots_out_the_loaded_agent_before_bootstrapping() {
+        let home = tempfile::tempdir().expect("a temporary home");
+        let runner = RecordingRunner::scripted(vec![
+            // The bootout of the loaded agent succeeds; the bootstrap that follows also succeeds.
+            CommandOutput::ok(""),
+            CommandOutput::ok(""),
+        ]);
+        let mut t = target(home.path(), &runner);
+        t.binary = PathBuf::from(PROGRAM);
+        put_file(&user_plist(&t));
+        LaunchAgent.install(&t).expect("reinstall");
+        let plist = user_plist(&t);
+        assert_eq!(
+            runner.calls(),
+            [
+                "launchctl bootout gui/501/com.timelapserender.trd".to_string(),
+                format!("launchctl bootstrap gui/501 {}", plist.display()),
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(&plist).expect("the agent is rewritten"),
+            render_plist(Path::new(PROGRAM), None)
+        );
+    }
+
+    #[test]
+    fn reinstall_succeeds_when_nothing_was_loaded() {
+        let home = tempfile::tempdir().expect("a temporary home");
+        let runner = RecordingRunner::scripted(vec![
+            // bootout fails because the agent is not loaded; that is ignored.
+            CommandOutput {
+                success: false,
+                stdout: String::new(),
+                stderr: "Boot-out failed: 3: No such process".to_string(),
+            },
+            CommandOutput::ok(""),
+        ]);
+        let t = target(home.path(), &runner);
+        LaunchAgent
+            .install(&t)
+            .expect("install after a failed bootout");
+        assert_eq!(runner.calls().len(), 2, "{:?}", runner.calls());
     }
 
     #[test]

@@ -19,14 +19,6 @@ sha_for() {
   esac
 }
 
-# Prints the path of an actionlint on PATH whose version is exactly $VERSION; fails otherwise.
-path_actionlint() {
-  local p
-  p="$(command -v actionlint 2>/dev/null)" || return 1
-  [ "$("$p" -version 2>/dev/null | head -n 1)" = "$VERSION" ] || return 1
-  echo "$p"
-}
-
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 V3_ROOT="${V3_ROOT:-$(cd "$here/.." && pwd)}"
 V3_TOOLS="${V3_TOOLS:-$V3_ROOT/.tools}"
@@ -53,28 +45,19 @@ if [ ! -x "$bin" ]; then
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/actionlint.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
   archive="actionlint_${VERSION}_${platform}.tar.gz"
-  if "$curl_bin" -fsSL -o "$tmp/$archive" \
-    "https://github.com/rhysd/actionlint/releases/download/v$VERSION/$archive"; then
-    if command -v sha256sum >/dev/null 2>&1; then
-      got="$(sha256sum "$tmp/$archive" | cut -d' ' -f1)"
-    else
-      got="$(/usr/bin/shasum -a 256 "$tmp/$archive" | cut -d' ' -f1)"
-    fi
-    if [ "$got" != "$want" ]; then
-      echo "check-workflows.sh: checksum mismatch for $archive (got $got, want $want)" >&2
-      exit 2
-    fi
-    mkdir -p "$V3_TOOLS/actionlint-$VERSION"
-    tar -xzf "$tmp/$archive" -C "$V3_TOOLS/actionlint-$VERSION" actionlint
-  elif fallback="$(path_actionlint)"; then
-    # No network (the node marmot cannot resolve github.com): use the actionlint on PATH
-    # when it is the pinned version. The check still runs; only the download is skipped.
-    echo "check-workflows.sh: cannot download $archive; using $fallback ($VERSION)" >&2
-    bin="$fallback"
+  "$curl_bin" -fsSL -o "$tmp/$archive" \
+    "https://github.com/rhysd/actionlint/releases/download/v$VERSION/$archive"
+  if command -v sha256sum >/dev/null 2>&1; then
+    got="$(sha256sum "$tmp/$archive" | cut -d' ' -f1)"
   else
-    echo "check-workflows.sh: cannot download $archive and no actionlint $VERSION on PATH" >&2
+    got="$(/usr/bin/shasum -a 256 "$tmp/$archive" | cut -d' ' -f1)"
+  fi
+  if [ "$got" != "$want" ]; then
+    echo "check-workflows.sh: checksum mismatch for $archive (got $got, want $want)" >&2
     exit 2
   fi
+  mkdir -p "$V3_TOOLS/actionlint-$VERSION"
+  tar -xzf "$tmp/$archive" -C "$V3_TOOLS/actionlint-$VERSION" actionlint
 fi
 
 cd "$repo"

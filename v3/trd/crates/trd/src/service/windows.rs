@@ -61,6 +61,11 @@ pub fn decode_task(bytes: &[u8]) -> Option<String> {
     String::from_utf16(&units).ok()
 }
 
+/// The task definition install writes, for this target.
+fn task_xml(t: &Target) -> String {
+    render_task(&t.user, &trdw_path(&t.binary), t.config.as_deref())
+}
+
 /// The task file, beside the per-user data.
 fn task_file(t: &Target) -> PathBuf {
     t.home
@@ -132,7 +137,8 @@ pub struct LogonTask;
 impl Service for LogonTask {
     fn install(&self, t: &Target) -> Result<(), String> {
         let file = task_file(t);
-        let xml = render_task(&t.user, &trdw_path(&t.binary), t.config.as_deref());
+        let xml = task_xml(t);
+        // A dry run prints `xml` (readable text), not the UTF-16 bytes that are written.
         t.write_file(&file, &encode_task(&xml), &xml)?;
         let path = file.display().to_string();
         t.exec_ok(
@@ -172,7 +178,7 @@ mod tests {
 
     use super::*;
     use crate::service::testing::{files_under, put_file, target};
-    use crate::service::{CommandOutput, RecordingRunner};
+    use crate::service::{CommandOutput, RecordingRunner, write_listing};
 
     const USER: &str = "EXAMPLE\\example";
     const TRDW: &str = r"C:\Users\example\AppData\Local\Programs\TimelapseRenderDaemon\trdw.exe";
@@ -219,6 +225,38 @@ mod tests {
                 format!(
                     "schtasks /Create /TN TimelapseRenderDaemon /XML {} /F",
                     file.display()
+                ),
+                "schtasks /Run /TN TimelapseRenderDaemon".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn dry_run_install_prints_the_readable_task_xml() {
+        let home = tempfile::tempdir().expect("a temporary home");
+        let runner = RecordingRunner::new();
+        let mut t = target(home.path(), &runner);
+        t.binary = PathBuf::from("/opt/trd/trd.exe");
+        t.dry_run = true;
+        LogonTask.install(&t).expect("dry-run install");
+        assert_eq!(files_under(home.path()), Vec::<PathBuf>::new());
+        let xml = task_xml(&t);
+        let listing = write_listing(&task_file(&t), encode_task(&xml).len(), &xml);
+        assert!(
+            listing.contains("<Command>\"/opt/trd/trdw.exe\"</Command>"),
+            "{listing}"
+        );
+        assert!(
+            listing.contains("<Arguments>daemon</Arguments>"),
+            "{listing}"
+        );
+        assert!(!listing.contains('\u{FFFD}'), "{listing}");
+        assert_eq!(
+            runner.calls(),
+            [
+                format!(
+                    "schtasks /Create /TN TimelapseRenderDaemon /XML {} /F",
+                    task_file(&t).display()
                 ),
                 "schtasks /Run /TN TimelapseRenderDaemon".to_string(),
             ]
