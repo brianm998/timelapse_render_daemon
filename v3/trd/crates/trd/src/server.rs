@@ -2004,9 +2004,14 @@ mod tests {
     }
 
     fn marked<T>(message: T, listener: Listener) -> Request<T> {
-        let mut request = Request::new(message);
+        let mut request = loopback(message);
         request.extensions_mut().insert(listener);
         request
+    }
+
+    /// A loopback request: the loopback interceptor marks every call this way.
+    fn loopback<T>(message: T) -> Request<T> {
+        marked(message, Listener::Loopback)
     }
 
     /// A LAN request from a paired device: the interceptor has attached its caller.
@@ -2247,7 +2252,7 @@ mod tests {
         }
 
         let first = server
-            .list_rendered_videos(Request::new(pb::ListRenderedVideosRequest {
+            .list_rendered_videos(loopback(pb::ListRenderedVideosRequest {
                 limit: 3,
                 ..Default::default()
             }))
@@ -2258,7 +2263,7 @@ mod tests {
         assert!(first.more, "one row is left");
         let last = first.videos.last().expect("a row").id.clone();
         let second = server
-            .list_rendered_videos(Request::new(pb::ListRenderedVideosRequest {
+            .list_rendered_videos(loopback(pb::ListRenderedVideosRequest {
                 before_id: last,
                 limit: 3,
                 ..Default::default()
@@ -2279,7 +2284,7 @@ mod tests {
         assert_eq!(ids, ["v1", "v2", "v3", "v4"], "every row once");
 
         let found = server
-            .list_rendered_videos(Request::new(pb::ListRenderedVideosRequest {
+            .list_rendered_videos(loopback(pb::ListRenderedVideosRequest {
                 search: "ALPHA".to_owned(),
                 ..Default::default()
             }))
@@ -2387,7 +2392,7 @@ mod tests {
         let warn = write_log(&server, LogLevel::Warn, "stored warn");
 
         let watch = |min_level: i32| {
-            server.watch_log(Request::new(pb::WatchLogRequest {
+            server.watch_log(loopback(pb::WatchLogRequest {
                 after_seq: after,
                 min_level,
             }))
@@ -2427,7 +2432,7 @@ mod tests {
         }
         for (limit, expected) in [(0, 100), (7, 7), (500, 500), (10_000, 500)] {
             let page = server
-                .list_rendered_videos(Request::new(pb::ListRenderedVideosRequest {
+                .list_rendered_videos(loopback(pb::ListRenderedVideosRequest {
                     limit,
                     ..Default::default()
                 }))
@@ -2452,7 +2457,7 @@ mod tests {
         }
         for (limit, expected) in [(0, 200), (7, 7), (1000, 1000), (10_000, 1000)] {
             let page = server
-                .list_log(Request::new(pb::ListLogRequest {
+                .list_log(loopback(pb::ListLogRequest {
                     before_seq: 0,
                     limit,
                     min_level: 0,
@@ -2515,7 +2520,7 @@ mod tests {
             (Target::FailureId(failure.id), "ffmpeg -i in out"),
         ] {
             let details = server
-                .get_render_details(Request::new(pb::GetRenderDetailsRequest {
+                .get_render_details(loopback(pb::GetRenderDetailsRequest {
                     target: Some(target),
                 }))
                 .await
@@ -2599,7 +2604,7 @@ mod tests {
                 .expect("the row is stored");
         }
         let get = |id: &str| {
-            server.get_thumbnail(Request::new(pb::GetThumbnailRequest {
+            server.get_thumbnail(loopback(pb::GetThumbnailRequest {
                 rendered_video_id: id.to_owned(),
             }))
         };
@@ -2665,7 +2670,7 @@ mod tests {
         let dir = temp_dir();
         let state = |server: Server| async move {
             server
-                .get_config(Request::new(pb::GetConfigRequest {}))
+                .get_config(loopback(pb::GetConfigRequest {}))
                 .await
                 .expect("GetConfig")
                 .into_inner()
