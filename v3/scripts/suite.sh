@@ -75,7 +75,20 @@ native_ffmpeg_target() {
 
 case "$suite" in
   t0-diff-check)
-    base="$(git merge-base HEAD origin/develop)"
+    # The base is the merge-base with the first of origin/develop, then develop, that resolves, so
+    # the check covers the whole change. There is no HEAD^ or HEAD-only fallback: without a base
+    # the gate fails.
+    base=""
+    for ref in origin/develop develop; do
+      if candidate="$(git merge-base HEAD "$ref" 2>/dev/null)"; then
+        base="$candidate"
+        break
+      fi
+    done
+    if [ -z "$base" ]; then
+      echo "suite.sh: no base to diff against: neither origin/develop nor develop resolves; fetch origin/develop into this checkout" >&2
+      exit 1
+    fi
     git diff --check "$base"
     echo T0-DIFF-OK ;;
   t0-spdx)
