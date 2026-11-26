@@ -11,6 +11,8 @@ mod cli;
 mod daemon;
 #[path = "../server.rs"]
 mod server;
+#[path = "../service/mod.rs"]
+mod service;
 
 fn main() -> std::process::ExitCode {
     cli::run(std::env::args_os().collect(), Some("daemon"))

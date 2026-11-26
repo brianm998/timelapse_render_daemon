@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Timelapse Render Daemon contributors
 
-//! The command line of trd and trdw (spec 1 §5). `version` and `daemon` work; every other command
-//! parses and then prints "not implemented yet". The fields are read by the tickets that
-//! implement each command, so they are allowed to be unread until then.
+//! The command line of trd and trdw (spec 1 §5). `version`, `daemon` and `service` work; every
+//! other command parses and then prints "not implemented yet". The fields are read by the tickets
+//! that implement each command, so they are allowed to be unread until then.
 
 #![allow(dead_code)]
 
@@ -13,6 +13,8 @@ use std::process::ExitCode;
 
 use clap::builder::PossibleValuesParser;
 use clap::{Args, CommandFactory, Parser, Subcommand};
+
+use crate::service;
 
 /// Default address of the loopback listener.
 const DEFAULT_ADDRESS: &str = "127.0.0.1:50071";
@@ -204,13 +206,13 @@ enum ServiceAction {
 pub struct ServiceArgs {
     /// Print what would be done, change nothing.
     #[arg(long)]
-    dry_run: bool,
+    pub dry_run: bool,
     /// Config file the service starts with.
     #[arg(long, value_name = "PATH")]
-    config: Option<PathBuf>,
+    pub config: Option<PathBuf>,
     /// trd binary the service starts.
     #[arg(long, value_name = "PATH")]
-    binary: Option<PathBuf>,
+    pub binary: Option<PathBuf>,
 }
 
 impl Command {
@@ -289,6 +291,12 @@ pub fn run(args: Vec<OsString>, default_subcommand: Option<&str>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Some(Command::Daemon(args)) => crate::daemon::run(args),
+        Some(Command::Service { action }) => match action {
+            ServiceAction::Install(args) => service::run(service::Verb::Install, &args),
+            ServiceAction::Uninstall(args) => service::run(service::Verb::Uninstall, &args),
+            ServiceAction::Status(args) => service::run(service::Verb::Status, &args),
+            ServiceAction::Restart(args) => service::run(service::Verb::Restart, &args),
+        },
         Some(other) => {
             eprintln!("{}: not implemented yet", other.name());
             ExitCode::from(1)
