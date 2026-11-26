@@ -75,8 +75,26 @@ native_ffmpeg_target() {
 
 case "$suite" in
   t0-diff-check)
-    base="$(git merge-base HEAD origin/develop)"
-    git diff --check "$base"
+    # A node's checkout may carry no origin/develop (or no develop at all), so try
+    # the usual names for the base and fall back to the parent commit.
+    base=""
+    for ref in origin/develop develop refs/remotes/origin/HEAD; do
+      if git rev-parse -q --verify "$ref^{commit}" >/dev/null 2>&1; then
+        base="$(git merge-base HEAD "$ref" 2>/dev/null || true)"
+        [ -n "$base" ] && break
+      fi
+    done
+    if [ -z "$base" ] && git rev-parse -q --verify 'HEAD^{commit}' >/dev/null 2>&1 \
+        && git rev-parse -q --verify 'HEAD^1^{commit}' >/dev/null 2>&1; then
+      base="$(git rev-parse 'HEAD^1')"
+      echo "suite.sh: no develop ref here; checking the diff against HEAD^ ($base)" >&2
+    fi
+    if [ -z "$base" ]; then
+      echo "suite.sh: no base found (no develop ref and no parent commit); checking the last commit" >&2
+      git show --check --format= HEAD
+    else
+      git diff --check "$base"
+    fi
     echo T0-DIFF-OK ;;
   t0-spdx)
     bash "$V3_ROOT/scripts/check-spdx.sh"
