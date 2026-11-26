@@ -1599,7 +1599,7 @@ Suites (each `command` is `bash v3/scripts/suite.sh <name> 2>&1`, so the command
 
 | Suite | Level | Runs | Parser | Uses |
 |---|---|---|---|---|
-| `t0-diff-check` | t0 | `git diff --check $base && echo T0-DIFF-OK`, where `base` is `git merge-base HEAD R` for the first ref `R` in `origin/develop`, `develop` that resolves; the suite fails (exit 1, naming `origin/develop`) when neither resolves, with no HEAD^ or HEAD-only fallback | regex `^T0-DIFF-OK$` | — |
+| `t0-diff-check` | t0 | `git diff --check $base && echo T0-DIFF-OK`, where `base` is `git merge-base HEAD R` for the first ref `R` in `origin/develop`, `develop` that resolves; when neither resolves (a MASON node's checkout carries only `refs/mason/node/<task>r<run>-…` refs), `base` is the newest first-parent ancestor of HEAD that node refs of two or more tasks contain; the suite fails (exit 1, naming `origin/develop`) when no base is found, with no HEAD^ or HEAD-only fallback | regex `^T0-DIFF-OK$` | — |
 | `t0-spdx` | t0 | `bash v3/scripts/check-spdx.sh && echo T0-SPDX-OK` | regex `^T0-SPDX-OK$` | — |
 | `t0-workflows` | t0 | `bash v3/scripts/check-workflows.sh && echo T0-WORKFLOWS-OK` | regex `^T0-WORKFLOWS-OK$` | — |
 | `t0-scripts` | t0 | `bash v3/scripts/test-scripts.sh` | regex pass `^PASS (.+)$`, fail `^FAIL (.+)$` | — |
