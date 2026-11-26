@@ -1,0 +1,25 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+#
+# Installer postinstall script of the trd .pkg (spec 1 §10.1). It sets the LaunchAgent to root:wheel
+# 644 and bootstraps it into the console user's GUI domain, which starts trd at once. With no console
+# user it does nothing. It always exits 0, so a failing launchctl or chown never fails the install.
+#
+# TRD_PKG_PLIST overrides the plist path; test-scripts.sh uses it so tests never touch /Library.
+# Bash 3.2 compatible. Commands are called by bare name so test-scripts.sh can stub them on PATH.
+
+PLIST="${TRD_PKG_PLIST:-/Library/LaunchAgents/com.timelapserender.trd.plist}"
+
+user="$(stat -f %Su /dev/console 2>/dev/null)" || user=""
+case "$user" in
+  ""|root|loginwindow) exit 0 ;;
+esac
+
+uid="$(id -u "$user" 2>/dev/null)" || uid=""
+[ -n "$uid" ] || exit 0
+
+chown root:wheel "$PLIST" >/dev/null 2>&1 || true
+chmod 644 "$PLIST" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/$uid" "$PLIST" >/dev/null 2>&1 || true
+exit 0

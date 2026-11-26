@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright (C) 2026 Timelapse Render Daemon contributors -->
+<!--
+  Info.plist of "Timelapse Render Daemon.app" (spec 1 §10.1). build-pkg.sh fills in the placeholders:
+  @SHORT_VERSION@ is the full version, @VERSION@ the same without its pre-release suffix.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleIdentifier</key><string>com.timelapserender.trd</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>Timelapse Render Daemon</string>
+  <key>CFBundleDisplayName</key><string>Timelapse Render Daemon</string>
+  <key>CFBundleExecutable</key><string>trd</string>
+  <key>CFBundleIconFile</key><string>trd</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>@SHORT_VERSION@</string>
+  <key>CFBundleVersion</key><string>@VERSION@</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>LSUIElement</key><true/>
+</dict>
+</plist>

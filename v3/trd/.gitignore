@@ -1,5 +1,8 @@
 # Build output of the trd workspace (cargo target directory, llvm-cov reports).
 /target/
 
+# Packaged release outputs (make release on macOS writes dist/trd).
+/dist/
+
 # Python bytecode of the trd scripts.
 __pycache__/

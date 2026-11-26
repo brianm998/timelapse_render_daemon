@@ -1,0 +1,23 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+#
+# Installer preinstall script of the trd .pkg (spec 1 §10.1). It boots the LaunchAgent out of the
+# console user's GUI domain, so the old trd is stopped before the new app is installed over it.
+# With no console user (root, loginwindow, or nobody logged in) it does nothing. It always exits 0:
+# a failing launchctl must not stop the install.
+#
+# Bash 3.2 compatible. Commands are called by bare name so test-scripts.sh can stub them on PATH.
+
+LABEL="com.timelapserender.trd"
+
+user="$(stat -f %Su /dev/console 2>/dev/null)" || user=""
+case "$user" in
+  ""|root|loginwindow) exit 0 ;;
+esac
+
+uid="$(id -u "$user" 2>/dev/null)" || uid=""
+[ -n "$uid" ] || exit 0
+
+launchctl bootout "gui/$uid/$LABEL" >/dev/null 2>&1 || true
+exit 0
