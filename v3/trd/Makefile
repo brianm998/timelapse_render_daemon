@@ -28,6 +28,18 @@ PKG_VERSION ?= $(shell cat ../VERSION)
 NATIVE_FFMPEG = $(shell ../ffmpeg/build.sh --print-native)
 PKG_FLAGS = $(if $(SIGN_APP),--sign-app "$(SIGN_APP)") $(if $(SIGN_PKG),--sign-installer "$(SIGN_PKG)") $(if $(APPLE_API_KEY_PATH),--notarize)
 
+# Linux packages (overview §10.2) are built on Linux for the host architecture.
+ifeq ($(shell uname -s),Linux)
+ifeq ($(shell uname -m),x86_64)
+LINUX_DEB_ARCH := amd64
+LINUX_DIST := linux-x64
+endif
+ifeq ($(shell uname -m),aarch64)
+LINUX_DEB_ARCH := arm64
+LINUX_DIST := linux-arm64
+endif
+endif
+
 release:
 	if [ "$$(uname -s)" = Darwin ]; then \
 		bash packaging/macos/build-pkg.sh --version $(PKG_VERSION) \
@@ -36,6 +48,13 @@ release:
 	else \
 		$(CARGO) build --release --locked; \
 	fi
+ifeq ($(shell uname -s),Linux)
+	bash packaging/linux/build-deb.sh --arch $(LINUX_DEB_ARCH) \
+		--trd-bin target/release/trd \
+		--ffmpeg-dir ../ffmpeg/dist/$(LINUX_DIST) \
+		--exiftool-dir ../exiftool/dist/unix \
+		--out dist/trd
+endif
 
 clean:
 	$(CARGO) clean
@@ -43,6 +62,7 @@ clean:
 test:
 	$(CARGO) build --workspace --locked
 	$(CARGO) test --workspace --locked
+	bash packaging/linux/test-maintainer-scripts.sh
 
 check:
 	$(CARGO) fmt --all --check

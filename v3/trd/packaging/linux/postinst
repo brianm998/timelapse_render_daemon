@@ -1,0 +1,28 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+#
+# Debian maintainer script of the trd package (overview §10.2). On configure it enables the user
+# unit for every user's login, when systemd is running. Without systemd (a container, a chroot)
+# it only prints what to run later, and exits 0 so the install still succeeds.
+set -e
+
+unit=trd.service
+# TRD_SYSTEMD_RUN_DIR lets test-maintainer-scripts.sh point the check at a fake directory.
+run_dir="${TRD_SYSTEMD_RUN_DIR:-/run/systemd/system}"
+
+case "$1" in
+  configure)
+    if command -v systemctl >/dev/null 2>&1 && [ -d "$run_dir" ]; then
+      if systemctl --global enable "$unit"; then
+        echo "trd: enabled $unit for user sessions; run 'systemctl --user start trd' to start it now"
+      else
+        echo "trd: could not enable $unit; run 'systemctl --global enable trd.service' by hand" >&2
+      fi
+    else
+      echo "trd: systemd is not running here; run 'systemctl --global enable trd.service' on a systemd host" >&2
+    fi
+    ;;
+esac
+
+exit 0
