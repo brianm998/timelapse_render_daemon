@@ -75,25 +75,7 @@ native_ffmpeg_target() {
 
 case "$suite" in
   t0-diff-check)
-    # A node's checkout may lack origin/develop (or be shallow): try the usual
-    # base refs, then the parent commit, then the empty tree.
-    base=""
-    for ref in ${MASON_BASE:-} origin/develop develop; do
-      if git rev-parse --verify --quiet "$ref^{commit}" >/dev/null; then
-        base="$(git merge-base HEAD "$ref" 2>/dev/null || true)"
-        [ -n "$base" ] && break
-      fi
-    done
-    if [ -z "$base" ]; then
-      if git rev-parse --verify --quiet "HEAD^{commit}" >/dev/null &&
-         git rev-parse --verify --quiet "HEAD^1" >/dev/null; then
-        echo "suite.sh: no develop base ref; checking the last commit only" >&2
-        base="$(git rev-parse HEAD^1)"
-      else
-        echo "suite.sh: no develop base ref and no parent; checking the whole tree" >&2
-        base="$(git hash-object -t tree /dev/null)"
-      fi
-    fi
+    base="$(git merge-base HEAD origin/develop)"
     git diff --check "$base"
     echo T0-DIFF-OK ;;
   t0-spdx)
@@ -110,42 +92,8 @@ case "$suite" in
   t0-mason)
     mason_bin="$(command -v mason || true)"
     [ -n "$mason_bin" ] || { [ -x "$HOME/.config/mason/bin/mason" ] && mason_bin="$HOME/.config/mason/bin/mason"; }
-    # A MASON node has the runtime but no wrapper on PATH: look in its data dir.
-    mason_data="${MASON_DATA_DIR:-$HOME/Library/Application Support/mason}"
-    if [ -z "$mason_bin" ] && [ -f "$mason_data/runtimes/current" ]; then
-      sha="$(cat "$mason_data/runtimes/current")"
-      [ -x "$mason_data/runtimes/$sha/mason" ] && mason_bin="$mason_data/runtimes/$sha/mason"
-    fi
-    if [ -z "$mason_bin" ] && [ -x "$mason_data/bootstrap/mason" ]; then
-      mason_bin="$mason_data/bootstrap/mason"
-    fi
-    if [ -n "$mason_bin" ]; then
-      case "$mason_bin" in
-        "$mason_data"/*) "$mason_bin" --data-dir "$mason_data" definition check ;;
-        *) "$mason_bin" definition check ;;
-      esac
-    else
-      # No mason here (a node without the CLI): at least require valid TOML
-      # with the step and suite tables; the full check runs where mason is.
-      echo "suite.sh: mason is not installed; checking .mason/mason.toml syntax only" >&2
-      python3 -I - "$V3_ROOT/../.mason/mason.toml" <<'PY'
-import sys
-try:
-    import tomllib
-except ImportError:
-    print("suite.sh: python3 has no tomllib; skipping the syntax check", file=sys.stderr)
-    sys.exit(0)
-with open(sys.argv[1], "rb") as f:
-    d = tomllib.load(f)
-if not isinstance(d.get("suite"), dict) or not d["suite"]:
-    sys.exit("suite.sh: mason.toml has no [suite.*] tables")
-if not isinstance(d.get("step"), dict) or not d["step"]:
-    sys.exit("suite.sh: mason.toml has no [step.*] tables")
-for name, s in d["suite"].items():
-    if "command" not in s:
-        sys.exit("suite.sh: suite %s has no command" % name)
-PY
-    fi
+    [ -n "$mason_bin" ] || { echo "suite.sh: mason is not installed (t0-mason runs only on the owner's Mac)" >&2; exit 1; }
+    "$mason_bin" definition check
     echo T0-MASON-OK ;;
 
   trd-check)
