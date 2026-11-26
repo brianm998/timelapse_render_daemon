@@ -1187,7 +1187,10 @@ impl TrdService for Server {
         // The code is the authentication, so it is checked before the arguments: a request with
         // no valid code is UNAUTHENTICATED whatever it contains. The correct code is consumed
         // only once the arguments are also valid, so a bad request does not use up the code.
-        let mut pairing = shared.pairing.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut pairing = shared
+            .pairing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if let Err(refusal) = pairing.verify(now, &request.code) {
             tracing::info!(?refusal, "a pairing was refused");
             return Err(refusal_status(refusal));
