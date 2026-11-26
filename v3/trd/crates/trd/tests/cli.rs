@@ -27,12 +27,14 @@ fn version_prints_name_version_and_platform() {
 }
 
 #[test]
-fn unimplemented_subcommand_exits_one() {
-    let out = trd(&["service", "status"]);
-    assert_eq!(out.status.code(), Some(1));
+fn service_without_an_action_is_a_usage_error() {
+    // `service` is implemented (TRD-21), so it cannot serve as the not-implemented example. A
+    // missing action is a clap usage error: exit 2, and no service-manager command runs.
+    let out = trd(&["service"]);
+    assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8(out.stderr).expect("utf-8 output");
     assert!(
-        stderr.contains("service: not implemented yet"),
+        stderr.contains("Usage: trd service"),
         "unexpected stderr: {stderr}"
     );
 }
