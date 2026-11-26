@@ -33,8 +33,9 @@ fn service_without_an_action_is_a_usage_error() {
     let out = trd(&["service"]);
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8(out.stderr).expect("utf-8 output");
+    // clap names the binary as run: `trd` on Unix, `trd.exe` on Windows.
     assert!(
-        stderr.contains("Usage: trd service"),
+        stderr.contains("Usage: trd") && stderr.contains(" service [OPTIONS] <COMMAND>"),
         "unexpected stderr: {stderr}"
     );
 }
