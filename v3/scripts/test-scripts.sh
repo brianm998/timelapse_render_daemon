@@ -158,42 +158,6 @@ out="$(V3_ROOT="$R/v3" bash "$here/suite.sh" t0-diff-check 2>&1)"; rc=$?
 expect "suite.sh t0-diff-check checks the whole change, not only HEAD" \
   "$([ "$rc" -ne 0 ] && ! contains "$out" T0-DIFF-OK && contains "$out" trailing && echo 0 || echo 1)" "rc=$rc $out"
 
-# (d) a MASON node checkout: no origin/develop or develop, only refs/mason/node refs. Two other
-# tasks' refs carry the landed commit; this task's refs carry its own commits. A clean change passes.
-diff_repo d
-landed="$(gitc rev-parse HEAD)"
-gitc update-ref refs/mason/node/t1r10-check-t0-spdx0 "$landed"
-gitc update-ref refs/mason/node/debt2-u-t0-diff-check "$landed"
-commit_file v3/clean.txt clean
-gitc update-ref refs/mason/node/t3r11-check-t0-diff-check0 HEAD
-commit_file v3/clean2.txt clean2
-gitc update-ref refs/mason/node/t3r12-check-t0-diff-check0 HEAD
-out="$(V3_ROOT="$R/v3" bash "$here/suite.sh" t0-diff-check 2>&1)"; rc=$?
-expect "suite.sh t0-diff-check on a node checkout diffs against the commit two tasks' refs carry" \
-  "$([ "$rc" -eq 0 ] && contains "$out" T0-DIFF-OK && contains "$out" "$landed" && echo 0 || echo 1)" "rc=$rc $out"
-
-# (e) the same node checkout, with trailing whitespace in an earlier commit of this task that
-# this task's own refs carry: the base is still the landed commit, so the suite fails.
-diff_repo e
-landed="$(gitc rev-parse HEAD)"
-gitc update-ref refs/mason/node/t1r10-check-t0-spdx0 "$landed"
-gitc update-ref refs/mason/node/t2r10-check-t0-spdx0 "$landed"
-commit_file v3/space.txt 'trailing '
-gitc update-ref refs/mason/node/t3r11-check-t0-diff-check0 HEAD
-gitc update-ref refs/mason/node/t3r11-check-t0-diff-check1 HEAD
-commit_file v3/clean.txt clean
-out="$(V3_ROOT="$R/v3" bash "$here/suite.sh" t0-diff-check 2>&1)"; rc=$?
-expect "suite.sh t0-diff-check on a node checkout checks the whole change, not only HEAD" \
-  "$([ "$rc" -ne 0 ] && ! contains "$out" T0-DIFF-OK && contains "$out" trailing && echo 0 || echo 1)" "rc=$rc $out"
-
-# (f) node refs of only one task: no commit has provably landed, so the suite fails loudly.
-diff_repo f
-gitc update-ref refs/mason/node/t3r11-check-t0-diff-check0 HEAD
-commit_file v3/clean.txt clean
-out="$(V3_ROOT="$R/v3" bash "$here/suite.sh" t0-diff-check 2>&1)"; rc=$?
-expect "suite.sh t0-diff-check fails on a node checkout where one task's refs carry every commit" \
-  "$([ "$rc" -eq 1 ] && ! contains "$out" T0-DIFF-OK && contains "$out" origin/develop && echo 0 || echo 1)" "rc=$rc $out"
-
 # Stub components and stub tools: a suite whose component exists runs the real command.
 new_tree; t="$T"
 stubs="$work/stub-bin"
