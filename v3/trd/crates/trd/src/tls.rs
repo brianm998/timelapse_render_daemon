@@ -102,7 +102,7 @@ pub fn load_or_create(data: &Path, names: &[String]) -> Result<Identity, String>
     }
 
     fs::create_dir_all(&dir).map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
-    let key = KeyPair::generate_for(PKCS_ECDSA_P256_SHA256)
+    let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
         .map_err(|err| format!("cannot generate the TLS key: {err}"))?;
     let mut params = CertificateParams::new(names.to_vec())
         .map_err(|err| format!("cannot name the TLS certificate: {err}"))?;
