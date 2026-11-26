@@ -116,6 +116,48 @@ done
 out="$(V3_ROOT="$work" bash "$here/suite.sh" no-such-suite 2>&1)"; rc=$?
 expect "suite.sh rejects an unknown suite" "$([ "$rc" -eq 2 ] && echo 0 || echo 1)" "rc=$rc $out"
 
+# t0-diff-check diffs against the merge-base of HEAD and origin/develop, then develop. Each case
+# is a temporary repository whose parent plays the repository root (V3_ROOT is <repo>/v3).
+gitc() { git -C "$R" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false "$@"; }
+diff_repo() { # diff_repo <n>: sets R to a fresh repository with one commit on its default branch
+  R="$work/diffrepo$1"
+  mkdir -p "$R/v3"
+  git init -q -b trunk "$R"  # pinned: the default branch must not be develop
+  echo base > "$R/v3/base.txt"
+  gitc add -A
+  gitc commit -q -m base
+}
+commit_file() { # commit_file <path> <content>: commits one file on the current branch of $R
+  printf '%s\n' "$2" > "$R/$1"
+  gitc add -A
+  gitc commit -q -m "$1"
+}
+
+# (a) only a local develop ref: a clean change passes.
+diff_repo a
+gitc branch develop
+commit_file v3/clean.txt clean
+out="$(V3_ROOT="$R/v3" bash "$here/suite.sh" t0-diff-check 2>&1)"; rc=$?
+expect "suite.sh t0-diff-check passes on a clean change when only a local develop exists" \
+  "$([ "$rc" -eq 0 ] && contains "$out" T0-DIFF-OK && echo 0 || echo 1)" "rc=$rc $out"
+
+# (b) neither origin/develop nor develop exists: the suite fails and names the missing ref.
+diff_repo b
+commit_file v3/clean.txt clean
+out="$(V3_ROOT="$R/v3" bash "$here/suite.sh" t0-diff-check 2>&1)"; rc=$?
+expect "suite.sh t0-diff-check fails without a base and names origin/develop" \
+  "$([ "$rc" -eq 1 ] && ! contains "$out" T0-DIFF-OK && contains "$out" origin/develop && echo 0 || echo 1)" "rc=$rc $out"
+
+# (c) an earlier commit after develop adds trailing whitespace while HEAD is clean: the whole
+# change is checked, so the suite fails.
+diff_repo c
+gitc branch develop
+commit_file v3/space.txt 'trailing '
+commit_file v3/clean.txt clean
+out="$(V3_ROOT="$R/v3" bash "$here/suite.sh" t0-diff-check 2>&1)"; rc=$?
+expect "suite.sh t0-diff-check checks the whole change, not only HEAD" \
+  "$([ "$rc" -ne 0 ] && ! contains "$out" T0-DIFF-OK && contains "$out" trailing && echo 0 || echo 1)" "rc=$rc $out"
+
 # Stub components and stub tools: a suite whose component exists runs the real command.
 new_tree; t="$T"
 stubs="$work/stub-bin"
