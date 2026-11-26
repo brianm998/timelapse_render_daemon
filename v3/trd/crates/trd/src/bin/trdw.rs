@@ -15,6 +15,8 @@ mod daemon;
 mod pairing;
 #[path = "../server.rs"]
 mod server;
+#[path = "../status_view.rs"]
+mod status_view;
 #[path = "../tls.rs"]
 mod tls;
 

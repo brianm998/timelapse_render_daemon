@@ -1822,6 +1822,7 @@ name = "trd"
 version = "3.0.0"
 dependencies = [
  "base64",
+ "chrono",
  "clap",
  "hex",
  "libc",

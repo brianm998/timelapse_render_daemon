@@ -28,11 +28,11 @@ fn version_prints_name_version_and_platform() {
 
 #[test]
 fn unimplemented_subcommand_exits_one() {
-    let out = trd(&["status"]);
+    let out = trd(&["service", "status"]);
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8(out.stderr).expect("utf-8 output");
     assert!(
-        stderr.contains("status: not implemented yet"),
+        stderr.contains("service: not implemented yet"),
         "unexpected stderr: {stderr}"
     );
 }
