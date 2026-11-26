@@ -156,7 +156,7 @@ commit_file v3/space.txt 'trailing '
 commit_file v3/clean.txt clean
 out="$(V3_ROOT="$R/v3" bash "$here/suite.sh" t0-diff-check 2>&1)"; rc=$?
 expect "suite.sh t0-diff-check checks the whole change, not only HEAD" \
-  "$([ "$rc" -eq 1 ] && ! contains "$out" T0-DIFF-OK && echo 0 || echo 1)" "rc=$rc $out"
+  "$([ "$rc" -ne 0 ] && ! contains "$out" T0-DIFF-OK && contains "$out" trailing && echo 0 || echo 1)" "rc=$rc $out"
 
 # Stub components and stub tools: a suite whose component exists runs the real command.
 new_tree; t="$T"
