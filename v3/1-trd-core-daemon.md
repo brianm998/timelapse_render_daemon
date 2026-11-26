@@ -1635,7 +1635,7 @@ Impact map:
 "v3/Makefile" = ["t0-makefiles"]
 "v3/**/Makefile" = ["t0-makefiles"]
 ".github/**" = ["t0-workflows"]
-".mason/**" = ["t0-workflows", "t0-mason"]
+".mason/**" = ["t0-workflows"]
 "CLAUDE.md" = []
 ```
 
