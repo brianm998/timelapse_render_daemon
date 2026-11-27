@@ -271,12 +271,18 @@ build_unsigned_pkg() {
     || die "pkgbuild failed"
 }
 
+# list_has_entry <list> <entry>: whole-line membership. A here-string, not a pipe: grep -q exits at
+# the first match and a producer on a pipe then dies of SIGPIPE, failing the pipeline under pipefail.
+list_has_entry() {
+  grep -Fxq -- "$2" <<<"$1"
+}
+
 # check_pkg_payload <pkg>: every expected payload file is in the package (pkgutil --payload-files).
 check_pkg_payload() {
   local list rel failed=0
   list="$(/usr/sbin/pkgutil --payload-files "$1")" || die "pkgutil --payload-files failed on $1"
   while IFS= read -r rel; do
-    if ! printf '%s\n' "$list" | grep -Fqx "./$rel"; then
+    if ! list_has_entry "$list" "./$rel"; then
       echo "payload of $1 lacks $rel" >&2
       failed=1
     fi
@@ -358,6 +364,13 @@ self_check() {
   /usr/bin/lipo -thin x86_64 /usr/bin/true -output "$root/thin"
   if check_archs "$root/thin" 1 >/dev/null 2>&1; then
     die "self-check: a single-architecture file passed --require-universal"
+  fi
+  # Membership must not depend on pipe buffering: a list far over 64 KB with the entry first.
+  local big
+  big="$(printf './wanted\n'; i=0; while [ "$i" -lt 8000 ]; do printf './some/long/padding/path/entry-%s\n' "$i"; i=$((i + 1)); done)"
+  list_has_entry "$big" "./wanted" || die "self-check: an entry at the top of a large list was not found"
+  if list_has_entry "$big" "./absent"; then
+    die "self-check: a missing entry was reported present"
   fi
   say "self-check OK"
 }
