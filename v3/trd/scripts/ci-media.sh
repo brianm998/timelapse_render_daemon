@@ -99,6 +99,8 @@ cargo build --locked -p trd-testtools --bins
 # Each run's "panicked at" lines (with the two lines after each) are repeated after its output, so
 # a truncated log tail shows why it failed. Only bash built-ins are used.
 status=0
+PANIC_FILE="${TMPDIR:-/tmp}/ci-media-panics.$$"
+: > "$PANIC_FILE"
 run_tests() {
   # Under pipefail the pipeline fails when cargo does; testing it in `if` keeps set -e from ending
   # the script, so both runs happen and the panics print last.
@@ -107,7 +109,7 @@ run_tests() {
     while IFS= read -r line; do
       printf '%s\n' "$line"
       case "$line" in
-        *"panicked at"*) keep=3 ;;
+        *"panicked at"*) keep=40 ;;
       esac
       if [ "$keep" -gt 0 ]; then
         panics="$panics$line"$'\n'
@@ -115,7 +117,7 @@ run_tests() {
       fi
     done
     if [ -n "$panics" ]; then
-      printf 'ci-media.sh: panics of %s:\n%s' "$*" "$panics" >&2
+      printf 'ci-media.sh: panics of %s:\n%s' "$*" "$panics" >> "$PANIC_FILE"
     fi
   }; then
     status=1
@@ -124,4 +126,10 @@ run_tests() {
 }
 run_tests cargo test -p trd --test e2e --locked
 run_tests cargo test -p trd-core --test xmp --locked
+# Last of all, so a truncated log tail ends with the reasons.
+if [ -s "$PANIC_FILE" ]; then
+  echo "ci-media.sh: ===== panics of the failed tests =====" >&2
+  cat "$PANIC_FILE" >&2
+fi
+/bin/rm -f "$PANIC_FILE"
 exit "$status"
