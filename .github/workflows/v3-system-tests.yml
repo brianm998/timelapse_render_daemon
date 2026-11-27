@@ -394,6 +394,10 @@ jobs:
           done
           echo "systemd user manager: $state"
 
+      - name: Build the fake tools
+        working-directory: v3/trd
+        run: cargo build --locked -p trd-testtools --bins
+
       - name: Service tests (TRD-21)
         working-directory: v3/trd
         run: CI=true TRD_SERVICE_TEST=1 cargo test -p trd --test service_live --locked -- --ignored --test-threads=1
