@@ -334,6 +334,11 @@ out="$(V3_ROOT="$t" bash "$here/bump-version.sh" not-a-version 2>&1)"; rc=$?
 expect "bump-version.sh rejects a malformed version" \
   "$([ "$rc" -eq 2 ] && [ "$(cat "$t/VERSION")" = "4.0.0" ] && echo 0 || echo 1)" "rc=$rc $out"
 
+# ---------------------------------------------------------------- test-release-version.sh
+
+out="$(bash "$here/test-release-version.sh" 2>&1)"; rc=$?
+expect "test-release-version.sh passes (version of a release run, TRD-27 A3)" "$rc" "rc=$rc $out"
+
 # ---------------------------------------------------------------- check-makefiles.sh
 
 new_tree; t="$T"

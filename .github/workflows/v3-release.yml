@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+#
+# The release orchestrator (spec 1 §9.5, TRD-27). A v3.* tag push and a manual dispatch build every
+# trd package from the ffmpeg, exiftool and trd workflows. Only a tag push publishes, as a draft
+# GitHub Release; a dispatch never does. The system tests (§9.7, TRD-29) are added later.
+
+name: v3 release
+
+on:
+  push:
+    tags: ['v3.*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v3-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_release: ${{ steps.version.outputs.is_release }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read the version and decide whether this is a release
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          # Only a tag push is a release. A manual run, even one started from a tag, builds the
+          # version in v3/VERSION and publishes nothing, so it takes a ref that is not a tag.
+          ref="$REF"
+          if [ "$EVENT_NAME" != push ]; then
+            ref=refs/heads/manual-dispatch
+          fi
+          bash v3/scripts/release-version.sh "$ref" v3/VERSION >> "$GITHUB_OUTPUT"
+
+  ffmpeg:
+    name: ffmpeg
+    uses: ./.github/workflows/v3-ffmpeg.yml
+
+  exiftool:
+    name: exiftool
+    uses: ./.github/workflows/v3-exiftool.yml
+
+  trd:
+    name: trd packages
+    needs: [version, ffmpeg, exiftool]
+    uses: ./.github/workflows/v3-trd-build.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      is_release: ${{ needs.version.outputs.is_release == 'true' }}
+    secrets: inherit
+
+  publish:
+    name: Publish the draft release
+    needs: [version, trd]
+    if: ${{ success() && github.event_name == 'push' && needs.version.outputs.is_release == 'true' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download every release asset
+        uses: actions/download-artifact@v7
+        with:
+          pattern: release-asset-*
+          path: release
+          merge-multiple: true
+
+      - name: List the assets
+        run: ls -l release
+
+      - name: Create the draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.version.outputs.version }}
+          name: Timelapse Render Daemon ${{ needs.version.outputs.version }}
+          draft: true
+          prerelease: ${{ needs.version.outputs.prerelease }}
+          generate_release_notes: true
+          files: release/*
+          body: |
+            Install notes:
+
+            - macOS: run `trd-${{ needs.version.outputs.version }}-macos-universal.pkg`, then grant Full Disk Access to Timelapse Render Daemon in System Settings > Privacy & Security.
+            - Linux: `sudo apt install ./trd_${{ needs.version.outputs.version }}_amd64.deb` (or `_arm64.deb`), then `systemctl --user start trd`.
+            - Windows: run `trd-${{ needs.version.outputs.version }}-windows-x64-setup.exe`. The first start may ask to allow network access.
