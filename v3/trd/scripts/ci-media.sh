@@ -96,16 +96,29 @@ fi
 # The tests drive fake-ffmpeg, fake-ffprobe and fake-exiftool, which are bin targets of
 # trd-testtools; cargo test does not build them for a dev-dependency, so build them here.
 cargo build --locked -p trd-testtools --bins
-# Each run is captured; on failure its panic lines are printed last, so a truncated log tail shows
-# why it failed.
-LOG="$(mktemp "${TMPDIR:-/tmp}/ci-media.XXXXXX")"
-trap 'rm -f "$LOG"' EXIT
+# Each run's "panicked at" lines (with the two lines after each) are repeated after its output, so
+# a truncated log tail shows why it failed. Only bash built-ins are used.
 status=0
 run_tests() {
-  if ! "$@" 2>&1 | tee "$LOG"; then
+  "$@" 2>&1 | {
+    panics="" keep=0
+    while IFS= read -r line; do
+      printf '%s\n' "$line"
+      case "$line" in
+        *"panicked at"*) keep=3 ;;
+      esac
+      if [ "$keep" -gt 0 ]; then
+        panics="$panics$line"$'\n'
+        keep=$((keep - 1))
+      fi
+    done
+    if [ -n "$panics" ]; then
+      printf 'ci-media.sh: panics of %s:\n%s' "$*" "$panics" >&2
+    fi
+  }
+  if [ "${PIPESTATUS[0]}" -ne 0 ]; then
     status=1
     echo "ci-media.sh: FAILED: $*" >&2
-    grep -A3 "panicked at" "$LOG" >&2 || true
   fi
 }
 run_tests cargo test -p trd --test e2e --locked
