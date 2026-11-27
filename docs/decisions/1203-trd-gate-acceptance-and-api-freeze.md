@@ -41,3 +41,14 @@ Decisions taken while closing spec 1 (TRD-GATE) that the spec leaves open.
   changes.
 
 Stage note: `docs/stages/s1213.md`.
+
+## Crash and re-adoption (retry)
+
+The first e2e runs failed on both OSes because the test waited for `adopted = true` on a render
+that its own database re-adopts; spec 1 §6.6 sets `adopted` only for foreign renders, so the
+assertion was wrong and is removed. A stopped render also got SIGHUP and SIGCONT from the kernel
+when the daemon was killed (its process group became orphaned in the daemon's session), which ends
+ffmpeg before the new daemon adopts it. Renders now start with `setsid` instead of
+`process_group(0)`: their own session and group, never signalled that way. Test:
+`render_has_own_session`. `ci-media.sh` no longer exits on the first failing run, so the panic
+summary prints last and the xmp run still happens.

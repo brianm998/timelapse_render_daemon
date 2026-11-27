@@ -221,7 +221,20 @@ fn launch(
 #[cfg(unix)]
 fn detach(command: &mut Command, _breakaway: bool) {
     use std::os::unix::process::CommandExt;
-    command.process_group(0);
+    // Its own session, which also makes it the leader of a process group of its own (what
+    // `process_group(0)` gives): when the daemon dies while a render is stopped, the kernel sends
+    // SIGHUP and SIGCONT to a process group that becomes orphaned in the daemon's session, and
+    // ffmpeg would end before a new daemon re-adopts it. A group in a session of its own is never
+    // signalled that way.
+    // SAFETY: the closure runs between fork and exec and only calls the async-signal-safe setsid.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 }
 
 #[cfg(windows)]

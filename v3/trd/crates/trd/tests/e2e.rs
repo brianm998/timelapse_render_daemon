@@ -470,10 +470,37 @@ async fn settle<T>(
         }
         assert!(
             started.elapsed() < HANG_GUARD,
-            "{what} was not reached within {HANG_GUARD:?}: {snapshot:?}"
+            "{what} was not reached within {HANG_GUARD:?}: {}",
+            summary_of(&snapshot)
         );
         tokio::time::sleep(every).await;
     }
+}
+
+/// A short account of a snapshot for a failed wait: the statuses of its rows and its failures.
+fn summary_of(snapshot: &pb::Snapshot) -> String {
+    let mut text = String::new();
+    for card in &snapshot.in_progress {
+        text.push_str(&format!("\n  {} stage={:?}", card.name, card.stage));
+        for variant in &card.variants {
+            text.push_str(&format!(
+                "\n    {} {:?} id={} {}",
+                variant.variant_key, variant.status, variant.render_id, variant.message
+            ));
+        }
+    }
+    for failure in &snapshot.failures {
+        text.push_str(&format!(
+            "\n  failure {} {}: {}",
+            failure.sequence_name, failure.variant_key, failure.summary
+        ));
+    }
+    format!(
+        "{} rendered, {} in progress, {} failures{text}",
+        snapshot.recently_rendered_total,
+        snapshot.in_progress.len(),
+        snapshot.failures.len()
+    )
 }
 
 async fn snapshot_of(client: &mut Client) -> pb::Snapshot {
@@ -785,7 +812,7 @@ async fn e2e_daemon_with_real_tools() {
 
     // UpdateConfig adds a variant. Renders of it start at once, so a render of it is suspended while
     // it runs and the daemon is killed. A new daemon with the same flags and data folder adopts that
-    // suspended render from its own database, shows it as adopted, and ResumeRender finishes it.
+    // suspended render from its own database, shows it still suspended, and ResumeRender finishes it.
     let state = client
         .get_config(pb::GetConfigRequest {})
         .await
@@ -844,7 +871,7 @@ async fn e2e_daemon_with_real_tools() {
         &HIDDEN_AFTER_UPDATE,
         |s| {
             row_by_id(s, &run_id)
-                .filter(|r| is(r, pb::VariantStatus::VariantSuspended) && r.adopted)
+                .filter(|r| is(r, pb::VariantStatus::VariantSuspended))
                 .map(|_| ())
         },
     )

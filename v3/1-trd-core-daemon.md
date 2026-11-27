@@ -348,8 +348,8 @@ change):
 
 1. Insert a `render_jobs` row (§6.13) with the plan and status `queued`.
 2. Promotion (§6.7) starts ffmpeg: stdin null; stdout and stderr appended to
-   `<data>/renders/<render-id>.log`; in its own process group (`CommandExt::process_group(0)` on
-   unix; on Windows `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`,
+   `<data>/renders/<render-id>.log`; in its own session and process group (`pre_exec` calling `setsid` on
+   unix, so a render that is stopped when the daemon dies is not SIGHUPped as an orphaned group; on Windows `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`,
    retried without `CREATE_BREAKAWAY_FROM_JOB` if that fails with access denied). Record the pid
    and the process start time (from `sysinfo`) in the row; status `running`.
 3. Progress: read the `-progress` file every 500 ms; the latest complete block (ending in

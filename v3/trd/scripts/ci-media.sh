@@ -100,7 +100,9 @@ cargo build --locked -p trd-testtools --bins
 # a truncated log tail shows why it failed. Only bash built-ins are used.
 status=0
 run_tests() {
-  "$@" 2>&1 | {
+  # Under pipefail the pipeline fails when cargo does; testing it in `if` keeps set -e from ending
+  # the script, so both runs happen and the panics print last.
+  if ! "$@" 2>&1 | {
     panics="" keep=0
     while IFS= read -r line; do
       printf '%s\n' "$line"
@@ -115,8 +117,7 @@ run_tests() {
     if [ -n "$panics" ]; then
       printf 'ci-media.sh: panics of %s:\n%s' "$*" "$panics" >&2
     fi
-  }
-  if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+  }; then
     status=1
     echo "ci-media.sh: FAILED: $*" >&2
   fi

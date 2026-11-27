@@ -236,6 +236,24 @@ mod process {
         thread::sleep(HANG_GUARD);
     }
 
+    /// A render runs in a session and process group of its own, so a daemon that dies while the
+    /// render is stopped does not get it SIGHUPped as an orphaned group.
+    #[cfg(unix)]
+    #[test]
+    fn render_has_own_session() {
+        let dir = TempDir::new().expect("a temp dir");
+        let argv = vec![OsString::from("/bin/sleep"), OsString::from("60")];
+        let mut child = process::spawn_detached(&argv, &dir.path().join("log")).expect("spawn");
+        let pid = child.pid as libc::pid_t;
+        // SAFETY: getsid and getpgid only read process attributes.
+        let (child_sid, child_pgid, own_sid) =
+            unsafe { (libc::getsid(pid), libc::getpgid(pid), libc::getsid(0)) };
+        process::terminate(&mut child, TERMINATE_GRACE).expect("end the child");
+        assert_eq!(child_sid, pid, "the child leads a session of its own");
+        assert_eq!(child_pgid, pid, "and a process group of its own");
+        assert_ne!(child_sid, own_sid);
+    }
+
     #[cfg(unix)]
     #[test]
     fn own_process_group() {
