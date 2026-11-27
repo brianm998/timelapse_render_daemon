@@ -14,6 +14,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 bash scripts/test-check-system-tests.sh
 bash scripts/check-system-tests.sh
+bash scripts/test-wait-for-trd.sh
 cargo test --workspace --locked
 if [ "$(uname -s)" = Darwin ]; then
   # The macOS installer (TRD-24): the self-check assembles a bundle and a .pkg from stubs, and the

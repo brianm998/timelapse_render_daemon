@@ -1,0 +1,385 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+#
+# The daemon's system tests (spec 1 §9.7, TRD-29): the three installers and the live service and mDNS
+# tests, on GitHub-hosted runners only. They are not part of the landing gate. They run on every push
+# to develop, nightly, and inside every release run before it publishes (v3-release.yml calls this
+# workflow with `build: false`, so it tests the packages that run built). Specs 2-4 add their jobs.
+
+name: v3 system tests
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'v3/**'
+      - '.github/workflows/v3-*.yml'
+  schedule:
+    - cron: '17 9 * * *'
+  workflow_dispatch:
+    inputs:
+      build:
+        description: 'Build the packages first. false: test release-asset-* artifacts of the calling run, which a dispatch has none of'
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      build:
+        description: 'true builds the packages in this run; false tests the release-asset-* artifacts the caller uploaded'
+        type: boolean
+        default: true
+      version:
+        description: 'trd version without a leading v. Empty reads v3/VERSION'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v3-system-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read the version under test
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "$INPUT_VERSION" ]; then
+            v="$INPUT_VERSION"
+          else
+            v="$(tr -d '[:space:]' < v3/VERSION)"
+          fi
+          if [ -z "$v" ]; then
+            echo "::error::no version to test: inputs.version is empty and v3/VERSION is empty"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+  # ─── Build jobs: skipped only when a caller passes build: false (or a dispatch asks for it) ───
+  ffmpeg:
+    name: ffmpeg
+    if: ${{ !contains(fromJSON('["workflow_call","workflow_dispatch"]'), github.event_name) || inputs.build == true }}
+    uses: ./.github/workflows/v3-ffmpeg.yml
+
+  exiftool:
+    name: exiftool
+    if: ${{ !contains(fromJSON('["workflow_call","workflow_dispatch"]'), github.event_name) || inputs.build == true }}
+    uses: ./.github/workflows/v3-exiftool.yml
+
+  trd-packages:
+    name: trd packages
+    needs: [version, ffmpeg, exiftool]
+    if: ${{ !contains(fromJSON('["workflow_call","workflow_dispatch"]'), github.event_name) || inputs.build == true }}
+    uses: ./.github/workflows/v3-trd-build.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      is_release: false
+    secrets: inherit
+
+  # ─── Test jobs: they run when the packages were built or the caller uploaded them ───
+  trd-install-macos:
+    name: macOS install (macos-15)
+    needs: [version, trd-packages]
+    if: ${{ !cancelled() && needs.version.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.trd-packages.result) }}
+    runs-on: macos-15
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download the installer
+        uses: actions/download-artifact@v7
+        with:
+          name: release-asset-trd-macos-universal
+          path: pkg
+
+      - name: Install the package
+        run: sudo installer -pkg "pkg/trd-${VERSION}-macos-universal.pkg" -target /
+
+      - name: Check the installed files
+        run: |
+          set -euo pipefail
+          app="/Applications/Timelapse Render Daemon.app"
+          for path in \
+            "$app" \
+            "$app/Contents/MacOS/trd" \
+            "$app/Contents/MacOS/ffmpeg" \
+            "$app/Contents/MacOS/ffprobe" \
+            "$app/Contents/Resources/exiftool/exiftool" \
+            /Library/LaunchAgents/com.timelapserender.trd.plist; do
+            if [ ! -e "$path" ]; then
+              echo "::error::the installer did not put $path in place"
+              exit 1
+            fi
+          done
+
+      - name: Start the LaunchAgent
+        run: |
+          set -euo pipefail
+          uid="$(id -u)"
+          label=com.timelapserender.trd
+          plist=/Library/LaunchAgents/com.timelapserender.trd.plist
+          agent_state() {
+            launchctl print "gui/$uid/$label" 2>/dev/null | sed -n 's/^[[:space:]]*state = //p' | head -n 1 || true
+          }
+          # Waits up to 60 s for launchctl to report the agent as running.
+          wait_running() {
+            SECONDS=0
+            while [ "$(agent_state)" != running ]; do
+              if [ "$SECONDS" -ge 60 ]; then
+                return 1
+              fi
+              sleep 1
+            done
+          }
+          if ! wait_running; then
+            # postinstall starts the agent only when a console user exists; a runner may have none.
+            echo "::warning::the agent is not running after the install (postinstall found no console user?); bootstrapping it"
+            launchctl bootstrap "gui/$uid" "$plist"
+            if ! wait_running; then
+              echo "::error::the LaunchAgent $label is not running 60 s after bootstrap"
+              launchctl print "gui/$uid/$label" || true
+              exit 1
+            fi
+          fi
+          echo "LaunchAgent $label is running"
+
+      - name: Wait for trd to answer
+        run: bash v3/trd/scripts/wait-for-trd.sh --trd "/Applications/Timelapse Render Daemon.app/Contents/MacOS/trd" --timeout 60
+
+      - name: Check the signature
+        run: |
+          set -euo pipefail
+          /usr/bin/codesign --verify --strict --deep "/Applications/Timelapse Render Daemon.app"
+          if pkgutil --check-signature "pkg/trd-${VERSION}-macos-universal.pkg" | grep -q "Status: signed"; then
+            spctl --assess --type install "pkg/trd-${VERSION}-macos-universal.pkg"
+          else
+            echo "the package is not signed; spctl is skipped"
+          fi
+
+      - name: Stop the agent and remove the install
+        if: always()
+        run: |
+          uid="$(id -u)"
+          launchctl bootout "gui/$uid/com.timelapserender.trd" || true
+          sudo rm -rf "/Applications/Timelapse Render Daemon.app"
+          sudo rm -f /Library/LaunchAgents/com.timelapserender.trd.plist
+
+  trd-install-linux:
+    name: Linux install (${{ matrix.runner }})
+    needs: [version, trd-packages]
+    if: ${{ !cancelled() && needs.version.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.trd-packages.result) }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+            artifact: release-asset-trd-linux-x64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            artifact: release-asset-trd-linux-arm64
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      ARCH: ${{ matrix.arch }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download the package
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: pkg
+
+      - name: Install the .deb
+        run: sudo apt-get install -y "./pkg/trd_${VERSION}_${ARCH}.deb"
+
+      - name: Run the installed trd
+        run: /usr/bin/trd version
+
+      - name: Enable lingering and wait for the user manager
+        run: |
+          set -euo pipefail
+          sudo loginctl enable-linger "$USER"
+          XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export XDG_RUNTIME_DIR
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          # is-system-running exits non-zero when degraded, so the wait is for any output, not the status.
+          state=""
+          SECONDS=0
+          while [ -z "$state" ] && [ "$SECONDS" -lt 60 ]; do
+            state="$(systemctl --user is-system-running 2>/dev/null || true)"
+            if [ -z "$state" ]; then
+              sleep 1
+            fi
+          done
+          if [ -z "$state" ]; then
+            echo "::error::the systemd user manager did not answer within 60 s"
+            exit 1
+          fi
+          echo "systemd user manager: $state"
+
+      - name: Check the unit is enabled for user sessions
+        run: |
+          set -euo pipefail
+          enabled="$(systemctl --user is-enabled trd 2>/dev/null || true)"
+          if [ "$enabled" != enabled ]; then
+            echo "::error::systemctl --user is-enabled trd printed '$enabled', not 'enabled'"
+            exit 1
+          fi
+
+      - name: Start trd and wait for it to answer
+        run: |
+          set -euo pipefail
+          systemctl --user start trd
+          bash v3/trd/scripts/wait-for-trd.sh --trd /usr/bin/trd --timeout 60
+
+      - name: Stop trd, remove the package and check the removal
+        run: |
+          set -euo pipefail
+          systemctl --user stop trd
+          sudo apt-get remove -y trd
+          if [ -e /usr/lib/trd ]; then
+            echo "::error::/usr/lib/trd is still there after the package was removed"
+            exit 1
+          fi
+
+  trd-install-windows:
+    name: Windows install (windows-2022)
+    needs: [version, trd-packages]
+    if: ${{ !cancelled() && needs.version.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.trd-packages.result) }}
+    runs-on: windows-2022
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download the installer
+        uses: actions/download-artifact@v7
+        with:
+          name: release-asset-trd-windows-x64
+          path: pkg
+
+      - name: Install silently
+        run: |
+          set -euo pipefail
+          setup="$(cd pkg && pwd)/trd-${VERSION}-windows-x64-setup.exe"
+          # MSYS_NO_PATHCONV stops Git Bash from turning /S into a path.
+          MSYS_NO_PATHCONV=1 "$(cygpath -w "$setup")" /S
+          install_dir="$(cygpath -u "$LOCALAPPDATA")/Programs/TimelapseRenderDaemon"
+          echo "INSTALL_DIR=$install_dir" >> "$GITHUB_ENV"
+          if [ ! -f "$install_dir/trd.exe" ]; then
+            echo "::error::the silent install did not create $install_dir/trd.exe"
+            exit 1
+          fi
+
+      - name: Wait for the task and for trd to answer
+        run: |
+          set -euo pipefail
+          SECONDS=0
+          until MSYS_NO_PATHCONV=1 schtasks /Query /TN TimelapseRenderDaemon >/dev/null 2>&1; do
+            if [ "$SECONDS" -ge 60 ]; then
+              echo "::error::the scheduled task TimelapseRenderDaemon is missing 60 s after the install"
+              exit 1
+            fi
+            sleep 1
+          done
+          bash v3/trd/scripts/wait-for-trd.sh --trd "$INSTALL_DIR/trd.exe" --timeout 60
+
+      - name: Uninstall silently and check the removal
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -z "${INSTALL_DIR:-}" ]; then
+            echo "the install step did not finish, so there is nothing to uninstall"
+            exit 0
+          fi
+          if [ -f "$INSTALL_DIR/uninstall.exe" ]; then
+            MSYS_NO_PATHCONV=1 "$(cygpath -w "$INSTALL_DIR/uninstall.exe")" /S
+          else
+            echo "::error::no uninstall.exe in $INSTALL_DIR"
+            exit 1
+          fi
+          # The NSIS uninstaller copies itself out and returns at once, so the removal is awaited.
+          SECONDS=0
+          while [ -e "$INSTALL_DIR" ] || MSYS_NO_PATHCONV=1 schtasks /Query /TN TimelapseRenderDaemon >/dev/null 2>&1; do
+            if [ "$SECONDS" -ge 60 ]; then
+              echo "::error::the uninstall left the install directory or the task behind after 60 s"
+              exit 1
+            fi
+            sleep 1
+          done
+
+  trd-live:
+    name: Live tests (${{ matrix.runner }})
+    needs: [version, trd-packages]
+    if: ${{ !cancelled() && needs.version.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.trd-packages.result) }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, ubuntu-24.04, windows-2022]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: v3/trd
+
+      - name: Install the pinned Rust toolchain
+        working-directory: v3/trd
+        run: rustup show
+
+      - name: Enable lingering and wait for the user manager
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo loginctl enable-linger "$USER"
+          XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export XDG_RUNTIME_DIR
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          state=""
+          SECONDS=0
+          while [ -z "$state" ] && [ "$SECONDS" -lt 60 ]; do
+            state="$(systemctl --user is-system-running 2>/dev/null || true)"
+            if [ -z "$state" ]; then
+              sleep 1
+            fi
+          done
+          if [ -z "$state" ]; then
+            echo "::error::the systemd user manager did not answer within 60 s"
+            exit 1
+          fi
+
+      - name: Service tests (TRD-21)
+        working-directory: v3/trd
+        run: CI=true TRD_SERVICE_TEST=1 cargo test -p trd --test service_live --locked -- --ignored --test-threads=1
+
+      - name: mDNS tests (TRD-19)
+        if: runner.os == 'Linux'
+        working-directory: v3/trd
+        run: CI=true TRD_MDNS_TEST=1 cargo test -p trd --test mdns_live --locked -- --ignored

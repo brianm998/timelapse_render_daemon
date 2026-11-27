@@ -2,8 +2,9 @@
 # Copyright (C) 2026 Timelapse Render Daemon contributors
 #
 # The release orchestrator (spec 1 §9.5, TRD-27). A v3.* tag push and a manual dispatch build every
-# trd package from the ffmpeg, exiftool and trd workflows. Only a tag push publishes, as a draft
-# GitHub Release; a dispatch never does. The system tests (§9.7, TRD-29) are added later.
+# trd package from the ffmpeg, exiftool and trd workflows. Then the system tests (§9.7, TRD-29) test
+# those packages, and only a tag push publishes, as a draft GitHub Release, once they pass; a
+# dispatch never does.
 
 name: v3 release
 
@@ -61,9 +62,18 @@ jobs:
       is_release: ${{ needs.version.outputs.is_release == 'true' }}
     secrets: inherit
 
+  system-tests:
+    name: System tests
+    needs: [version, trd]
+    uses: ./.github/workflows/v3-system-tests.yml
+    with:
+      build: false
+      version: ${{ needs.version.outputs.version }}
+    secrets: inherit
+
   publish:
     name: Publish the draft release
-    needs: [version, trd]
+    needs: [version, trd, system-tests]
     if: ${{ success() && github.event_name == 'push' && needs.version.outputs.is_release == 'true' }}
     runs-on: ubuntu-24.04
     steps:
