@@ -57,8 +57,9 @@ protobuf {
     generateProtoTasks {
         all().forEach { task ->
             task.builtins {
-                id("java") { option("lite") }
-                id("kotlin") { option("lite") }
+                // "java" is a default builtin; configure it rather than adding it again.
+                maybeCreate("java").option("lite")
+                maybeCreate("kotlin").option("lite")
             }
             task.plugins {
                 id("grpc") { option("lite") }
