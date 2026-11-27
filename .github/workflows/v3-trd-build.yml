@@ -1,0 +1,311 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+#
+# Builds every trd package (spec 1 §9.4, TRD-27): the macOS universal installer, the Linux .deb and
+# tarball for x64 and arm64, and the Windows installer and zip. Each job takes the ffmpeg and
+# exiftool bundles that v3-release.yml (or v3-system-tests.yml) built earlier in the same run. It is
+# only called with `uses:`; the caller passes the version and whether the run is a release.
+
+name: v3 trd packages
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'trd version without a leading v, as in v3/VERSION (e.g. 3.0.0 or 3.0.0-beta.1)'
+        type: string
+        required: true
+      is_release:
+        description: 'true for a v3.* tag push: the macOS build must then be signed'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ─── macOS: one universal installer, both Apple targets built on the arm64 runner ───
+  macos-universal:
+    name: macOS universal (macos-15)
+    runs-on: macos-15
+    env:
+      VERSION: ${{ inputs.version }}
+      IS_RELEASE: ${{ inputs.is_release }}
+    steps:
+      # The first signing step. A release must be signed: Full Disk Access would not persist across
+      # updates of an unsigned app, so the job fails here, before anything is built.
+      - name: Check the signing secrets
+        id: signing
+        env:
+          P12: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+        run: |
+          if [ -n "$P12" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          elif [ "$IS_RELEASE" = true ]; then
+            echo "::error::macOS release builds must be signed (Full Disk Access would not persist across updates)"
+            exit 1
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import the Developer ID identities into a temporary keychain
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          P12: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "$API_KEY_P8" ] || [ -z "$API_KEY_ID" ] || [ -z "$API_ISSUER_ID" ]; then
+            echo "::error::a signed macOS build needs APPLE_API_KEY_P8_BASE64, APPLE_API_KEY_ID and APPLE_API_ISSUER_ID"
+            exit 1
+          fi
+          if [ -z "$TEAM_ID" ]; then
+            echo "::error::a signed macOS build needs APPLE_TEAM_ID"
+            exit 1
+          fi
+
+          keychain="$RUNNER_TEMP/trd-signing.keychain-db"
+          p12="$RUNNER_TEMP/developer-id.p12"
+          key="$RUNNER_TEMP/AuthKey_$API_KEY_ID.p8"
+          printf '%s' "$P12" | base64 --decode > "$p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security import "$p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productsign
+          rm -f "$p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$keychain" >/dev/null
+          search=()
+          while IFS= read -r kc; do
+            search+=("$kc")
+          done < <(security list-keychains -d user | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
+          security list-keychains -d user -s "$keychain" "${search[@]}"
+
+          identities="$(security find-identity -v "$keychain")"
+          sign_app="$(printf '%s\n' "$identities" \
+            | sed -n "s/.*\"\(Developer ID Application: .* (${TEAM_ID})\)\".*/\1/p" | head -n 1)"
+          sign_pkg="$(printf '%s\n' "$identities" \
+            | sed -n "s/.*\"\(Developer ID Installer: .* (${TEAM_ID})\)\".*/\1/p" | head -n 1)"
+          if [ -z "$sign_app" ]; then
+            echo "::error::the certificate holds no Developer ID Application identity for team $TEAM_ID"
+            exit 1
+          fi
+          if [ -z "$sign_pkg" ]; then
+            echo "::error::the certificate holds no Developer ID Installer identity for team $TEAM_ID"
+            exit 1
+          fi
+
+          printf '%s' "$API_KEY_P8" | base64 --decode > "$key"
+          chmod 600 "$key"
+          {
+            echo "SIGN_KEYCHAIN=$keychain"
+            echo "SIGN_APP=$sign_app"
+            echo "SIGN_PKG=$sign_pkg"
+            echo "APPLE_API_KEY_PATH=$key"
+            echo "APPLE_API_KEY_ID=$API_KEY_ID"
+            echo "APPLE_API_ISSUER_ID=$API_ISSUER_ID"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v5
+
+      - name: Download the ffmpeg bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: v3-ffmpeg-macos-universal
+          path: v3/ffmpeg/dist/macos-universal
+
+      - name: Download the exiftool bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: v3-exiftool-unix
+          path: v3/exiftool/dist/unix
+
+      - name: Restore the executable bits
+        run: chmod +x v3/ffmpeg/dist/macos-universal/ffmpeg v3/ffmpeg/dist/macos-universal/ffprobe v3/exiftool/dist/unix/exiftool
+
+      - name: Install the pinned Rust toolchain and the Apple targets
+        working-directory: v3/trd
+        run: |
+          rustup show
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: v3/trd
+
+      - name: Build trd for both Apple targets and join them
+        working-directory: v3/trd
+        run: |
+          cargo build --release --locked -p trd --bin trd --target aarch64-apple-darwin
+          cargo build --release --locked -p trd --bin trd --target x86_64-apple-darwin
+          /usr/bin/lipo -create -output "$RUNNER_TEMP/trd" \
+            target/aarch64-apple-darwin/release/trd target/x86_64-apple-darwin/release/trd
+
+      - name: Build the installer
+        env:
+          SIGNED: ${{ steps.signing.outputs.signed }}
+        run: |
+          set -euo pipefail
+          if [ "$SIGNED" = true ]; then
+            bash v3/trd/packaging/macos/build-pkg.sh --version "$VERSION" \
+              --trd-bin "$RUNNER_TEMP/trd" \
+              --ffmpeg-dir v3/ffmpeg/dist/macos-universal --exiftool-dir v3/exiftool/dist/unix \
+              --out v3/trd/dist/trd --require-universal \
+              --sign-app "$SIGN_APP" --sign-installer "$SIGN_PKG" --notarize
+          else
+            bash v3/trd/packaging/macos/build-pkg.sh --version "$VERSION" \
+              --trd-bin "$RUNNER_TEMP/trd" \
+              --ffmpeg-dir v3/ffmpeg/dist/macos-universal --exiftool-dir v3/exiftool/dist/unix \
+              --out v3/trd/dist/trd --require-universal
+          fi
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-asset-trd-macos-universal
+          path: v3/trd/dist/trd/trd-${{ inputs.version }}-macos-universal.pkg
+          if-no-files-found: error
+
+      - name: Delete the keychain and the API key
+        if: always()
+        run: |
+          if [ -n "${SIGN_KEYCHAIN:-}" ]; then security delete-keychain "$SIGN_KEYCHAIN" || true; fi
+          if [ -n "${APPLE_API_KEY_PATH:-}" ]; then rm -f "$APPLE_API_KEY_PATH"; fi
+          rm -f "$RUNNER_TEMP/developer-id.p12"
+
+  # ─── Linux: x64 and arm64 .deb and tarball, each checked in a clean Ubuntu 24.04 container ───
+  linux:
+    name: Linux ${{ matrix.target }} (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-24.04
+            arch: amd64
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download the ffmpeg bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: v3-ffmpeg-${{ matrix.target }}
+          path: v3/ffmpeg/dist/${{ matrix.target }}
+
+      - name: Download the exiftool bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: v3-exiftool-unix
+          path: v3/exiftool/dist/unix
+
+      - name: Restore the executable bits
+        run: chmod +x v3/ffmpeg/dist/${{ matrix.target }}/ffmpeg v3/ffmpeg/dist/${{ matrix.target }}/ffprobe v3/exiftool/dist/unix/exiftool
+
+      - name: Install the pinned Rust toolchain
+        working-directory: v3/trd
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: v3/trd
+
+      - name: Build trd
+        working-directory: v3/trd
+        run: cargo build --release --locked -p trd --bin trd
+
+      - name: Build the .deb and the tarball
+        run: |
+          bash v3/trd/packaging/linux/build-deb.sh --version "$VERSION" --arch ${{ matrix.arch }} \
+            --trd-bin v3/trd/target/release/trd --ffmpeg-dir v3/ffmpeg/dist/${{ matrix.target }} \
+            --exiftool-dir v3/exiftool/dist/unix --out v3/trd/dist/${{ matrix.target }}
+
+      - name: Check the .deb against overview §10.2
+        run: bash v3/trd/packaging/linux/build-deb.sh --self-check v3/trd/dist/${{ matrix.target }}/trd_${{ inputs.version }}_${{ matrix.arch }}.deb
+
+      - name: Install the .deb in a clean ubuntu:24.04 container
+        run: bash v3/trd/packaging/linux/test-deb-in-container.sh v3/trd/dist/${{ matrix.target }}/trd_${{ inputs.version }}_${{ matrix.arch }}.deb
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-asset-trd-${{ matrix.target }}
+          path: |
+            v3/trd/dist/${{ matrix.target }}/trd_${{ inputs.version }}_${{ matrix.arch }}.deb
+            v3/trd/dist/${{ matrix.target }}/trd-${{ inputs.version }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  # ─── Windows: NSIS installer and zip, checked by a silent install and uninstall ───
+  windows-x64:
+    name: Windows windows-x64
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download the ffmpeg bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: v3-ffmpeg-windows-x64
+          path: v3/ffmpeg/dist/windows-x64
+
+      - name: Download the exiftool bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: v3-exiftool-windows
+          path: v3/exiftool/dist/windows
+
+      - name: Install the pinned Rust toolchain
+        working-directory: v3/trd
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: v3/trd
+
+      - name: Build trd and trdw
+        working-directory: v3/trd
+        run: cargo build --release --locked -p trd --bins
+
+      - name: Put NSIS on PATH
+        run: |
+          if ! command -v makensis >/dev/null 2>&1; then
+            choco install nsis --yes --no-progress
+            # Takes effect from the next step.
+            echo "/c/Program Files (x86)/NSIS" >> "$GITHUB_PATH"
+          fi
+
+      - name: Build the installer and the zip
+        run: |
+          export PATH="/c/Program Files (x86)/NSIS:$PATH"
+          bash v3/trd/packaging/windows/build-installer.sh --version "$VERSION" \
+            --trd-dir v3/trd/target/release --ffmpeg-dir v3/ffmpeg/dist/windows-x64 \
+            --exiftool-dir v3/exiftool/dist/windows --out v3/trd/dist/windows-x64
+
+      - name: Check the zip's members
+        run: bash v3/trd/packaging/windows/build-installer.sh --self-check "v3/trd/dist/windows-x64/trd-${VERSION}-windows-x64.zip"
+
+      - name: Install silently, run trd.exe version, uninstall
+        env:
+          CI: true
+        run: bash v3/trd/packaging/windows/test-installer.sh "v3/trd/dist/windows-x64/trd-${VERSION}-windows-x64-setup.exe"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-asset-trd-windows-x64
+          path: |
+            v3/trd/dist/windows-x64/trd-${{ inputs.version }}-windows-x64-setup.exe
+            v3/trd/dist/windows-x64/trd-${{ inputs.version }}-windows-x64.zip
+          if-no-files-found: error
