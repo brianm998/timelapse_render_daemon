@@ -54,10 +54,12 @@ jobs:
         id: version
         env:
           INPUT_VERSION: ${{ inputs.version }}
-          # A called run (workflow_call) takes its event from the caller, which is a tag push for a
-          # release, so only the inputs of this workflow's own call or dispatch can say "false".
-          # On push and schedule the inputs are empty and the packages are always built.
-          BUILD: ${{ (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && inputs.build == false && 'false' || 'true' }}
+          # Do not test github.event_name here: inside a called workflow it is the caller's event (a tag
+          # push for a release), so it cannot tell a release call from a push. Test the value of
+          # inputs.build instead. toJSON(null) is 'null', so push and schedule (no inputs) build, and
+          # only an explicit build: false from a call or dispatch skips. inputs.build == false is not
+          # used because null == false is true in GitHub expressions.
+          BUILD: ${{ toJSON(inputs.build) == 'false' && 'false' || 'true' }}
         run: |
           set -euo pipefail
           if [ -n "$INPUT_VERSION" ]; then

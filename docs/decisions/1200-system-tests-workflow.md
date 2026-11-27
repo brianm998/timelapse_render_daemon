@@ -2,11 +2,16 @@
 
 Decisions taken while adding the daemon's system tests of TRD-29 that spec 1 §9.5 and §9.7 leave open.
 
-- **The build gate is an output of the version job, not an `if:` on the event.** `github.event_name`
-  inside a called workflow is the caller's event, so a tag push that calls with `build: false` would
-  look like a push and build again. The version job computes `build` from the event and `inputs.build`
-  of this workflow's own call or dispatch, and every build job tests `needs.version.outputs.build == 'true'`.
-  Push and schedule always build.
+- **The build gate is an output of the version job, computed from `inputs.build` alone.** The version
+  job sets `build` to `'false'` only when `toJSON(inputs.build) == 'false'`, otherwise `'true'`. Every
+  build job tests `needs.version.outputs.build == 'true'`.
+- **`github.event_name` is not used for the gate.** Inside a called workflow it is the caller's event,
+  so a v3.* tag push that calls with `build: false` shows up as `push`. An event test cannot tell that
+  release call from a push, so the release would rebuild the packages and upload duplicate
+  `release-asset-*` artifacts. Push and schedule have no inputs, so `toJSON(inputs.build)` is `'null'`
+  there and they build. A call or dispatch with `build: false` skips the build, whatever the caller's event.
+- **`inputs.build == false` is not used.** In GitHub expressions `null == false` is true, so it would
+  also match push and schedule runs, where `inputs` is empty.
 - **`inputs.build != false` is not used.** On push and schedule `inputs` is empty, and the comparison
   is false there, so the build jobs would be skipped on every push.
 - **A dispatch with `build: false` is not guarded.** It has no caller artifacts, so the test jobs fail at
