@@ -522,7 +522,14 @@ fn check_sequence_b(tools: &Tools, snapshot: &pb::Snapshot) {
             "the size of {name}"
         );
         if key == "ProResUHQ_ori_30" {
-            assert_eq!(dar, "3:2", "the original-size render keeps DAR 3:2");
+            // ProRes stores a rounded sample aspect ratio, so ffprobe may print 254:169 for 3:2.
+            let (num, den) = dar.split_once(':').expect("DAR is num:den");
+            let ratio = num.parse::<f64>().expect("DAR numerator")
+                / den.parse::<f64>().expect("DAR denominator");
+            assert!(
+                (ratio - 1.5).abs() < 0.01,
+                "the original-size render keeps DAR 3:2, got {dar}"
+            );
         }
         assert_eq!(
             xmp_values(tools, file),
