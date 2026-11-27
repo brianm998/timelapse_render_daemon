@@ -275,7 +275,10 @@ def frames_command(ffmpeg, directory, frames, pattern):
         "-f",
         "lavfi",
         "-i",
-        "testsrc2=size=%dx%d:rate=30" % (FRAME_WIDTH, FRAME_HEIGHT),
+        # testsrc2 rounds an odd height down in yuv420p, so it renders one line taller in
+        # rgb24 and crops back to the exact FRAME_HEIGHT.
+        "testsrc2=size=%dx%d:rate=30,format=rgb24,crop=%d:%d:0:0"
+        % (FRAME_WIDTH, FRAME_HEIGHT + 1, FRAME_WIDTH, FRAME_HEIGHT),
         "-frames:v",
         str(frames),
         "-start_number",

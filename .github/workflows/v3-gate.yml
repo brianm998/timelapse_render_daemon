@@ -107,6 +107,57 @@ jobs:
         if: steps.present.outputs.exists == 'true'
         run: bash v3/trd/scripts/coverage.sh
 
+  # The media job (spec 1 §9.6, TRD-GATE): the real ffmpeg and exiftool bundles run the end-to-end
+  # daemon test and the XMP test. The two reusable workflows build the bundles on this run.
+  ffmpeg:
+    name: ffmpeg
+    uses: ./.github/workflows/v3-ffmpeg.yml
+    with:
+      platforms: "macos linux"
+
+  exiftool:
+    name: exiftool
+    uses: ./.github/workflows/v3-exiftool.yml
+
+  trd-media:
+    name: trd media (${{ matrix.os }})
+    needs: [ffmpeg, exiftool]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            ffmpeg: v3-ffmpeg-linux-x64
+          - os: macos-15
+            ffmpeg: v3-ffmpeg-macos-universal
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download the ffmpeg bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ matrix.ffmpeg }}
+          path: ${{ runner.temp }}/ffmpeg
+      - name: Download the exiftool bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: v3-exiftool-unix
+          path: ${{ runner.temp }}/exiftool
+      - name: Restore the executable bits
+        run: chmod +x "$RUNNER_TEMP/ffmpeg/ffmpeg" "$RUNNER_TEMP/ffmpeg/ffprobe" "$RUNNER_TEMP/exiftool/exiftool"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: v3/trd
+      - name: Pinned Rust toolchain
+        working-directory: v3/trd
+        run: rustup show
+      - name: End-to-end and real-tool tests
+        env:
+          TRD_FFMPEG_DIR: ${{ runner.temp }}/ffmpeg
+          TRD_EXIFTOOL_DIR: ${{ runner.temp }}/exiftool
+          TRD_E2E: "1"
+        run: bash v3/trd/scripts/ci-media.sh
+
   kotlin:
     name: kotlin desktop (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

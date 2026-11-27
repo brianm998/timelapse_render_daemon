@@ -233,6 +233,91 @@ else
   fail "suite.sh trd-e2e runs ci-media.sh with TRD_E2E=1 when the component exists" "rc=$rc $out"
 fi
 
+# The real ci-media.sh provisioning (TRD-GATE, d61dc19 and the owner's rule): a missing tool is an
+# error in CI and a SKIPPED notice elsewhere. The script runs from a copy in a temporary tree whose
+# ffmpeg builder and exiftool fetcher are stubs; its PATH holds only a cargo stub, bash and dirname,
+# so no real ffmpeg or exiftool can be found (TRD_MACPORTS_BIN points at an empty directory).
+new_tree; mt="$T"
+mkdir -p "$mt/trd/scripts" "$mt/ffmpeg" "$mt/exiftool"
+cp "$real_v3/trd/scripts/ci-media.sh" "$mt/trd/scripts/ci-media.sh"
+cat > "$mt/ffmpeg/build.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "build.sh $*" >> "$STUB_CALLS"
+if [ "${1:-}" = --print-native ]; then echo linux-x64; exit 0; fi
+echo "build.sh: cannot build here" >&2
+exit 1
+EOF
+cat > "$mt/exiftool/fetch.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "fetch.sh $*" >> "$STUB_CALLS"
+echo "fetch.sh: no network" >&2
+exit 1
+EOF
+chmod +x "$mt/ffmpeg/build.sh" "$mt/exiftool/fetch.sh"
+
+ci_bin_plain="$work/ci-bin-none"   # no media tools: cargo, bash and dirname only
+ci_bin_ffmpeg="$work/ci-bin-ffmpeg" # ffmpeg and ffprobe present, exiftool missing
+ci_bin_all="$work/ci-bin-all"       # all three tools present
+for d in "$ci_bin_plain" "$ci_bin_ffmpeg" "$ci_bin_all"; do
+  mkdir -p "$d"
+  ln -s "$(command -v bash)" "$d/bash"
+  ln -s "$(command -v dirname)" "$d/dirname"
+  cat > "$d/cargo" <<'EOF'
+#!/usr/bin/env bash
+echo "cargo $* TRD_E2E=${TRD_E2E:-unset} TRD_FFMPEG_DIR=${TRD_FFMPEG_DIR:-unset} TRD_EXIFTOOL_DIR=${TRD_EXIFTOOL_DIR:-unset}" >> "$STUB_CALLS"
+echo "test stub_cargo_case ... ok"
+EOF
+  chmod +x "$d/cargo"
+done
+for tool in ffmpeg ffprobe; do
+  for d in "$ci_bin_ffmpeg" "$ci_bin_all"; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$d/$tool"; chmod +x "$d/$tool"
+  done
+done
+printf '#!/usr/bin/env bash\nexit 0\n' > "$ci_bin_all/exiftool"; chmod +x "$ci_bin_all/exiftool"
+
+# ci_media <bin-dir> [VAR=value...]: runs the copied ci-media.sh with the test's PATH and no
+# inherited CI or tool variables. Output goes to stdout; the cargo calls go to $calls.
+ci_media() {
+  local bin="$1"
+  shift
+  : > "$calls"
+  env -u GITHUB_ACTIONS -u TRD_E2E -u TRD_FFMPEG_DIR -u TRD_EXIFTOOL_DIR "$@" \
+    PATH="$bin" STUB_CALLS="$calls" TRD_MACPORTS_BIN="$work/no-macports" \
+    bash "$mt/trd/scripts/ci-media.sh" 2>&1
+}
+
+out="$(ci_media "$ci_bin_plain" GITHUB_ACTIONS=1)"; rc=$?
+if [ "$rc" -eq 1 ] && contains "$out" "could not be built" && ! contains "$(cat "$calls")" "cargo"; then
+  pass "ci-media.sh in CI fails when no ffmpeg can be found or built"
+else
+  fail "ci-media.sh in CI fails when no ffmpeg can be found or built" "rc=$rc $out $(cat "$calls")"
+fi
+
+out="$(ci_media "$ci_bin_ffmpeg" GITHUB_ACTIONS=1)"; rc=$?
+if [ "$rc" -eq 1 ] && contains "$out" "could not be fetched" && ! contains "$(cat "$calls")" "cargo"; then
+  pass "ci-media.sh in CI fails when exiftool cannot be fetched"
+else
+  fail "ci-media.sh in CI fails when exiftool cannot be fetched" "rc=$rc $out $(cat "$calls")"
+fi
+
+out="$(ci_media "$ci_bin_plain")"; rc=$?
+if [ "$rc" -eq 0 ] && contains "$out" "SKIPPED the real-tool path" \
+   && contains "$out" "running the e2e and XMP tests without TRD_E2E" \
+   && contains "$(cat "$calls")" "TRD_E2E=unset" && ! contains "$(cat "$calls")" "TRD_E2E=1"; then
+  pass "ci-media.sh outside CI skips the real-tool path when no tool resolves"
+else
+  fail "ci-media.sh outside CI skips the real-tool path when no tool resolves" "rc=$rc $out $(cat "$calls")"
+fi
+
+out="$(ci_media "$ci_bin_all")"; rc=$?
+if [ "$rc" -eq 0 ] && ! contains "$out" "SKIPPED" \
+   && contains "$(cat "$calls")" "TRD_E2E=1 TRD_FFMPEG_DIR=$ci_bin_all TRD_EXIFTOOL_DIR=$ci_bin_all"; then
+  pass "ci-media.sh runs the real-tool path with TRD_E2E=1 when the tools resolve"
+else
+  fail "ci-media.sh runs the real-tool path with TRD_E2E=1 when the tools resolve" "rc=$rc $out $(cat "$calls")"
+fi
+
 case "$(uname -s):$(uname -m)" in
   Darwin:x86_64) native=macos-x64 ;;
   Darwin:arm64) native=macos-arm64 ;;
