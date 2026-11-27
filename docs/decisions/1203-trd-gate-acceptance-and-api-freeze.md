@@ -16,8 +16,14 @@ Decisions taken while closing spec 1 (TRD-GATE) that the spec leaves open.
   here: `cargo llvm-cov` runs the tests, and the tests run on the pipeline. The gate's `trd-coverage`
   job is the check. If it fails, the missing lines need tests before the floors can stay.
 - **The e2e test runs only under `TRD_E2E=1`.** Without the variable each test returns at once. With it,
-  a missing ffmpeg, ffprobe or exiftool fails the test. `ci-media.sh` sets the variable itself, so
-  `trd-e2e` and the gate's `trd-media` job always run the real tools.
+  a missing ffmpeg, ffprobe or exiftool fails the test. `ci-media.sh` sets the variable itself when
+  the tools resolve: `TRD_FFMPEG_DIR`/`TRD_EXIFTOOL_DIR`, then PATH, then MacPorts' `/opt/local/bin`,
+  then a native ffmpeg built in `v3/ffmpeg` and an exiftool fetched into `v3/exiftool/dist/unix`.
+- **Outside CI, a machine without the tools skips the real-tool path (owner's decision).** A test node
+  such as marmot has no ffmpeg and no meson to build one. When `GITHUB_ACTIONS` is unset and ffmpeg
+  or exiftool neither resolves nor can be built or fetched, `ci-media.sh` prints a `SKIPPED` notice
+  and runs the e2e and XMP tests without `TRD_E2E`, so they return early and still report. In CI the
+  same situation is an error, so the gate's `trd-media` job always runs the real tools.
 - **`trd-media` runs on Linux and macOS with the bundles of this run.** It needs the `ffmpeg` and
   `exiftool` reusable jobs, downloads `v3-ffmpeg-linux-x64` or `v3-ffmpeg-macos-universal` and
   `v3-exiftool-unix`, restores their executable bits, and sets `TRD_FFMPEG_DIR`, `TRD_EXIFTOOL_DIR`
