@@ -638,30 +638,6 @@ async fn e2e_daemon_with_real_tools() {
     let daemon = Daemon::start(&tree);
     let mut client = daemon.loopback().await;
 
-    // B renders all three variants, C renders all 24 frames, F renders from its backup and G
-    // renders, and G's export folder is deleted after its renders. D and E never show.
-    settle(
-        &mut client,
-        "B, C, F and G settle",
-        POLL,
-        &HIDDEN_BEFORE_UPDATE,
-        |s| {
-            let ready = VARIANTS.iter().all(|key| {
-                rendered(s, SEQ_B, key).is_some()
-                    && rendered(s, SEQ_C, key).is_some()
-                    && rendered(s, SEQ_F, key).is_some()
-                    && rendered(s, SEQ_G, key).is_some()
-            }) && !tree.join(SEQ_G).exists();
-            ready.then_some(())
-        },
-    )
-    .await;
-    let snapshot = snapshot_of(&mut client).await;
-    check_sequence_b(&tools, &snapshot);
-    check_sequence_f(&snapshot);
-    check_sequence_c(&mut client, &snapshot).await;
-    check_history(&mut client).await;
-
     // After the drip ends, A renders. The first of its renders that runs is suspended, then
     // resumed, and its status follows each control.
     let drip_status = drip.finish().await;
@@ -767,6 +743,30 @@ async fn e2e_daemon_with_real_tools() {
         },
     )
     .await;
+
+    // B renders all three variants, C renders all 24 frames, F renders from its backup and G
+    // renders, and G's export folder is deleted after its renders. D and E never show.
+    settle(
+        &mut client,
+        "B, C, F and G settle",
+        POLL,
+        &HIDDEN_BEFORE_UPDATE,
+        |s| {
+            let ready = VARIANTS.iter().all(|key| {
+                rendered(s, SEQ_B, key).is_some()
+                    && rendered(s, SEQ_C, key).is_some()
+                    && rendered(s, SEQ_F, key).is_some()
+                    && rendered(s, SEQ_G, key).is_some()
+            }) && !tree.join(SEQ_G).exists();
+            ready.then_some(())
+        },
+    )
+    .await;
+    let snapshot = snapshot_of(&mut client).await;
+    check_sequence_b(&tools, &snapshot);
+    check_sequence_f(&snapshot);
+    check_sequence_c(&mut client, &snapshot).await;
+    check_history(&mut client).await;
 
     // UpdateConfig adds a variant. Renders of it start at once, so a render of it is suspended while
     // it runs and the daemon is killed. A new daemon with the same flags and data folder adopts that
