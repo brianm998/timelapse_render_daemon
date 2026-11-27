@@ -46,13 +46,18 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
     steps:
       - uses: actions/checkout@v5
 
-      - name: Read the version under test
+      - name: Read the version under test and whether to build it
         id: version
         env:
           INPUT_VERSION: ${{ inputs.version }}
+          # A called run (workflow_call) takes its event from the caller, which is a tag push for a
+          # release, so only the inputs of this workflow's own call or dispatch can say "false".
+          # On push and schedule the inputs are empty and the packages are always built.
+          BUILD: ${{ (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && inputs.build == false && 'false' || 'true' }}
         run: |
           set -euo pipefail
           if [ -n "$INPUT_VERSION" ]; then
@@ -65,22 +70,26 @@ jobs:
             exit 1
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "version $v, build $BUILD"
 
-  # ─── Build jobs: skipped only when a caller passes build: false (or a dispatch asks for it) ───
+  # ─── Build jobs: skipped only when version.outputs.build is 'false' (a call or dispatch with build: false) ───
   ffmpeg:
     name: ffmpeg
-    if: ${{ !contains(fromJSON('["workflow_call","workflow_dispatch"]'), github.event_name) || inputs.build == true }}
+    needs: version
+    if: ${{ needs.version.outputs.build == 'true' }}
     uses: ./.github/workflows/v3-ffmpeg.yml
 
   exiftool:
     name: exiftool
-    if: ${{ !contains(fromJSON('["workflow_call","workflow_dispatch"]'), github.event_name) || inputs.build == true }}
+    needs: version
+    if: ${{ needs.version.outputs.build == 'true' }}
     uses: ./.github/workflows/v3-exiftool.yml
 
   trd-packages:
     name: trd packages
     needs: [version, ffmpeg, exiftool]
-    if: ${{ !contains(fromJSON('["workflow_call","workflow_dispatch"]'), github.event_name) || inputs.build == true }}
+    if: ${{ needs.version.outputs.build == 'true' }}
     uses: ./.github/workflows/v3-trd-build.yml
     with:
       version: ${{ needs.version.outputs.version }}
@@ -222,19 +231,22 @@ jobs:
           XDG_RUNTIME_DIR="/run/user/$(id -u)"
           export XDG_RUNTIME_DIR
           echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
-          # is-system-running exits non-zero when degraded, so the wait is for any output, not the status.
+          # is-system-running exits non-zero when degraded, so the status is not checked, only the
+          # output. Offline, initializing and starting are not settled yet, so the wait goes on past them.
           state=""
           SECONDS=0
-          while [ -z "$state" ] && [ "$SECONDS" -lt 60 ]; do
+          while :; do
             state="$(systemctl --user is-system-running 2>/dev/null || true)"
-            if [ -z "$state" ]; then
-              sleep 1
+            case "$state" in
+              ""|offline|initializing|starting) ;;
+              *) break ;;
+            esac
+            if [ "$SECONDS" -ge 60 ]; then
+              echo "::error::the systemd user manager was still '${state:-silent}' after 60 s"
+              exit 1
             fi
+            sleep 1
           done
-          if [ -z "$state" ]; then
-            echo "::error::the systemd user manager did not answer within 60 s"
-            exit 1
-          fi
           echo "systemd user manager: $state"
 
       - name: Check the unit is enabled for user sessions
@@ -362,18 +374,23 @@ jobs:
           XDG_RUNTIME_DIR="/run/user/$(id -u)"
           export XDG_RUNTIME_DIR
           echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          # is-system-running exits non-zero when degraded, so the status is not checked, only the
+          # output. Offline, initializing and starting are not settled yet, so the wait goes on past them.
           state=""
           SECONDS=0
-          while [ -z "$state" ] && [ "$SECONDS" -lt 60 ]; do
+          while :; do
             state="$(systemctl --user is-system-running 2>/dev/null || true)"
-            if [ -z "$state" ]; then
-              sleep 1
+            case "$state" in
+              ""|offline|initializing|starting) ;;
+              *) break ;;
+            esac
+            if [ "$SECONDS" -ge 60 ]; then
+              echo "::error::the systemd user manager was still '${state:-silent}' after 60 s"
+              exit 1
             fi
+            sleep 1
           done
-          if [ -z "$state" ]; then
-            echo "::error::the systemd user manager did not answer within 60 s"
-            exit 1
-          fi
+          echo "systemd user manager: $state"
 
       - name: Service tests (TRD-21)
         working-directory: v3/trd
