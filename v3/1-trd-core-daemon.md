@@ -1686,8 +1686,9 @@ this when the task body really is the plan. Run `mason help filing` for details.
     `FNumber=1.8`, `ExposureTime=1/8`, `FocalLength=14.0 mm`, `DateTimeOriginal` one second apart);
   - sequence A `2026_01_01-sandbox-a`, 60 raw frames, exported gradually by `drip`;
   - sequence B `2026_01_01-sandbox-b`, 30 frames, fully exported at init (renders at once);
-  - sequence C `2026_01_01-sandbox-c`, 24 frames, frame 12 of the export truncated to 100 bytes
-    (fails with "bad source frame");
+  - sequence C `2026_01_01-sandbox-c`, 24 frames, frame 12 of the export truncated to 100 bytes;
+    real ffmpeg renders all 24 frames anyway, with no failure card, and the render's log tail
+    records the decode error (the accepted real behaviour; TRD-GATE);
   - sequence D `2026_01_01-sandbox-d`, 20 frames, every output already in `master/` (never shown);
   - sequence E `2026_01_01-sandbox-e-aligned`, ignored by the regex `-aligned$`;
   - sequence F `2026_01_01-sandbox-f`: no raw directory, only `backup/2026_01_01-sandbox-f.json`
@@ -3292,7 +3293,9 @@ overview §15.3 (coverage floors).
      the sizes 1080×720, 720×480 and 320×213, the original-size one with DAR 3:2; exiftool reads
      the XMP `Make`, `Model` and `ISO` from each; `recently_rendered` lists them newest first with
      thumbnails;
-   - sequence C fails with `FAILURE_SOURCE_FRAME_UNREADABLE` and appears in `failures`;
+   - sequence C renders all 24 frames, shows no failure card, and the log tail of its render
+     records the decode error (the owner accepted this real behaviour in place of a
+     `FAILURE_SOURCE_FRAME_UNREADABLE` failure);
    - sequence D never appears; E never appears; F renders from its backup count; G is deleted
      after rendering;
    - after drip finishes, sequence A renders; during A's first render, `SuspendRender` then
@@ -3437,4 +3440,4 @@ the mason `trd-test` suite on the owner's Mac and the gate's `trd` job on macOS,
 | M-TRD-6 | Log out and in (or restart the Mac). | `trd` runs again without any prompt; Full Disk Access is still granted. |
 | M-TRD-7 | Start `trd` for the first time on the Mac where the Swift GUI has run. | Recently rendered lists the Swift daemon's renders of the last 30 days. |
 | M-TRD-8 | Run `dns-sd -B _trd._tcp`, then `dns-sd -L <name> _trd._tcp`. | The service appears with the §8.4 TXT records and port 50072. |
-| M-TRD-9 | Run `make -C v3/trd develop`. | The sandbox starts on 50081/50082; sequence B renders within a minute, C fails, A fills as frames drip in and renders when complete; `trd status --address 127.0.0.1:50081 --watch` shows it all with new entries at the top. |
+| M-TRD-9 | Run `make -C v3/trd develop`. | The sandbox starts on 50081/50082; sequence B renders within a minute, C renders all 24 frames with no failure card, A fills as frames drip in and renders when complete; `trd status --address 127.0.0.1:50081 --watch` shows it all with new entries at the top. |

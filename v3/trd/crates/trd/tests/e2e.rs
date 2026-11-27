@@ -541,25 +541,41 @@ fn check_sequence_f(snapshot: &pb::Snapshot) {
     }
 }
 
-/// Sequence C fails with a bad source frame, and has no render.
-fn check_sequence_c(snapshot: &pb::Snapshot) {
-    let failure = snapshot
-        .failures
-        .iter()
-        .find(|failure| failure.sequence_name.contains(SEQ_C))
-        .unwrap_or_else(|| panic!("C has no failure: {snapshot:?}"));
-    assert_eq!(
-        failure.kind,
-        pb::FailureKind::FailureSourceFrameUnreadable as i32,
-        "C fails with FAILURE_SOURCE_FRAME_UNREADABLE"
-    );
+/// Sequence C renders all 24 frames although frame 12 is truncated (the accepted real behaviour,
+/// §12): it shows no failure card, and the log of each of its renders records the decode error.
+async fn check_sequence_c(client: &mut Client, snapshot: &pb::Snapshot) {
     assert!(
         !snapshot
-            .recently_rendered
+            .failures
             .iter()
-            .any(|video| video.sequence_name.contains(SEQ_C)),
-        "C renders nothing"
+            .any(|failure| failure.sequence_name.contains(SEQ_C)),
+        "C shows no failure card: {:?}",
+        snapshot.failures
     );
+    for key in VARIANTS {
+        let video = rendered(snapshot, SEQ_C, key)
+            .unwrap_or_else(|| panic!("C has no {key} render: {snapshot:?}"));
+        assert_eq!(video.frame_count, 24, "C renders all 24 frames");
+        let details = client
+            .get_render_details(pb::GetRenderDetailsRequest {
+                target: Some(pb::get_render_details_request::Target::RenderedVideoId(
+                    video.id.clone(),
+                )),
+            })
+            .await
+            .expect("the render of C has details")
+            .into_inner();
+        assert!(
+            details.log_tail.iter().any(|line| {
+                let line = line.to_ascii_lowercase();
+                ["error", "invalid", "premature", "truncat", "corrupt"]
+                    .iter()
+                    .any(|word| line.contains(word))
+            }),
+            "the log tail of the {key} render of C records the decode error: {:?}",
+            details.log_tail
+        );
+    }
 }
 
 /// The history lists the newest render first, and each B render has a thumbnail.
@@ -615,8 +631,8 @@ async fn e2e_daemon_with_real_tools() {
     let daemon = Daemon::start(&tree);
     let mut client = daemon.loopback().await;
 
-    // B renders all three variants, C fails, F renders from its backup and G renders, and G's
-    // export folder is deleted after its renders. D and E never show.
+    // B renders all three variants, C renders all 24 frames, F renders from its backup and G
+    // renders, and G's export folder is deleted after its renders. D and E never show.
     settle(
         &mut client,
         "B, C, F and G settle",
@@ -625,13 +641,10 @@ async fn e2e_daemon_with_real_tools() {
         |s| {
             let ready = VARIANTS.iter().all(|key| {
                 rendered(s, SEQ_B, key).is_some()
+                    && rendered(s, SEQ_C, key).is_some()
                     && rendered(s, SEQ_F, key).is_some()
                     && rendered(s, SEQ_G, key).is_some()
-            }) && s
-                .failures
-                .iter()
-                .any(|failure| failure.sequence_name.contains(SEQ_C))
-                && !tree.join(SEQ_G).exists();
+            }) && !tree.join(SEQ_G).exists();
             ready.then_some(())
         },
     )
@@ -639,7 +652,7 @@ async fn e2e_daemon_with_real_tools() {
     let snapshot = snapshot_of(&mut client).await;
     check_sequence_b(&tools, &snapshot);
     check_sequence_f(&snapshot);
-    check_sequence_c(&snapshot);
+    check_sequence_c(&mut client, &snapshot).await;
     check_history(&mut client).await;
 
     // After the drip ends, A renders. The first of its renders that runs is suspended, then

@@ -115,7 +115,7 @@ command = "bash v3/scripts/suite.sh trd-check 2>&1"
 parser = "regex"
 pass_regex = "^test (.+) \\.\\.\\. ok$"
 fail_regex = "^test (.+) \\.\\.\\. FAILED$"
-min_tests = 1
+min_tests = 3
 level = "t1"
 uses = { compile = 1 }
 
@@ -124,7 +124,7 @@ command = "bash v3/scripts/suite.sh trd-test 2>&1"
 parser = "regex"
 pass_regex = "^test (.+) \\.\\.\\. ok$"
 fail_regex = "^test (.+) \\.\\.\\. FAILED$"
-min_tests = 1
+min_tests = 500
 level = "t1"
 uses = { test-suite = 1 }
 
@@ -133,7 +133,7 @@ command = "bash v3/scripts/suite.sh trd-e2e 2>&1"
 parser = "regex"
 pass_regex = "^test (.+) \\.\\.\\. ok$"
 fail_regex = "^test (.+) \\.\\.\\. FAILED$"
-min_tests = 1
+min_tests = 14
 level = "t1"
 uses = { test-suite = 1 }
 
@@ -188,8 +188,9 @@ min_tests = 1
 level = "t1"
 uses = { compile = 1 }
 
-# Every suite has min_tests = 1 until TRD-GATE, DSK-13, IOS-09 and AND-06 raise their floors to
-# 90 % of the measured counts.
+# Every suite has min_tests = 1 until DSK-13, IOS-09 and AND-06 raise their floors to 90 % of the
+# measured counts. TRD-GATE raised trd-check (4 measured, 3), trd-test (556, 500) and trd-e2e (16,
+# 14).
 
 [impact]
 "v3/trd/**" = ["trd-check", "trd-test", "trd-e2e"]
