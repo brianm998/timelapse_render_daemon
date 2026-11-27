@@ -197,6 +197,12 @@ mod tests {
     }
 
     #[test]
+    fn task_template_replaces_a_running_instance() {
+        let xml = render_task(USER, Path::new(TRDW), Some(Path::new(CONFIG)));
+        assert!(xml.contains("<MultipleInstancesPolicy>StopExisting</MultipleInstancesPolicy>"));
+    }
+
+    #[test]
     fn decode_rejects_a_missing_mark_and_an_odd_length() {
         assert_eq!(decode_task(b"<Task/>"), None);
         assert_eq!(decode_task(&[0xFFu8, 0xFE, 0x41]), None);
