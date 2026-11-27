@@ -195,10 +195,13 @@ sign_item() {
   fi
 }
 
-# sign_bundle <app> <identity or ->: the nested executables first, then the bundle.
+# sign_bundle <app> <identity or ->: spec 1 §10.1 order. ffmpeg and ffprobe are signed first, then the
+# bundle. trd is not signed on its own: codesign signs the bundle's main executable (CFBundleExecutable
+# = trd) as part of signing the bundle, with the same options and identity. --verify --strict --deep in
+# check_bundle would catch an unsigned trd.
 sign_bundle() {
   local app="$1" identity="$2" exe
-  for exe in trd ffmpeg ffprobe; do
+  for exe in ffmpeg ffprobe; do
     sign_item "$identity" "$app/Contents/MacOS/$exe"
   done
   sign_item "$identity" "$app"
@@ -218,7 +221,7 @@ assemble_bundle() {
   cp -p "$ffmpeg/LICENSE-ffmpeg.txt" "$ffmpeg/BUILDINFO.txt" "$exiftool/LICENSE-exiftool.txt" \
     "$contents/Resources/licenses/"
   cp -p "$icon_dir/trd.icns" "$contents/Resources/trd.icns"
-  sed -e "s|@SHORT_VERSION@|$version|" -e "s|@VERSION@|${version%%-*}|" \
+  sed -e "s|@SHORT_VERSION@|$version|" -e "s|@BUNDLE_VERSION@|${version%%-*}|" \
     "$script_dir/Info.plist.in" > "$contents/Info.plist"
 }
 

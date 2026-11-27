@@ -3,7 +3,8 @@
 # Copyright (C) 2026 Timelapse Render Daemon contributors
 #
 # Tests the installer scripts preinstall and postinstall (spec 1 §10.1, TRD-24 A4). Stub stat, id,
-# launchctl, chown and chmod go first on PATH; each stub appends its arguments to a log. The
+# launchctl, chown and chmod go first on PATH (passed to the scripts as TRD_PKG_TEST_PATH, since the
+# scripts reset PATH to the system path otherwise); each stub appends its arguments to a log. The
 # plist path comes from TRD_PKG_PLIST, a file in a temporary directory, so /Library is never touched.
 # Prints `PASS <name>` or `FAIL <name>` per check and exits 1 when any check fails.
 set -uo pipefail
@@ -67,7 +68,7 @@ run_script() {
   LOG="$work/$2.$1.log"
   : > "$LOG"
   STUB_LOG="$LOG" STUB_CONSOLE_USER="$3" STUB_UID="$4" STUB_LAUNCHCTL_STATUS="$5" \
-    TRD_PKG_PLIST="$plist" PATH="$stubs:$PATH" bash "$here/$1" >/dev/null 2>&1
+    TRD_PKG_PLIST="$plist" TRD_PKG_TEST_PATH="$stubs:$PATH" bash "$here/$1" >/dev/null 2>&1
   RC=$?
 }
 

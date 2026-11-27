@@ -92,6 +92,7 @@ test:
 	$(CARGO) build --workspace --locked
 	$(CARGO) test --workspace --locked
 	bash packaging/linux/test-maintainer-scripts.sh
+	if [ "$$(uname -s)" = Darwin ]; then bash packaging/macos/test-scripts.sh; fi
 
 check:
 	$(CARGO) fmt --all --check

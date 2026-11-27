@@ -3,7 +3,7 @@
 <!-- Copyright (C) 2026 Timelapse Render Daemon contributors -->
 <!--
   Info.plist of "Timelapse Render Daemon.app" (spec 1 §10.1). build-pkg.sh fills in the placeholders:
-  @SHORT_VERSION@ is the full version, @VERSION@ the same without its pre-release suffix.
+  @SHORT_VERSION@ is the full version, @BUNDLE_VERSION@ the same without its pre-release suffix.
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -17,7 +17,7 @@
   <key>CFBundleIconFile</key><string>trd</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>@SHORT_VERSION@</string>
-  <key>CFBundleVersion</key><string>@VERSION@</string>
+  <key>CFBundleVersion</key><string>@BUNDLE_VERSION@</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>LSUIElement</key><true/>
 </dict>

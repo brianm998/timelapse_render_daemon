@@ -8,7 +8,10 @@
 # a failing launchctl must not stop the install.
 #
 # Bash 3.2 compatible. Commands are called by bare name so test-scripts.sh can stub them on PATH.
+# PATH is the system path unless TRD_PKG_TEST_PATH is set (test-scripts.sh sets it to put its stubs first).
 
+PATH="${TRD_PKG_TEST_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
+export PATH
 LABEL="com.timelapserender.trd"
 
 user="$(stat -f %Su /dev/console 2>/dev/null)" || user=""
