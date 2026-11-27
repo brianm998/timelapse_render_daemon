@@ -52,8 +52,8 @@ const SEQ_C: &str = "sandbox-c";
 
 /// The variant keys of the sandbox's rendering list (§6.5): `<codec>_<res>_<frame_rate>`.
 const VARIANTS: [&str; 3] = ["ProResMQ_1080x720_30", "h264_720w_30", "ProResUHQ_ori_30"];
-/// The variant that UpdateConfig adds: its key is `h264_160w_30`.
-const ADDED_KEY: &str = "h264_160w_30";
+/// The variant that UpdateConfig adds: its key is `h264_3840w_30`.
+const ADDED_KEY: &str = "h264_3840w_30";
 
 /// Sequence B's three renders: variant key, output file name (§6.5) and the size ffprobe reports.
 const B_RENDERS: [(&str, &str, u32, u32); 3] = [
@@ -822,7 +822,7 @@ async fn e2e_daemon_with_real_tools() {
     config.rendering.push(pb::RenderVariant {
         codec: "h264".to_owned(),
         frame_rate: 30,
-        resolution: vec![160],
+        resolution: vec![3840],
         variant_key: String::new(),
         example_filename: String::new(),
     });

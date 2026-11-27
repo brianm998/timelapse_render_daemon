@@ -265,6 +265,13 @@ impl Renders {
         let pid = self.live_pid(&job).ok_or_else(|| {
             ControlError::FailedPrecondition(format!("render {id} has no live process"))
         })?;
+        // A render that has ended but is not reaped yet is a zombie: stopping it would mark a
+        // finished render suspended.
+        if process::process_state(pid) == process::ProcessState::Gone {
+            return Err(ControlError::FailedPrecondition(format!(
+                "render {id} has no live process"
+            )));
+        }
         process::suspend(pid).map_err(|err| process_error("suspend", i64::from(pid), err))?;
         job.status = JobStatus::Suspended;
         job.suspended_by = Some(SuspendedBy::User);
