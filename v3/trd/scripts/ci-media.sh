@@ -96,5 +96,18 @@ fi
 # The tests drive fake-ffmpeg, fake-ffprobe and fake-exiftool, which are bin targets of
 # trd-testtools; cargo test does not build them for a dev-dependency, so build them here.
 cargo build --locked -p trd-testtools --bins
-cargo test -p trd --test e2e --locked
-cargo test -p trd-core --test xmp --locked
+# Each run is captured; on failure its panic lines are printed last, so a truncated log tail shows
+# why it failed.
+LOG="$(mktemp "${TMPDIR:-/tmp}/ci-media.XXXXXX")"
+trap 'rm -f "$LOG"' EXIT
+status=0
+run_tests() {
+  if ! "$@" 2>&1 | tee "$LOG"; then
+    status=1
+    echo "ci-media.sh: FAILED: $*" >&2
+    grep -A3 "panicked at" "$LOG" >&2 || true
+  fi
+}
+run_tests cargo test -p trd --test e2e --locked
+run_tests cargo test -p trd-core --test xmp --locked
+exit "$status"

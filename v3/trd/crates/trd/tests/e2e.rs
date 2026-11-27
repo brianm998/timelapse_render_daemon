@@ -223,6 +223,20 @@ impl Drop for Drip {
     }
 }
 
+/// On Linux, makes this test process the parent of renders whose daemon is killed. A render lives
+/// in its own process group; when the daemon dies while the render is stopped, init would adopt it,
+/// the group would count as orphaned and the kernel would send it SIGHUP and SIGCONT, killing
+/// ffmpeg before the new daemon can adopt it. Under this process the group is not orphaned.
+fn keep_orphans_in_session() {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: prctl with PR_SET_CHILD_SUBREAPER only sets a flag on this process.
+        unsafe {
+            libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
+        }
+    }
+}
+
 /// A running `trd daemon --sandbox` on a tree. Killed when dropped.
 struct Daemon {
     child: Child,
@@ -235,6 +249,7 @@ struct Daemon {
 impl Daemon {
     /// Starts the daemon on `tree` with the same flags every time, and waits for `TRD_LISTENING`.
     fn start(tree: &Path) -> Daemon {
+        keep_orphans_in_session();
         let mut child = Command::new(env!("CARGO_BIN_EXE_trd"))
             .arg("daemon")
             .arg("--sandbox")
