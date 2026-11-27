@@ -91,5 +91,8 @@ if [ -n "$SKIP_REASON" ]; then
 else
   export TRD_E2E=1
 fi
+# The tests drive fake-ffmpeg, fake-ffprobe and fake-exiftool, which are bin targets of
+# trd-testtools; cargo test does not build them for a dev-dependency, so build them here.
+cargo build --locked -p trd-testtools --bins
 cargo test -p trd --test e2e --locked
 cargo test -p trd-core --test xmp --locked
