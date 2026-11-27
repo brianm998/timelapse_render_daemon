@@ -689,18 +689,52 @@ async fn e2e_daemon_with_real_tools() {
         })
         .await
         .expect("SuspendRender stops the running render");
-    settle(
+    // While the first render is suspended nothing of A can finish before the check below, so the
+    // StopRender target is chosen in the same snapshot: any other variant of A that is not done.
+    let (stop_key, stop_id) = settle(
         &mut client,
-        "A's render shows as suspended",
+        "A's render shows as suspended and another variant of A is waiting",
         POLL,
         &HIDDEN_BEFORE_UPDATE,
         |s| {
-            row(s, SEQ_A, &first_key)
-                .filter(|r| is(r, pb::VariantStatus::VariantSuspended))
-                .map(|_| ())
+            row(s, SEQ_A, &first_key).filter(|r| is(r, pb::VariantStatus::VariantSuspended))?;
+            VARIANTS
+                .iter()
+                .filter(|key| **key != first_key)
+                .find_map(|key| {
+                    row(s, SEQ_A, key)
+                        .filter(|r| {
+                            (is(r, pb::VariantStatus::VariantQueued)
+                                || is(r, pb::VariantStatus::VariantRunning))
+                                && !r.render_id.is_empty()
+                        })
+                        .map(|r| (key.to_string(), r.render_id))
+                })
         },
     )
     .await;
+    // StopRender ends another variant of A: it is paused in config.json. RetryVariant clears the
+    // pause and renders it.
+    client
+        .stop_render(pb::RenderRef { render_id: stop_id })
+        .await
+        .expect("StopRender ends a waiting render");
+    assert!(
+        paused_in(&tree).contains(&(SEQ_A.to_owned(), stop_key.clone())),
+        "StopRender pauses {stop_key} in config.json: {:?}",
+        paused_in(&tree)
+    );
+    client
+        .retry_variant(pb::VariantRef {
+            sequence_name: SEQ_A.to_owned(),
+            variant_key: stop_key.clone(),
+        })
+        .await
+        .expect("RetryVariant renders the paused variant");
+    assert!(
+        !paused_in(&tree).contains(&(SEQ_A.to_owned(), stop_key.clone())),
+        "RetryVariant clears the pause of {stop_key}"
+    );
     client
         .resume_render(pb::RenderRef {
             render_id: first_id,
@@ -720,47 +754,6 @@ async fn e2e_daemon_with_real_tools() {
     )
     .await;
 
-    // StopRender ends another variant of A that is queued: it is paused in config.json. RetryVariant
-    // clears the pause and renders it.
-    let (stop_key, stop_id) = settle(
-        &mut client,
-        "another variant of A is queued",
-        FAST_POLL,
-        &HIDDEN_BEFORE_UPDATE,
-        |s| {
-            VARIANTS
-                .iter()
-                .filter(|key| **key != first_key)
-                .find_map(|key| {
-                    row(s, SEQ_A, key)
-                        .filter(|r| {
-                            is(r, pb::VariantStatus::VariantQueued) && !r.render_id.is_empty()
-                        })
-                        .map(|r| (key.to_string(), r.render_id))
-                })
-        },
-    )
-    .await;
-    client
-        .stop_render(pb::RenderRef { render_id: stop_id })
-        .await
-        .expect("StopRender ends a queued render");
-    assert!(
-        paused_in(&tree).contains(&(SEQ_A.to_owned(), stop_key.clone())),
-        "StopRender pauses {stop_key} in config.json: {:?}",
-        paused_in(&tree)
-    );
-    client
-        .retry_variant(pb::VariantRef {
-            sequence_name: SEQ_A.to_owned(),
-            variant_key: stop_key.clone(),
-        })
-        .await
-        .expect("RetryVariant renders the paused variant");
-    assert!(
-        !paused_in(&tree).contains(&(SEQ_A.to_owned(), stop_key.clone())),
-        "RetryVariant clears the pause of {stop_key}"
-    );
     settle(
         &mut client,
         "A has all three renders",
