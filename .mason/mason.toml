@@ -173,8 +173,6 @@ level = "t1"
 uses = { test-suite = 1 }
 
 [suite.ios-kit-test]
-# remote = false: needs Xcode, which the node (marmot) does not have.
-remote = false
 command = "bash v3/scripts/suite.sh ios-kit-test 2>&1"
 parser = "xctest"
 min_tests = 1
@@ -182,8 +180,6 @@ level = "t1"
 uses = { test-suite = 1 }
 
 [suite.ios-build]
-# remote = false: needs Xcode, which the node (marmot) does not have.
-remote = false
 command = "bash v3/scripts/suite.sh ios-build 2>&1"
 parser = "regex"
 pass_regex = "^test (.+) \\.\\.\\. ok$"
