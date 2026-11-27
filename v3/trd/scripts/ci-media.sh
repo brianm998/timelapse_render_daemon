@@ -29,12 +29,14 @@ skip() {
   [ -n "$SKIP_REASON" ] || SKIP_REASON="$1"
 }
 
-# have_tool NAME: NAME resolves on PATH or in MacPorts' /opt/local/bin. Prints the directory.
+# have_tool NAME: NAME resolves on PATH or in MacPorts' /opt/local/bin (TRD_MACPORTS_BIN overrides
+# that directory; the script tests use it to hide a real MacPorts install). Prints the directory.
 have_tool() {
-  local p
+  local p macports
+  macports="${TRD_MACPORTS_BIN:-/opt/local/bin}"
   p="$(command -v "$1" 2>/dev/null || true)"
   if [ -n "$p" ] && [ -x "$p" ]; then dirname "$p"; return 0; fi
-  if [ -x "/opt/local/bin/$1" ]; then echo /opt/local/bin; return 0; fi
+  if [ -x "$macports/$1" ]; then echo "$macports"; return 0; fi
   return 1
 }
 

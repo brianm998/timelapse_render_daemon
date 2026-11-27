@@ -1828,7 +1828,8 @@ Depends on: none
    `cargo test`), then `python3 -I scripts/coverage.py target/llvm-cov.json coverage-floors.toml`,
    which sums line coverage per crate from the files under `crates/<crate>/src/` (generated code
    and `trd-testtools` excluded), prints a table and exits 1 when a crate is below its floor.
-   `coverage-floors.toml` holds `trd-core = 0` and `trd = 0` (TRD-GATE raises them, overview §15.3).
+   `coverage-floors.toml` starts at `trd-core = 0` and `trd = 0`; TRD-GATE raises them to
+   `trd-core = 80` and `trd = 60` (overview §15.3).
    `make coverage` runs it.
 8. `scripts/check-system-tests.sh` (bash 3.2; honours `TRD_ROOT`, default the `v3/trd` directory
    above the script) enforces overview §10 rules 1–2 and §15.2 for the daemon's tests by reading

@@ -28,6 +28,11 @@ Decisions taken while closing spec 1 (TRD-GATE) that the spec leaves open.
   `exiftool` reusable jobs, downloads `v3-ffmpeg-linux-x64` or `v3-ffmpeg-macos-universal` and
   `v3-exiftool-unix`, restores their executable bits, and sets `TRD_FFMPEG_DIR`, `TRD_EXIFTOOL_DIR`
   and `TRD_E2E=1`.
+- **The provisioning rules have tests.** `v3/scripts/test-scripts.sh` runs a copy of the real
+  `ci-media.sh` with a PATH that holds only cargo, bash and dirname, and with stub builders. It checks
+  the CI error (ffmpeg and exiftool), the outside-CI SKIPPED path (`TRD_E2E` unset), and the path
+  where the tools resolve (`TRD_E2E=1`). `TRD_MACPORTS_BIN` replaces `/opt/local/bin` so a real
+  MacPorts install cannot satisfy the test.
 - **Foreign renders are checked with a stand-in process.** `e2e_ignores_foreign_renders` starts its own
   fake ffmpeg with a render's arguments and waits for two scans. The snapshot must not list it, and no
   daemon render may be adopted. The test signals only that child.
