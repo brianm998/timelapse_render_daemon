@@ -119,5 +119,16 @@ Section "Uninstall"
   DeleteRegKey HKCU "${UNINST_KEY}"
   ; NSIS uninstallers copy themselves out of the install directory before they run this, so
   ; removing uninstall.exe here is safe.
-  RMDir /r "$INSTDIR"
+  ; `service uninstall` only asks the task's trdw.exe to stop (schtasks /End) and returns before
+  ; the process has exited, and an antivirus scan can hold a file briefly. A file still open on
+  ; the first RMDir /r leaves the directory behind, so the removal is retried: up to 30 attempts,
+  ; 1 s apart, stopping as soon as the directory is gone. /REBOOTOK is not used, so nothing is
+  ; scheduled for deletion at reboot, and RMDir /r only touches $INSTDIR.
+  ${For} $R0 1 30
+    RMDir /r "$INSTDIR"
+    ${IfNot} ${FileExists} "$INSTDIR\*.*"
+      ${ExitFor}
+    ${EndIf}
+    Sleep 1000
+  ${Next}
 SectionEnd
