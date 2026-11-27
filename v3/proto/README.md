@@ -13,8 +13,7 @@ hand-edit generated code.
 
 - `api_version = 1` in the proto is the version the daemon and the clients in specs 2–4 build
   against.
-- API version 1 is frozen as of the TRD-GATE batch, which lands the first complete daemon and
-  clients. Until then the file may change within the spec 1 plan.
+- API version 1 is frozen as of 2026-11-27; changes need `api_version` 2 and a new proto package `trd.v2`.
 - After the freeze, a change that is not purely additive needs `api_version` 2 and a new proto
   package `trd.v2` in `trd/v2/trd.proto`. The `trd.v1` file stays unchanged so older clients keep
   working.
