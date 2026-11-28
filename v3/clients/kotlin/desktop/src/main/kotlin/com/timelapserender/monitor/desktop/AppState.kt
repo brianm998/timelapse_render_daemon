@@ -32,6 +32,7 @@ import com.timelapserender.monitor.desktop.platform.TrdService
 import com.timelapserender.monitor.desktop.platform.WindowGeometry
 import com.timelapserender.monitor.desktop.ui.LogScroll
 import com.timelapserender.monitor.desktop.ui.TrayStatus
+import com.timelapserender.monitor.desktop.ui.config.ConfigController
 import com.timelapserender.trd.v1.DevicePlatform
 import com.timelapserender.trd.v1.Snapshot
 import io.grpc.ManagedChannel
@@ -90,6 +91,20 @@ sealed interface AppDialog {
     data class Pair(val server: RegisteredServer, val busy: Boolean = false, val error: String? = null) : AppDialog
 
     data object About : AppDialog
+}
+
+/** An open Config window and the server it edits. */
+class ConfigWindowHandle internal constructor(
+    val serverId: String,
+    val serverName: String,
+    val controller: ConfigController,
+    private val client: TrdClient,
+    private val scope: CoroutineScope,
+) {
+    internal fun close() {
+        scope.cancel()
+        client.close()
+    }
 }
 
 /** The preferences as the preferences window shows them. */
@@ -277,6 +292,10 @@ class AppState(
         ),
     )
     private var pairing: Job? = null
+    private val _configWindows = MutableStateFlow(emptyList<ConfigWindowHandle>())
+
+    /** Set while a quit waits for the answers about unsaved config changes. */
+    private var pendingQuit: (() -> Unit)? = null
     private var started = false
 
     @Volatile
@@ -284,6 +303,9 @@ class AppState(
         private set
 
     val ui: StateFlow<AppUi> = _ui.asStateFlow()
+
+    /** The open Config windows, at most one per server. */
+    val configWindows: StateFlow<List<ConfigWindowHandle>> = _configWindows.asStateFlow()
 
     /** The Activity list's scroll position and anchoring, shared with the list's UI. */
     val listState = LazyListState()
@@ -329,6 +351,7 @@ class AppState(
     fun forgetServer(serverId: String) {
         if (serverId == LOCAL_SERVER_ID) return
         val wasActive = session?.server?.serverId == serverId
+        _configWindows.value.firstOrNull { it.serverId == serverId }?.let(::closeConfig)
         closeLog(serverId)
         registry.remove(serverId)
         _ui.update { it.copy(servers = registry.servers.value) }
@@ -573,6 +596,59 @@ class AppState(
         _ui.update { it.copy(filter = filter.value) }
     }
 
+    /**
+     * Opens the Config window of the active server, or brings it to the front. It has its own
+     * connection, so it stays on its server when the main window switches to another.
+     */
+    fun openConfig() {
+        synchronized(lock) {
+            val server = session?.server ?: return
+            val open = _configWindows.value.firstOrNull { it.serverId == server.serverId }
+            if (open != null) {
+                open.controller.requestFocus()
+                return
+            }
+            val windowScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext.job))
+            val client = clientFactory(server, windowScope)
+            lateinit var handle: ConfigWindowHandle
+            val controller = ConfigController(
+                client,
+                windowScope,
+                onClose = { closeConfig(handle) },
+                onStay = { synchronized(lock) { pendingQuit = null } },
+            )
+            val name = _ui.value.activity?.header?.serverName?.takeIf { it.isNotEmpty() } ?: server.name
+            handle = ConfigWindowHandle(server.serverId, name, controller, client, windowScope)
+            _configWindows.update { it + handle }
+        }
+    }
+
+    private fun closeConfig(window: ConfigWindowHandle) {
+        val quit = synchronized(lock) {
+            _configWindows.update { it - window }
+            window.close()
+            pendingQuit?.takeIf { _configWindows.value.none { it.controller.dirty } }?.also { pendingQuit = null }
+        }
+        quit?.invoke()
+    }
+
+    /** Calls [quit] at once, or after every Config window with unsaved changes has been answered. */
+    fun requestQuit(quit: () -> Unit) {
+        val unsaved = synchronized(lock) {
+            val unsaved = _configWindows.value.filter { it.controller.dirty }
+            pendingQuit = quit.takeIf { unsaved.isNotEmpty() }
+            unsaved
+        }
+        if (unsaved.isEmpty()) {
+            quit()
+            return
+        }
+        for (window in unsaved) {
+            window.controller.requestFocus()
+            window.controller.requestClose()
+        }
+    }
+
     fun requestSearchFocus() = _ui.update { it.copy(searchFocusRequests = it.searchFocusRequests + 1) }
 
     fun toggleDetails() {
@@ -700,6 +776,8 @@ class AppState(
             pairing?.cancel()
             session?.close()
             session = null
+            _configWindows.value.forEach { it.close() }
+            _configWindows.value = emptyList()
             _logs.value.forEach { it.close() }
             _logs.value = emptyList()
         }
