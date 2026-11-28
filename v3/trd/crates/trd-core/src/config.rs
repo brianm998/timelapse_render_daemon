@@ -829,6 +829,12 @@ impl ConfigStore {
         }
     }
 
+    /// Forgets the file's stamp, so the next [`ConfigStore::reload_if_changed`] re-reads and
+    /// re-validates it (the codec table it is validated against changed).
+    pub fn invalidate(&mut self) {
+        self.stamp = None;
+    }
+
     /// Re-reads the file if its mtime or size differs from the last load. Returns whether the
     /// state changed, so the caller logs a bad file once per change.
     pub fn reload_if_changed(&mut self, codecs: &VideoCodecs) -> bool {
