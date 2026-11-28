@@ -573,6 +573,52 @@ mod server {
         assert!(Path::new(&moved).is_file());
     }
 
+    /// `UpdateCodecs` reaches the running engine: a config entry whose codec the table lacks reports
+    /// `codec:Probe` until the RPC adds it, with no restart.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn update_codecs_reaches_the_engine() {
+        let fixture = Fixture::new();
+        fixture.write_config(&Config {
+            rendering: vec![RenderType {
+                codec: "Probe".to_owned(),
+                frame_rate: 25,
+                resolution: Some(vec![1280, 720]),
+            }],
+            ..empty_config(&fixture)
+        });
+        let daemon = Daemon::start(&fixture, &[]);
+        let mut client = daemon.client().await;
+        poll_snapshot(&mut client, |s| {
+            s.problems.iter().any(|p| p.id == "codec:Probe").then_some(())
+        })
+        .await;
+
+        let state = client
+            .get_config(pb::GetConfigRequest {})
+            .await
+            .expect("GetConfig")
+            .into_inner();
+        let mut codecs = state.codecs.clone();
+        let mut probe = codecs
+            .iter()
+            .find(|c| c.name == "ProResUHQ")
+            .expect("a built-in codec")
+            .clone();
+        probe.name = "Probe".to_owned();
+        codecs.push(probe);
+        client
+            .update_codecs(pb::UpdateCodecsRequest {
+                codecs,
+                expected_revision: state.codecs_revision,
+            })
+            .await
+            .expect("UpdateCodecs");
+        poll_snapshot(&mut client, |s| {
+            (!s.problems.iter().any(|p| p.id == "codec:Probe")).then_some(())
+        })
+        .await;
+    }
+
     /// `SetConfigPath` reaches the running engine: a daemon with no config file leaves
     /// `PHASE_NO_CONFIG` once the path names an existing config.json, without a restart.
     #[tokio::test(flavor = "multi_thread")]

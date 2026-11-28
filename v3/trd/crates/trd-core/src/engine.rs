@@ -29,7 +29,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::adopt::{AdoptPolicy, adopt_at_startup};
-use crate::codecs::VideoCodecs;
+use crate::codecs::{CodecStore, VideoCodecs};
 use crate::config::{
     Config, ConfigStore, PROBLEM_CONFIG_INVALID, PROBLEM_CONFIG_ISSUES, PROBLEM_CONFIG_MISSING,
     PROBLEM_UNKNOWN_CODEC, Status,
@@ -132,6 +132,9 @@ pub struct EngineOptions {
     /// Where the renders' logs and partial files go: `<data_dir>/renders`.
     pub data_dir: PathBuf,
     pub codecs: VideoCodecs,
+    /// The explicit codec file (`--codecs`), if any; the table reloads from it or from
+    /// video_codecs.json beside the config when the file changes (§6.2).
+    pub explicit_codecs: Option<PathBuf>,
     /// Resolves the tools. Called at start-up and every [`TOOLS_RECHECK`].
     pub resolve_tools: Box<dyn FnMut() -> Tools + Send>,
     pub disk_access: Box<dyn DiskAccess>,
@@ -159,6 +162,10 @@ enum Command {
         reply: oneshot::Sender<Result<(), ControlError>>,
     },
     SetConfigPath(Box<SwitchConfig>),
+    SetCodecs {
+        codecs: VideoCodecs,
+        reply: oneshot::Sender<()>,
+    },
     Shutdown,
 }
 
@@ -224,6 +231,19 @@ impl EngineHandle {
             .map_err(|_| ControlError::Internal("the engine stopped".to_owned()))
     }
 
+    /// Hands the engine a new codec table and waits until it is in use. The engine ticks at once
+    /// afterwards.
+    pub async fn set_codecs(&self, codecs: VideoCodecs) -> Result<(), ControlError> {
+        let (reply, answer) = oneshot::channel();
+        self.commands
+            .send(Command::SetCodecs { codecs, reply })
+            .await
+            .map_err(|_| ControlError::Internal("the engine is not running".to_owned()))?;
+        answer
+            .await
+            .map_err(|_| ControlError::Internal("the engine stopped".to_owned()))
+    }
+
     /// Asks the run loop to end. The engine drops its handles and signals no process.
     pub async fn shutdown(&self) {
         let _ = self.commands.send(Command::Shutdown).await;
@@ -235,6 +255,8 @@ pub struct Engine {
     store: Store,
     config: ConfigStore,
     codecs: VideoCodecs,
+    codec_store: CodecStore,
+    explicit_codecs: Option<PathBuf>,
     tools: Tools,
     resolve_tools: Box<dyn FnMut() -> Tools + Send>,
     tools_checked: Option<Instant>,
@@ -327,6 +349,11 @@ impl Engine {
             config: ConfigStore::new(&options.config_path, options.clock.clone()),
             store: options.store,
             codecs: options.codecs,
+            codec_store: CodecStore::open(
+                options.explicit_codecs.clone(),
+                options.config_path.clone(),
+            ),
+            explicit_codecs: options.explicit_codecs,
             tools: unresolved_tools(),
             resolve_tools: options.resolve_tools,
             tools_checked: None,
@@ -405,6 +432,11 @@ impl Engine {
                         let _ = reply.send(());
                         true
                     }
+                    Some(Command::SetCodecs { codecs, reply }) => {
+                        self.set_codecs(codecs);
+                        let _ = reply.send(());
+                        true
+                    }
                     Some(Command::Control { control, reply }) => {
                         let result = self.apply_control(control);
                         let scan = matches!(result, Ok(true));
@@ -439,6 +471,7 @@ impl Engine {
             self.rescan = true;
             return;
         }
+        self.codec_store = CodecStore::open(self.explicit_codecs.clone(), path.clone());
         self.config = ConfigStore::new(path, self.clock.clone());
         self.codecs = codecs;
         self.scan = None;
@@ -449,6 +482,17 @@ impl Engine {
         if !self.begun {
             self.history_path = history_path;
         }
+    }
+
+    /// Replaces the codec table in use. The codec store is reopened so its next mtime check does
+    /// not re-read the same file, and the config is validated again at the next tick. Callable
+    /// without the run loop. Nothing is published here.
+    pub fn set_codecs(&mut self, codecs: VideoCodecs) {
+        let config_path = self.config.path().to_path_buf();
+        self.codec_store = CodecStore::open(self.explicit_codecs.clone(), config_path);
+        self.codecs = codecs;
+        self.config.invalidate();
+        self.rescan = true;
     }
 
     /// Start-up, first half (§6.15): resolves the tools. Runs once; later calls return at once.
@@ -618,6 +662,11 @@ impl Engine {
             return Ok(());
         }
 
+        if self.codec_store.reload_if_changed() && *self.codec_store.codecs() != self.codecs {
+            self.codecs = self.codec_store.codecs().clone();
+            self.config.invalidate();
+            self.rescan = true;
+        }
         if self.config.reload_if_changed(&self.codecs) {
             self.rescan = true;
             self.unknown_codecs = self.read_unknown_codecs();
