@@ -65,7 +65,7 @@ class FakeTrdService {
     /** A handler of the named method (bare name) waits for this gate before it answers. */
     val gates = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
 
-    /** The request messages of Pair, WatchSnapshots, GetRenderDetails, ListRenderedVideos, ListLog, WatchLog, ValidateConfig, UpdateConfig, UpdateCodecs, SetConfigPath and ListDirectory, in arrival order. */
+    /** The request messages of Pair, the controls that name a target or a value, WatchSnapshots, GetRenderDetails, ListRenderedVideos, ListLog, WatchLog, ValidateConfig, UpdateConfig, UpdateCodecs, SetConfigPath and ListDirectory, in arrival order. */
     val requests = CopyOnWriteArrayList<Any>()
 
     inline fun <reified T : Any> requestsOf(): List<T> = requests.filterIsInstance<T>()
@@ -79,6 +79,11 @@ class FakeTrdService {
     /** An entry passes when its level is at least [min]; UNSPECIFIED (really INFO) lets everything through in this fake. */
     private fun passesLevel(entry: LogEntry, min: LogLevel) =
         min == LogLevel.LOG_LEVEL_UNSPECIFIED || entry.level.number >= min.number
+
+    private fun acked(request: Any): Ack {
+        requests += request
+        return ack
+    }
 
     private val impl = object : TrdServiceGrpcKt.TrdServiceCoroutineImplBase() {
         override suspend fun getServerInfo(request: GetServerInfoRequest) = serverInfo
@@ -123,16 +128,16 @@ class FakeTrdService {
             requests += request
             return logEntries.filter { it.seq > request.afterSeq && passesLevel(it, request.minLevel) }.asFlow()
         }
-        override suspend fun setGlobalPause(request: SetGlobalPauseRequest) = ack
-        override suspend fun pauseSequence(request: SequenceRef) = ack
-        override suspend fun resumeSequence(request: SequenceRef) = ack
-        override suspend fun pauseVariant(request: VariantRef) = ack
-        override suspend fun resumeVariant(request: VariantRef) = ack
-        override suspend fun suspendRender(request: RenderRef) = ack
-        override suspend fun resumeRender(request: RenderRef) = ack
-        override suspend fun stopRender(request: RenderRef) = ack
-        override suspend fun retryVariant(request: VariantRef) = ack
-        override suspend fun dismissFailure(request: FailureRef) = ack
+        override suspend fun setGlobalPause(request: SetGlobalPauseRequest) = acked(request)
+        override suspend fun pauseSequence(request: SequenceRef) = acked(request)
+        override suspend fun resumeSequence(request: SequenceRef) = acked(request)
+        override suspend fun pauseVariant(request: VariantRef) = acked(request)
+        override suspend fun resumeVariant(request: VariantRef) = acked(request)
+        override suspend fun suspendRender(request: RenderRef) = acked(request)
+        override suspend fun resumeRender(request: RenderRef) = acked(request)
+        override suspend fun stopRender(request: RenderRef) = acked(request)
+        override suspend fun retryVariant(request: VariantRef) = acked(request)
+        override suspend fun dismissFailure(request: FailureRef) = acked(request)
         override suspend fun dismissAllFailures(request: DismissAllFailuresRequest) = ack
         override suspend fun rescanNow(request: RescanNowRequest): Ack {
             gates["RescanNow"]?.await()

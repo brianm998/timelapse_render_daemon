@@ -25,10 +25,19 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import com.timelapserender.monitor.core.state.ChipRole
 import com.timelapserender.monitor.core.state.FailureRowUi
+import com.timelapserender.monitor.desktop.ui.ActionButtons
+import com.timelapserender.monitor.desktop.ui.FAILURE_ACTIONS
+import com.timelapserender.monitor.desktop.ui.RowAction
 
 /** One failure of "Needs attention" (overview §6.1). */
 @Composable
-fun FailureCardRow(failure: FailureRowUi, selected: Boolean, onSelect: () -> Unit, modifier: Modifier = Modifier) {
+fun FailureCardRow(
+    failure: FailureRowUi,
+    selected: Boolean,
+    onSelect: () -> Unit,
+    onAction: (RowAction) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Surface(
         color = rowColor(selected),
         shape = MaterialTheme.shapes.medium,
@@ -50,6 +59,7 @@ fun FailureCardRow(failure: FailureRowUi, selected: Boolean, onSelect: () -> Uni
                 }
                 Text(failure.summary)
                 failure.autoPausedText?.let { SecondaryText(it) }
+                ActionButtons(FAILURE_ACTIONS, onAction)
             }
         }
     }

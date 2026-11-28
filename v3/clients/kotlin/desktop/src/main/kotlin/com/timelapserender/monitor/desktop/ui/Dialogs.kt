@@ -33,6 +33,7 @@ fun AppDialogs(ui: AppUi, app: AppState) {
         is AppDialog.Pair -> PairServerDialog(dialog, app)
         is AppDialog.PairByAddress -> PairByAddressDialog(dialog, app)
         is AppDialog.Devices -> DevicesDialog(dialog.model, app::dismissDialog)
+        is AppDialog.Confirm -> ConfirmDialog(dialog.confirmation, app::confirm, app::dismissDialog)
         AppDialog.About -> AlertDialog(
             onDismissRequest = app::dismissDialog,
             title = { Text(WINDOW_TITLE) },

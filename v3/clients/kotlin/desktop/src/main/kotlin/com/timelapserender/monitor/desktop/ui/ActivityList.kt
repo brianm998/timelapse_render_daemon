@@ -137,6 +137,9 @@ fun ActivityList(
     onSelect: (String) -> Unit,
     onLoadOlder: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Whether the server is this computer's `trd`, whose files can be opened. */
+    loopback: Boolean = false,
+    onAction: (RowAction, ActionTarget) -> Unit = { _, _ -> },
     /** The Full Disk Access banner's **How to fix**; null where it is not offered. */
     onDiskAccessHelp: (() -> Unit)? = null,
 ) {
@@ -208,10 +211,24 @@ fun ActivityList(
                     )
                     is ActivityItem.Header ->
                         Text(item.title, tag.padding(top = 8.dp), style = MaterialTheme.typography.titleMedium)
-                    is ActivityItem.Failure -> FailureCardRow(item.row, selected, select, tag)
-                    is ActivityItem.Card -> SequenceCardRow(item.row, selected, select, tag)
-                    is ActivityItem.Variant -> VariantRowView(item.row, selected, select, tag)
-                    is ActivityItem.Rendered -> RenderedRow(item.row, posters, connected, selected, select, tag)
+                    is ActivityItem.Failure -> {
+                        val row = item.row
+                        val target = ActionTarget.Failure(item.key, row.failureId, row.sequenceName, row.variantKey)
+                        FailureCardRow(row, selected, select, { onAction(it, target) }, tag)
+                    }
+                    is ActivityItem.Card -> {
+                        val target = ActionTarget.Sequence(item.key, item.row.name)
+                        SequenceCardRow(item.row, selected, select, { onAction(it, target) }, tag)
+                    }
+                    is ActivityItem.Variant -> {
+                        val row = item.row
+                        val target = ActionTarget.Variant(item.key, row.sequenceName, row.variantKey, row.renderId)
+                        VariantRowView(row, selected, select, { onAction(it, target) }, tag)
+                    }
+                    is ActivityItem.Rendered -> {
+                        val target = ActionTarget.Video(item.key, item.row.outputPath)
+                        RenderedRow(item.row, posters, connected, selected, select, loopback, { onAction(it, target) }, tag)
+                    }
                     is ActivityItem.Empty -> SecondaryText(item.text, tag)
                     is ActivityItem.Older -> OlderRow(item, onLoadOlder, tag.fillMaxWidth())
                 }

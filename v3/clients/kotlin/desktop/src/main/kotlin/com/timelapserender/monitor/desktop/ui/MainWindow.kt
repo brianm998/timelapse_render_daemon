@@ -34,10 +34,12 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.timelapserender.monitor.core.net.ConnectionState
+import com.timelapserender.monitor.core.state.DetailsState
 import com.timelapserender.monitor.desktop.AppState
 import com.timelapserender.monitor.desktop.AppUi
 import com.timelapserender.monitor.desktop.Screen
 import com.timelapserender.monitor.desktop.StartScreen
+import com.timelapserender.monitor.desktop.ui.rows.PosterLoader
 
 object MainWindowTags {
     const val ACTIVITY = "activity"
@@ -104,13 +106,36 @@ private fun ConnectedView(ui: AppUi, app: AppState) {
                     ),
                     thickness = 4.dp,
                 )
-                // The scan summary; the selected row's details are not drawn yet.
-                Column(Modifier.width(detailsWidth).fillMaxHeight().padding(16.dp).testTag(MainWindowTags.DETAILS)) {
-                    Text(ui.lastScanText)
-                }
+                DetailsArea(ui, app, Modifier.width(detailsWidth).fillMaxHeight().testTag(MainWindowTags.DETAILS))
             }
         }
     }
+}
+
+/** The Details pane of the selected row, or the last scan with nothing selected. */
+@Composable
+private fun DetailsArea(ui: AppUi, app: AppState, modifier: Modifier) {
+    val session = app.session
+    var details: DetailsState? = null
+    if (session != null) {
+        key(session) {
+            val state by session.details.state.collectAsState()
+            details = state
+        }
+    }
+    DetailsPane(
+        selection = ui.selection,
+        details = details,
+        emptyText = ui.lastScanText,
+        loopback = ui.loopback,
+        connected = ui.connected,
+        posters = session?.posters ?: PosterLoader { null },
+        time = app::formatTime,
+        onAction = app::perform,
+        onCopy = app::copy,
+        onRefresh = app::refreshDetails,
+        modifier = modifier,
+    )
 }
 
 /** The Activity list, or the pairing prompt when the server does not know this computer. */
@@ -143,6 +168,8 @@ private fun ActivityArea(ui: AppUi, app: AppState, modifier: Modifier) {
                     onSelect = app::select,
                     onLoadOlder = session.presenter::loadOlder,
                     modifier = Modifier.fillMaxSize(),
+                    loopback = ui.loopback,
+                    onAction = app::perform,
                     onDiskAccessHelp = if (ui.loopback && ui.fullDiskAccessMissing) {
                         app::openFullDiskAccessHelp
                     } else {

@@ -85,6 +85,7 @@ class MenusTest {
             h.app.closePreferences()
             assertFalse(h.app.ui.value.preferencesOpen)
             perform(MenuAction.PAUSE_ALL)
+            h.app.confirm(false)
             perform(MenuAction.RESCAN)
             perform(MenuAction.START_TRD)
             perform(MenuAction.LOG_FOLDER)

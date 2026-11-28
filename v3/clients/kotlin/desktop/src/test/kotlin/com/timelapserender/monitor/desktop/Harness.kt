@@ -15,6 +15,7 @@ import com.timelapserender.monitor.core.servers.ServerStore
 import com.timelapserender.monitor.desktop.platform.CommandResult
 import com.timelapserender.monitor.desktop.platform.CommandRunner
 import com.timelapserender.monitor.desktop.platform.DesktopSettings
+import com.timelapserender.monitor.desktop.platform.FileOpener
 import com.timelapserender.monitor.desktop.platform.HostOs
 import com.timelapserender.monitor.desktop.platform.TrdService
 import com.timelapserender.monitor.desktop.platform.WindowGeometry
@@ -131,6 +132,12 @@ class Harness(
     /** The waits between connect attempts, as the app asked for them. */
     val delays = CopyOnWriteArrayList<Long>()
 
+    /** Every text the app put on the clipboard. */
+    val copies = CopyOnWriteArrayList<String>()
+
+    /** When set, the clipboard throws it. */
+    @Volatile var copyFailure: Exception? = null
+
     /** Every notification the app sent. */
     val notifications = CopyOnWriteArrayList<Notification>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -140,6 +147,11 @@ class Harness(
         discovery = discovery,
         settings = settings,
         service = TrdService(os, runner, "/home/tester") { null },
+        opener = FileOpener(os, runner),
+        copier = {
+            copyFailure?.let { failure -> throw failure }
+            copies += it
+        },
         scope = scope,
         localOverride = localOverride,
         clientFactory = { server, sessionScope ->

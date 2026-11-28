@@ -28,6 +28,7 @@ import com.timelapserender.monitor.desktop.Harness
 import com.timelapserender.monitor.desktop.MemoryStore
 import com.timelapserender.monitor.desktop.RecordingRunner
 import com.timelapserender.monitor.desktop.createClient
+import com.timelapserender.monitor.desktop.platform.FileOpener
 import com.timelapserender.monitor.desktop.platform.HostOs
 import com.timelapserender.monitor.desktop.platform.TrdService
 import com.timelapserender.trd.v1.DevicePlatform
@@ -110,6 +111,7 @@ class PairServerDialogTest {
             discovery = FakeDiscovery(),
             settings = FakeSettings(),
             service = TrdService(HostOs.LINUX, RecordingRunner(), "/home/tester") { null },
+            opener = FileOpener(HostOs.LINUX, RecordingRunner()),
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
             clientFactory = { server, scope -> createClient(server, scope, channelFor = { inProcess.newChannel() }) },
             deviceName = { desktopDeviceName("studio") },

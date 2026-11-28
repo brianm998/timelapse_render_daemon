@@ -305,6 +305,25 @@ class ActivityPresenterTest {
     }
 
     @Test
+    fun theWholeVideoBehindEveryRenderedRowIsFoundIncludingOlderPages() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            val all = (1..3).map { video("v-$it", "LRT_x$it.mov") }
+            env.script(
+                Snapshot.newBuilder().setPhase(Phase.PHASE_IDLE).addRecentlyRendered(all[0])
+                    .setRecentlyRenderedTotal(3).build(),
+            )
+            env.fake.renderedVideos = all
+            val p = presenter(env)
+            p.ui.first { it.recent.size == 1 }
+            assertEquals(all[0], p.renderedVideo("v-1"))
+            assertNull(p.renderedVideo("v-3"))
+            p.loadOlder()
+            p.ui.first { it.recent.size == 3 }
+            assertEquals(all[2], p.renderedVideo("v-3"))
+        }
+    }
+
+    @Test
     fun s7_aFinishedSequenceLeavesInProgressAndItsVideosLeadRecentlyRendered() = runTest(timeout = 60.seconds) {
         Env(backgroundScope).use { env ->
             env.script(

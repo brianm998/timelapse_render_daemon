@@ -107,6 +107,7 @@ class TrayIconTest {
             h.app.performTray(TrayAction.OPEN_WINDOW) { quits++ }
             assertTrue(h.app.ui.value.windowVisible)
             h.app.performTray(TrayAction.PAUSE_ALL) { quits++ }
+            h.app.confirm(false)
             h.awaitTrue { h.local.callCount("SetGlobalPause") == 1 }
             assertEquals(0, quits)
             h.app.performTray(TrayAction.QUIT) { quits++ }
