@@ -102,11 +102,12 @@ class FirstRunSetupTest {
         assertEquals("/Users/tester/timelapse/config.json", request.path)
         assertEquals(false, request.createIfMissing)
         h.awaitTrue { h.app.configWindows.value.map { it.serverId } == listOf("local") }
-        // trd has not taken the file up yet.
-        compose.onNodeWithText(RESTART_HINT).assertExists()
+        // trd has not reported the new config yet.
+        compose.onNodeWithText(CONFIG_PENDING_HINT).assertExists()
+        compose.onNodeWithText("restart", substring = true, ignoreCase = true).assertDoesNotExist()
 
         h.local.snapshots = listOf(snapshot(Phase.PHASE_IDLE, revision = 2))
-        await { !shows(RESTART_HINT) }
+        await { !shows(CONFIG_PENDING_HINT) }
         compose.onNodeWithText(USE_EXISTING_CONFIG).assertDoesNotExist()
     }
 

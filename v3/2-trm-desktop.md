@@ -333,8 +333,8 @@ Warning, Error; default Info), search, Copy selected lines.
   ends. While a code is shown the device list is read again every few seconds.
 - Setup opens by itself once per connection to the local server and stays open for its second step
   until closed. **Create a new config** uses the path `GetConfig` reports when it is `trd`'s default,
-  else the overview §4 default of this computer. While `trd` still reports no config after a choice,
-  setup says to restart it.
+  else the overview §4 default of this computer. `trd` uses the chosen config at once; until its next snapshot reports it, setup shows a
+  waiting line. A missing or invalid file makes `SetConfigPath` fail, and setup shows that error.
 - **Pairing this desktop** (device name: host name + " (desktop)") is offered for a discovered
   server, and by **Add a server…** in the server list for one typed in: address, port, code and at
   least the 16 fingerprint digits the pairing dialog shows. The whole fingerprint is read in a TLS
