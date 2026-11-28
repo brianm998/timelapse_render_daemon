@@ -258,9 +258,11 @@ class ActivityPresenterTest {
     fun emptyStatesUseTheConfiguredHistoryDays() = runTest(timeout = 60.seconds) {
         Env(backgroundScope).use { env ->
             env.script(Snapshot.newBuilder().setPhase(Phase.PHASE_IDLE).build(), recentDays = 14)
-            val ui = presenter(env).ui.first { it.recentEmptyText == "Nothing rendered in the last 14 days" }
+            // the config and the first snapshot arrive independently: wait for both
+            val ui = presenter(env).ui.first {
+                it.recentEmptyText == "Nothing rendered in the last 14 days" && it.header.phaseText == "Idle"
+            }
             assertEquals("Nothing in progress", ui.inProgressEmptyText)
-            assertEquals("Idle", ui.header.phaseText)
             assertEquals("", ui.header.countsLine)
             assertFalse(ui.canLoadOlder)
             assertTrue(ui.keys.isEmpty())
@@ -312,12 +314,12 @@ class ActivityPresenterTest {
             val after = before.toBuilder()
                 .setInProgress(1, card.toBuilder().setVariants(0, card.getVariants(0).toBuilder().setFrame(1200).setFps(5.0)))
                 .build()
-            // the fake replays both snapshots on every subscription, so the presenter sees the update
             env.script(before)
-            env.fake.snapshots = listOf(before, after)
             val p = presenter(env)
             fun progress(ui: ActivityUi) = ui.inProgress.getOrNull(1)?.variants?.firstOrNull()?.progressText.orEmpty()
             val first = p.ui.first { progress(it).startsWith("843") }
+            // the next subscription gets the update; scripting it only now means neither state can be conflated away
+            env.fake.snapshots = listOf(after)
             val second = p.ui.first { progress(it).startsWith("1,200") }
             assertEquals(first.keys, second.keys)
             assertTrue(first.keys.isNotEmpty())
