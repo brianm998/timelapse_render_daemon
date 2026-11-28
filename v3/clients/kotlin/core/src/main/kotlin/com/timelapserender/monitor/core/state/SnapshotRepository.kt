@@ -30,7 +30,7 @@ data class RepoState(
  * Follows `WatchSnapshots` and the client's connection state. A stream that fails or ends is
  * restarted after [retryDelayMs] (taken through [delayer]); the last snapshot stays visible meanwhile.
  * The stream asks for [maxPerSecond] snapshots per second (0: the server's default) and is restarted
- * when that changes.
+ * when that changes. [initialSnapshot] is shown until the first snapshot arrives.
  */
 class SnapshotRepository(
     private val client: TrdClient,
@@ -39,8 +39,9 @@ class SnapshotRepository(
     private val retryDelayMs: Long = 1000,
     private val delayer: suspend (Long) -> Unit = { delay(it) },
     private val maxPerSecond: StateFlow<Int> = MutableStateFlow(0),
+    initialSnapshot: Snapshot? = null,
 ) {
-    private val _state = MutableStateFlow(RepoState(connection = client.state.value))
+    private val _state = MutableStateFlow(RepoState(snapshot = initialSnapshot, connection = client.state.value))
     val state: StateFlow<RepoState> = _state.asStateFlow()
 
     private var jobs: List<Job> = emptyList()

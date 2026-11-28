@@ -56,9 +56,10 @@ kover {
                 classes("com.timelapserender.trd.v1.*", "*.testfixtures.*")
             }
         }
+        // The line-coverage floor of overview §15.3.
         verify {
             rule {
-                minBound(0)
+                minBound(80)
             }
         }
     }

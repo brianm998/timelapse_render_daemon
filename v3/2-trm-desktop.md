@@ -409,7 +409,9 @@ every `*/build/test-results/test/TEST-*.xml` into `build/mason-desktop-results.x
   `with: version, is_release`, `secrets: inherit`), and `desktop` is appended to both
   `system-tests.needs` and `publish.needs`.
 - `v3-system-tests.yml` (spec 1 §9.7) gains, from DSK-13:
-  - `desktop-packages`: `if: ${{ inputs.build != false }}`, `needs: [version]`, `uses:
+  - `desktop-packages`: `if: ${{ needs.version.outputs.build == 'true' }}` (not `inputs.build !=
+    false`, which push and schedule runs would fail: they have no inputs and `null == false` is
+    true), `needs: [version]`, `uses:
     ./.github/workflows/v3-desktop-build.yml`, `with: version, is_release: false`, `secrets:
     inherit`;
   - `desktop-selftest`: matrix `macos-arm64` on `macos-15`, `macos-x64` on `macos-15-intel`,
@@ -424,8 +426,8 @@ every `*/build/test-results/test/TEST-*.xml` into `build/mason-desktop-results.x
     `C:\Program Files\Timelapse Render Monitor\` with the same flags, then `msiexec /x <msi> /qn`;
     each passes when the output file reads `SELF-TEST OK`;
   - `kotlin-mdns`: `ubuntu-24.04`, `needs: [version]`; checkout, setup-java 21, setup-gradle,
-    `CI=true TRM_MDNS_TEST=1 ./gradlew -p v3/clients/kotlin --no-daemon :core:test --tests
-    '*JmdnsLiveTest*'`, then `bash v3/clients/kotlin/scripts/check-system-tests.sh ran` (DSK-04).
+    `CI=true TRM_MDNS_TEST=1 ./gradlew -p v3/clients/kotlin --no-daemon --no-build-cache
+    :core:test --tests '*JmdnsLiveTest*'` (Gradle does not track the two variables), then `bash v3/clients/kotlin/scripts/check-system-tests.sh ran` (DSK-04).
 - `macos-15-intel` is GitHub's last Intel macOS image (announced for retirement in 2027); when it
   is retired, the x86_64 `.dmg` stops being built and that job is removed.
 
@@ -451,6 +453,7 @@ every `*/build/test-results/test/TEST-*.xml` into `build/mason-desktop-results.x
   `entitlementsFile` and `runtimeEntitlementsFile` = `desktop/packaging/macos-entitlements.plist`
   with `com.apple.security.cs.allow-jit`, `com.apple.security.cs.allow-unsigned-executable-memory`
   and `com.apple.security.cs.disable-library-validation` set to true.
+- Release ProGuard is off, and `modules(…)` lists the JDK modules of the packaged runtime.
 - `javaHome` for packaging = `TRM_JPACKAGE_JDK` when set (the Android Studio JBR used for builds
   has no `jpackage`).
 

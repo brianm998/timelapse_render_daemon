@@ -158,7 +158,7 @@ level = "t1"
 command = "bash v3/scripts/suite.sh kotlin-test 2>&1"
 parser = "junit"
 results_file = "v3/clients/kotlin/build/mason-desktop-results.xml"
-min_tests = 1
+min_tests = 361
 level = "t1"
 uses = { test-suite = 1 }
 
@@ -190,7 +190,7 @@ uses = { compile = 1 }
 
 # Every suite has min_tests = 1 until DSK-13, IOS-09 and AND-06 raise their floors to 90 % of the
 # measured counts. TRD-GATE raised trd-check (4 measured, 3), trd-test (556, 500) and trd-e2e (16,
-# 14).
+# 14). DSK-13 raised kotlin-test (402 passing cases counted in the sources, 361).
 
 [impact]
 "v3/trd/**" = ["trd-check", "trd-test", "trd-e2e"]
