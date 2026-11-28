@@ -27,10 +27,10 @@ class Commands(private val client: TrdClient) {
     suspend fun resumeSequence(sequenceName: String): Result<Unit> = attempt { client.resumeSequence(sequenceName) }
 
     suspend fun pauseVariant(sequenceName: String, variantKey: String): Result<Unit> =
-        run { client.pauseVariant(sequenceName, variantKey) }
+        attempt { client.pauseVariant(sequenceName, variantKey) }
 
     suspend fun resumeVariant(sequenceName: String, variantKey: String): Result<Unit> =
-        run { client.resumeVariant(sequenceName, variantKey) }
+        attempt { client.resumeVariant(sequenceName, variantKey) }
 
     suspend fun suspendRender(renderId: String): Result<Unit> = attempt { client.suspendRender(renderId) }
 
@@ -39,7 +39,7 @@ class Commands(private val client: TrdClient) {
     suspend fun stopRender(renderId: String): Result<Unit> = attempt { client.stopRender(renderId) }
 
     suspend fun retryVariant(sequenceName: String, variantKey: String): Result<Unit> =
-        run { client.retryVariant(sequenceName, variantKey) }
+        attempt { client.retryVariant(sequenceName, variantKey) }
 
     suspend fun dismissFailure(failureId: String): Result<Unit> = attempt { client.dismissFailure(failureId) }
 
