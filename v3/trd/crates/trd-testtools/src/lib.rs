@@ -67,15 +67,40 @@ pub fn fake_bin_dir() -> PathBuf {
 
 /// Copies the fake binaries from `bin_dir` into `dest` under the names ffmpeg, ffprobe and
 /// exiftool. On macOS each copy is ad-hoc signed, since a copied binary's signature names the old
-/// file.
+/// file. The copies can be run as soon as this returns, even while other threads start processes
+/// (see `copy_program`).
 pub fn make_tools_dir(bin_dir: &Path, dest: &Path) -> io::Result<()> {
     fs::create_dir_all(dest)?;
     for (bin, name) in FAKE_TOOLS {
         let to = dest.join(format!("{name}{}", exe_suffix()));
-        fs::copy(bin_dir.join(format!("{bin}{}", exe_suffix())), &to)?;
+        copy_program(&bin_dir.join(format!("{bin}{}", exe_suffix())), &to)?;
         sign_ad_hoc(&to)?;
     }
     Ok(())
+}
+
+/// Copies a program with `/bin/cp`, so that this process never holds the copy open for writing.
+/// A child forked by another thread while such a descriptor is open inherits it until its own
+/// exec, and running the copy in that window fails with `ETXTBSY` ("Text file busy").
+#[cfg(unix)]
+fn copy_program(from: &Path, to: &Path) -> io::Result<()> {
+    let status = std::process::Command::new("/bin/cp")
+        .arg(from)
+        .arg(to)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "cp failed for {}: {status}",
+            from.display()
+        )))
+    }
+}
+
+#[cfg(not(unix))]
+fn copy_program(from: &Path, to: &Path) -> io::Result<()> {
+    fs::copy(from, to).map(|_| ())
 }
 
 #[cfg(target_os = "macos")]
