@@ -174,6 +174,8 @@ private fun createAppState(options: Options, notify: (Notification) -> Unit, tra
 }
 
 fun main(args: Array<String>) {
+    // Before anything else: the self-test runs headless and reads none of the user's data.
+    if (SELF_TEST_FLAG in args) exitProcess(runSelfTest(args.toList()))
     val options = try {
         parseOptions(args.toList())
     } catch (e: IllegalArgumentException) {

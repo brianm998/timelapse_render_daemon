@@ -32,7 +32,7 @@ data class RecordedCall(val method: String, val authorization: String?)
 /**
  * An in-process implementation of every RPC of trd.proto, driven by scripted data. Every call is
  * recorded. Set [failWith] to make a method (by bare name, e.g. "GetServerInfo") fail with a status
- * before it reaches the handler. Start it with [startInProcess] or [startTls] (Netty, port 0).
+ * before it reaches the handler. Start it with [startInProcess], [startPlaintext] or [startTls] (both Netty, port 0).
  */
 class FakeTrdService {
     val calls = CopyOnWriteArrayList<RecordedCall>()
@@ -220,6 +220,15 @@ class FakeTrdService {
         val name = "trd-fake-" + UUID.randomUUID()
         val server = InProcessServerBuilder.forName(name).addService(definition()).build().start()
         return Running(server, InProcessChannelBuilder.forName(name).build(), null, name)
+    }
+
+    /** A plaintext server on a loopback port chosen by the OS, as trd's local listener. */
+    fun startPlaintext(): Running {
+        val server = NettyServerBuilder.forAddress(InetSocketAddress(InetAddress.getLoopbackAddress(), 0))
+            .addService(definition())
+            .build()
+            .start()
+        return Running(server, null, null)
     }
 
     /** A TLS server on a loopback port chosen by the OS; connect with a pin of [Running.fingerprintSha256Hex]. */

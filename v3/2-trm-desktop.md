@@ -409,7 +409,9 @@ every `*/build/test-results/test/TEST-*.xml` into `build/mason-desktop-results.x
   `with: version, is_release`, `secrets: inherit`), and `desktop` is appended to both
   `system-tests.needs` and `publish.needs`.
 - `v3-system-tests.yml` (spec 1 §9.7) gains, from DSK-13:
-  - `desktop-packages`: `if: ${{ inputs.build != false }}`, `needs: [version]`, `uses:
+  - `desktop-packages`: `if: ${{ needs.version.outputs.build == 'true' }}` (not `inputs.build !=
+    false`, which push and schedule runs would fail: they have no inputs and `null == false` is
+    true), `needs: [version]`, `uses:
     ./.github/workflows/v3-desktop-build.yml`, `with: version, is_release: false`, `secrets:
     inherit`;
   - `desktop-selftest`: matrix `macos-arm64` on `macos-15`, `macos-x64` on `macos-15-intel`,

@@ -35,6 +35,18 @@ class SnapshotRepositoryTest {
     }
 
     @Test
+    fun showsTheInitialSnapshotUntilTheFirstOneArrives() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            env.fake.snapshots = listOf(Snapshot.newBuilder().setRevision(7).build())
+            val initial = Snapshot.newBuilder().setRevision(1).build()
+            val repo = SnapshotRepository(env.client, backgroundScope, initialSnapshot = initial)
+            assertEquals(initial, repo.state.value.snapshot)
+            repo.start()
+            repo.state.first { it.snapshot?.revision == 7L }
+        }
+    }
+
+    @Test
     fun aChangedRateRestartsTheWatchAndKeepsTheSnapshot() = runTest(timeout = 60.seconds) {
         Env(backgroundScope).use { env ->
             env.fake.snapshots = listOf(Snapshot.newBuilder().setRevision(3).build())

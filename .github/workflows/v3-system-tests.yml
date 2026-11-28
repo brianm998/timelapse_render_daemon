@@ -4,7 +4,8 @@
 # The daemon's system tests (spec 1 §9.7, TRD-29): the three installers and the live service and mDNS
 # tests, on GitHub-hosted runners only. They are not part of the landing gate. They run on every push
 # to develop, nightly, and inside every release run before it publishes (v3-release.yml calls this
-# workflow with `build: false`, so it tests the packages that run built). Specs 2-4 add their jobs.
+# workflow with `build: false`, so it tests the packages that run built). Specs 2-4 add their jobs:
+# the desktop packages' self-test and the Kotlin mDNS test (spec 2 §8, DSK-13).
 
 name: v3 system tests
 
@@ -93,6 +94,16 @@ jobs:
     needs: [version, ffmpeg, exiftool]
     if: ${{ needs.version.outputs.build == 'true' }}
     uses: ./.github/workflows/v3-trd-build.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      is_release: false
+    secrets: inherit
+
+  desktop-packages:
+    name: desktop packages
+    needs: version
+    if: ${{ needs.version.outputs.build == 'true' }}
+    uses: ./.github/workflows/v3-desktop-build.yml
     with:
       version: ${{ needs.version.outputs.version }}
       is_release: false
@@ -406,3 +417,154 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: v3/trd
         run: CI=true TRD_MDNS_TEST=1 cargo test -p trd --test mdns_live --locked -- --ignored
+
+  # ─── The desktop app (spec 2 §8): each package installed or mounted, self-tested and removed ───
+  desktop-selftest:
+    name: Desktop self-test (${{ matrix.target }})
+    needs: [version, desktop-packages]
+    if: ${{ !cancelled() && needs.version.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.desktop-packages.result) }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos-arm64
+            runner: macos-15
+          - target: macos-x64
+            runner: macos-15-intel
+          - target: linux-x64
+            runner: ubuntu-24.04
+          - target: windows-x64
+            runner: windows-2022
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download the package
+        uses: actions/download-artifact@v7
+        with:
+          name: release-asset-desktop-${{ matrix.target }}
+          path: pkg
+
+      - name: Mount the disk image and run the self-test
+        if: runner.os == 'macOS'
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          mount="$RUNNER_TEMP/dmg"
+          echo "DMG_MOUNT=$mount" >> "$GITHUB_ENV"
+          mkdir -p "$mount"
+          hdiutil attach pkg/*.dmg -nobrowse -readonly -mountpoint "$mount"
+          app="$mount/Timelapse Render Monitor.app"
+          launcher="$app/Contents/MacOS/Timelapse Render Monitor"
+          out="$RUNNER_TEMP/selftest.txt"
+          status=0
+          "$launcher" --self-test --self-test-output "$out" || status=$?
+          cat "$out" || true
+          if [ "$status" -ne 0 ] || [ "$(head -n 1 "$out")" != "SELF-TEST OK" ]; then
+            echo "::error::the self-test failed (exit $status)"
+            exit 1
+          fi
+          /usr/bin/codesign --verify --strict --deep "$app"
+
+      - name: Detach the disk image
+        if: always() && runner.os == 'macOS'
+        run: |
+          if [ -n "${DMG_MOUNT:-}" ] && /sbin/mount | grep -qF " on $DMG_MOUNT "; then
+            hdiutil detach "$DMG_MOUNT" || hdiutil detach "$DMG_MOUNT" -force
+          fi
+
+      - name: Install the .deb and run the self-test
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ./pkg/timelapse-render-monitor_*_amd64.deb
+          launcher="$(find /opt/timelapse-render-monitor/bin -maxdepth 1 -type f | head -n 1)"
+          if [ -z "$launcher" ]; then
+            echo "::error::no launcher in /opt/timelapse-render-monitor/bin"
+            exit 1
+          fi
+          out="$RUNNER_TEMP/selftest.txt"
+          status=0
+          "$launcher" --self-test --self-test-output "$out" || status=$?
+          cat "$out" || true
+          if [ "$status" -ne 0 ] || [ "$(head -n 1 "$out")" != "SELF-TEST OK" ]; then
+            echo "::error::the self-test failed (exit $status)"
+            exit 1
+          fi
+
+      - name: Remove the .deb
+        if: always() && runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          if ! dpkg -s timelapse-render-monitor >/dev/null 2>&1; then
+            echo "the package is not installed, so there is nothing to remove"
+            exit 0
+          fi
+          sudo apt-get remove -y timelapse-render-monitor
+          if [ -e /opt/timelapse-render-monitor/bin ]; then
+            echo "::error::/opt/timelapse-render-monitor/bin is still there after the package was removed"
+            exit 1
+          fi
+
+      # msiexec and the app's launcher are GUI programs: Start-Process -Wait waits for them.
+      - name: Install the .msi and run the self-test
+        if: runner.os == 'Windows'
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Get-ChildItem pkg -Filter *.msi | Select-Object -First 1).FullName
+          "MSI_PATH=$msi" >> $env:GITHUB_ENV
+          $install = Start-Process msiexec.exe -ArgumentList '/i', "`"$msi`"", '/qn' -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "msiexec /i exited $($install.ExitCode)" }
+          $dir = Join-Path $env:ProgramFiles 'Timelapse Render Monitor'
+          $launcher = Join-Path $dir 'Timelapse Render Monitor.exe'
+          if (-not (Test-Path $launcher)) { throw "the install did not create $launcher" }
+          $out = Join-Path $env:RUNNER_TEMP 'selftest.txt'
+          $run = Start-Process $launcher -ArgumentList '--self-test', '--self-test-output', "`"$out`"" -Wait -PassThru
+          if (Test-Path $out) { Get-Content $out }
+          if ($run.ExitCode -ne 0 -or (Get-Content $out -TotalCount 1) -ne 'SELF-TEST OK') {
+            throw "the self-test failed (exit $($run.ExitCode))"
+          }
+
+      - name: Uninstall the .msi
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $launcher = Join-Path $env:ProgramFiles 'Timelapse Render Monitor\Timelapse Render Monitor.exe'
+          if (-not (Test-Path $launcher)) {
+            Write-Output 'the app is not installed, so there is nothing to uninstall'
+            exit 0
+          }
+          $remove = Start-Process msiexec.exe -ArgumentList '/x', "`"$env:MSI_PATH`"", '/qn' -Wait -PassThru
+          if ($remove.ExitCode -ne 0) { throw "msiexec /x exited $($remove.ExitCode)" }
+          if (Test-Path $launcher) { throw "$launcher is still there after the uninstall" }
+
+  kotlin-mdns:
+    name: Kotlin mDNS test (ubuntu-24.04)
+    needs: [version]
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Advertise and discover a server over real multicast (DSK-04)
+        # No build cache: Gradle does not track the two variables, so a cached result could stand in
+        # for a run.
+        run: CI=true TRM_MDNS_TEST=1 ./v3/clients/kotlin/gradlew -p v3/clients/kotlin --no-daemon --no-build-cache --console=plain :core:test --tests '*JmdnsLiveTest*'
+
+      - name: Check that the test ran
+        run: bash v3/clients/kotlin/scripts/check-system-tests.sh ran
