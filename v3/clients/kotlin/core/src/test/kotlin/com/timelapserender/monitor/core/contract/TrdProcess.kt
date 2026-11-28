@@ -42,10 +42,6 @@ internal const val PRORES_MQ = "ProResMQ_1080x720_30"
 internal const val H264 = "h264_720w_30"
 internal const val PRORES_UHQ = "ProResUHQ_ori_30"
 
-/** What each variant's ffmpeg arguments hold, for the `match` of a fake ffmpeg rule. */
-internal const val MATCH_PRORES_MQ = "_ProRes-422_"
-internal const val MATCH_H264 = "_H264-420_"
-
 private const val LETTERS = "abcdefg"
 
 /** The export directory name of a sandbox sequence: the `sequence_name` of the API. */
