@@ -22,7 +22,7 @@ class PinnedTlsTest {
             .withDeadlineAfter(60, TimeUnit.SECONDS)
 
     @Test
-    fun rightFingerprintConnects() = runBlocking {
+    fun rightFingerprintConnects() = runBlocking<Unit> {
         val fake = FakeTrdService()
         fake.startTls(cert).use { running ->
             val channel = ChannelFactory.create(
@@ -41,7 +41,7 @@ class PinnedTlsTest {
     }
 
     @Test
-    fun wrongFingerprintFailsBeforeAnyRpc() = runBlocking {
+    fun wrongFingerprintFailsBeforeAnyRpc() = runBlocking<Unit> {
         val fake = FakeTrdService()
         fake.startTls(cert).use { running ->
             val wrong = "0".repeat(64)
@@ -57,11 +57,11 @@ class PinnedTlsTest {
     }
 
     @Test
-    fun hostnameIsNotChecked() = runBlocking {
+    fun hostnameIsNotChecked() = runBlocking<Unit> {
         val fake = FakeTrdService()
         fake.startTls(cert).use { running ->
-            // The certificate is for CN=trd-test; "localhost" does not match it.
-            val info = stub(ServerEndpoint("localhost", running.port, TlsMode.Pinned(running.fingerprintSha256Hex!!)))
+            // The certificate is for CN=trd-test; the host name is never checked.
+            val info = stub(ServerEndpoint("127.0.0.1", running.port, TlsMode.Pinned(running.fingerprintSha256Hex!!)))
                 .getServerInfo(GetServerInfoRequest.getDefaultInstance())
             assertEquals("Fake trd", info.name)
         }

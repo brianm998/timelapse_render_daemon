@@ -43,7 +43,7 @@ class TrdClientTest {
         withTimeout(60_000) { state.first(predicate) }
 
     @Test
-    fun connectsAndReportsServerInfo() = runBlocking {
+    fun connectsAndReportsServerInfo() = runBlocking<Unit> {
         val c = client()
         c.start()
         val s = c.awaitState { it is ConnectionState.Connected } as ConnectionState.Connected
@@ -51,7 +51,7 @@ class TrdClientTest {
     }
 
     @Test
-    fun unauthenticatedNeedsPairing() = runBlocking {
+    fun unauthenticatedNeedsPairing() = runBlocking<Unit> {
         fake.failWith["GetServerInfo"] = Status.UNAUTHENTICATED
         val c = client()
         c.start()
@@ -59,7 +59,7 @@ class TrdClientTest {
     }
 
     @Test
-    fun unauthenticatedFromACallNeedsPairing() = runBlocking {
+    fun unauthenticatedFromACallNeedsPairing() = runBlocking<Unit> {
         val c = client()
         c.start()
         c.awaitState { it is ConnectionState.Connected }
@@ -72,7 +72,7 @@ class TrdClientTest {
     }
 
     @Test
-    fun lanCallerThatIsNeitherLocalNorPairedNeedsPairing() = runBlocking {
+    fun lanCallerThatIsNeitherLocalNorPairedNeedsPairing() = runBlocking<Unit> {
         fake.serverInfo = fake.serverInfo.toBuilder().setCallerIsLocal(false).setCallerIsPaired(false).build()
         val c = client(lan = true)
         c.start()
@@ -80,16 +80,15 @@ class TrdClientTest {
     }
 
     @Test
-    fun pairedLanCallerConnects() = runBlocking {
+    fun pairedLanCallerConnects() = runBlocking<Unit> {
         fake.serverInfo = fake.serverInfo.toBuilder().setCallerIsLocal(false).setCallerIsPaired(true).build()
         val c = client(token = "t", lan = true)
         c.start()
         c.awaitState { it is ConnectionState.Connected }
-        Unit
     }
 
     @Test
-    fun apiVersion2IsIncompatible() = runBlocking {
+    fun apiVersion2IsIncompatible() = runBlocking<Unit> {
         fake.serverInfo = ServerInfo.newBuilder().setApiVersion(2).build()
         val c = client()
         c.start()
@@ -100,7 +99,7 @@ class TrdClientTest {
     }
 
     @Test
-    fun backOffIsOneTwoFiveTenSecondsThenOffline() = runBlocking {
+    fun backOffIsOneTwoFiveTenSecondsThenOffline() = runBlocking<Unit> {
         fake.failWith["GetServerInfo"] = Status.UNAVAILABLE
         val delays = CopyOnWriteArrayList<Long>()
         val fourth = CompletableDeferred<Unit>()
@@ -116,7 +115,7 @@ class TrdClientTest {
     }
 
     @Test
-    fun reconnectingCountsAttemptsBeforeOffline() = runBlocking {
+    fun reconnectingCountsAttemptsBeforeOffline() = runBlocking<Unit> {
         fake.failWith["GetServerInfo"] = Status.UNAVAILABLE
         val seen = CopyOnWriteArrayList<ConnectionState>()
         val gate = CompletableDeferred<Unit>()
@@ -140,16 +139,15 @@ class TrdClientTest {
     }
 
     @Test
-    fun retryingRecoversWhenTheServerComesBack() = runBlocking {
+    fun retryingRecoversWhenTheServerComesBack() = runBlocking<Unit> {
         fake.failWith["GetServerInfo"] = Status.UNAVAILABLE
         val c = client { _ -> fake.failWith.remove("GetServerInfo") }
         c.start()
         c.awaitState { it is ConnectionState.Connected }
-        Unit
     }
 
     @Test
-    fun tokenInterceptorAddsBearerOnlyWhenATokenIsSet() = runBlocking {
+    fun tokenInterceptorAddsBearerOnlyWhenATokenIsSet() = runBlocking<Unit> {
         val withToken = client(token = "abc")
         withToken.serverInfo()
         assertEquals("Bearer abc", fake.calls.last().authorization)
@@ -162,7 +160,7 @@ class TrdClientTest {
     }
 
     @Test
-    fun everyRpcReachesTheFake() = runBlocking {
+    fun everyRpcReachesTheFake() = runBlocking<Unit> {
         val c = client(token = "t")
         c.serverInfo()
         c.pair("123456", "Desk", DevicePlatform.DEVICE_PLATFORM_DESKTOP)
