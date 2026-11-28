@@ -1584,7 +1584,10 @@ fn codec_file(w: &World) -> PathBuf {
 fn only_variant_is_known(w: &World) -> bool {
     let snap = w.snap();
     card(&snap, "LRT_S1").is_some_and(|c| {
-        c.variants.len() == 1 && c.variants.iter().all(|v| v.status != VariantStatus::UnknownCodec)
+        c.variants.len() == 1
+            && c.variants
+                .iter()
+                .all(|v| v.status != VariantStatus::UnknownCodec)
     })
 }
 

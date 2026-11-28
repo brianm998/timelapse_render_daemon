@@ -589,7 +589,10 @@ mod server {
         let daemon = Daemon::start(&fixture, &[]);
         let mut client = daemon.client().await;
         poll_snapshot(&mut client, |s| {
-            s.problems.iter().any(|p| p.id == "codec:Probe").then_some(())
+            s.problems
+                .iter()
+                .any(|p| p.id == "codec:Probe")
+                .then_some(())
         })
         .await;
 
