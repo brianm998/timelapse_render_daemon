@@ -28,6 +28,10 @@ dependencies {
 
     testFixturesApi(project(":proto"))
     testFixturesApi(libs.kotlinx.coroutines.core)
+    testFixturesApi(libs.grpc.stub)
+    testFixturesApi(libs.grpc.kotlin.stub)
+    testFixturesApi(libs.grpc.inprocess)
+    testFixturesApi(libs.grpc.netty.shaded)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
