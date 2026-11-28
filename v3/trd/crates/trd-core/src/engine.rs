@@ -346,21 +346,30 @@ impl Engine {
     }
 
     /// Runs the engine until it is shut down or every handle is dropped. Start-up runs first.
+    ///
+    /// A tick runs one scan interval after the last one ended; controls do not move that deadline.
+    /// A control that asks for a scan is answered first and then ticked at once (§6.9).
     pub async fn run(mut self) {
         self.tick().await;
+        let mut ticked = tokio::time::Instant::now();
         loop {
-            let wait = self.scan_interval();
-            let next = tokio::select! {
-                command = self.commands.recv() => Some(command),
-                _ = tokio::time::sleep(wait) => None,
+            // What is left of the interval, not a deadline: a huge interval cannot overflow.
+            let wait = self.scan_interval().saturating_sub(ticked.elapsed());
+            let due = tokio::select! {
+                command = self.commands.recv() => match command {
+                    None | Some(Command::Shutdown) => break,
+                    Some(Command::Control { control, reply }) => {
+                        let result = self.apply_control(control);
+                        let scan = matches!(result, Ok(true));
+                        let _ = reply.send(result.map(|_| ()));
+                        scan
+                    }
+                },
+                _ = tokio::time::sleep(wait) => true,
             };
-            match next {
-                None => self.tick().await,
-                Some(None) | Some(Some(Command::Shutdown)) => break,
-                Some(Some(Command::Control { control, reply })) => {
-                    let result = self.apply(control);
-                    let _ = reply.send(result);
-                }
+            if due {
+                self.tick().await;
+                ticked = tokio::time::Instant::now();
             }
         }
     }
@@ -431,6 +440,11 @@ impl Engine {
     /// Applies one control (§6.8, §6.9) and publishes. A control that does not apply changes nothing
     /// and returns its error. A control that asks for a scan sets the next tick to scan.
     pub fn apply(&mut self, control: Control) -> Result<(), ControlError> {
+        self.apply_control(control).map(|_| ())
+    }
+
+    /// [`Engine::apply`], also saying whether this control asked for a scan.
+    fn apply_control(&mut self, control: Control) -> Result<bool, ControlError> {
         let now = self.now();
         let outcome = {
             let mut ctx = ctx!(self, now);
@@ -467,7 +481,7 @@ impl Engine {
                 if outcome.rescan {
                     self.rescan = true;
                 }
-                Ok(())
+                Ok(outcome.rescan)
             }
             Err(err) => Err(err),
         };

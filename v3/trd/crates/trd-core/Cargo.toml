@@ -45,3 +45,5 @@ windows-sys = { workspace = true, features = [
 [dev-dependencies]
 # The fake tools and their fixtures (TRD-05); the dev cycle with trd-testtools is allowed by cargo.
 trd-testtools = { path = "../trd-testtools" }
+# Paused time for the run loop's tick deadline; "full" does not include it.
+tokio = { workspace = true, features = ["test-util"] }
