@@ -38,6 +38,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -449,15 +450,14 @@ class AppState(
         showDialog(AppDialog.Pair(server))
     }
 
-    private fun showDialog(dialog: AppDialog) {
-        pairing?.cancel()
-        _ui.update { it.copy(dialog = dialog) }
+    private fun showDialog(dialog: AppDialog?) {
+        synchronized(lock) {
+            pairing?.cancel()
+            _ui.update { it.copy(dialog = dialog) }
+        }
     }
 
-    fun dismissDialog() {
-        pairing?.cancel()
-        _ui.update { it.copy(dialog = null) }
-    }
+    fun dismissDialog() = showDialog(null)
 
     /** Pairs with the dialog's server using [code], stores the record and connects to it. */
     fun submitPairing(code: String) {
@@ -469,15 +469,22 @@ class AppState(
         pairing = scope.launch {
             try {
                 val record = pairer(dialog.server.endpoint, digits, withContext(io) { deviceName() })
-                registry.save(record)
-                settings.lastServerId = record.serverId
-                _ui.update { it.copy(dialog = null, servers = registry.servers.value) }
-                registry.servers.value.firstOrNull { it.serverId == record.serverId }?.let { connect(it) }
+                synchronized(lock) {
+                    // Dismissing takes the same lock, so a dismissed pairing stores nothing.
+                    ensureActive()
+                    registry.save(record)
+                    settings.lastServerId = record.serverId
+                    _ui.update { it.copy(dialog = null, servers = registry.servers.value) }
+                    registry.servers.value.firstOrNull { it.serverId == record.serverId }?.let { connect(it) }
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 val message = (e as? PairingException)?.message ?: e.message ?: PairingClient.CONNECTION_FAILED
-                _ui.update { it.copy(dialog = dialog.copy(busy = false, error = message)) }
+                synchronized(lock) {
+                    ensureActive()
+                    _ui.update { it.copy(dialog = dialog.copy(busy = false, error = message)) }
+                }
             }
         }
     }

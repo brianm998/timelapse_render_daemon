@@ -14,7 +14,14 @@ import com.timelapserender.trd.v1.SequenceCard
 import com.timelapserender.trd.v1.Snapshot
 import io.grpc.Status
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -194,11 +201,13 @@ class AppStateTest {
     @Test
     fun cancellingThePairingDialogStoresNothing() {
         val answer = CompletableDeferred<ServerRecord>()
+        val entered = CompletableDeferred<Unit>()
         val cancelled = CompletableDeferred<Unit>()
         val h = harness(
             Harness(
                 pairer = { _, _, _ ->
                     try {
+                        entered.complete(Unit)
                         answer.await()
                     } finally {
                         cancelled.complete(Unit)
@@ -212,10 +221,51 @@ class AppStateTest {
         h.app.openPairing("other")
         h.app.submitPairing("123456")
         assertTrue((h.app.ui.value.dialog as AppDialog.Pair).busy)
+        // A job cancelled before it starts never reaches the pairer.
+        h.awaitTrue { entered.isCompleted }
         h.app.dismissDialog()
         h.awaitTrue { cancelled.isCompleted }
         assertNull(h.app.ui.value.dialog)
         assertTrue(h.store.list().isEmpty())
+    }
+
+    @Test
+    fun anAnswerArrivingAfterTheDialogIsCancelledIsDropped() {
+        for (succeeds in listOf(true, false)) {
+            val entered = CompletableDeferred<Unit>()
+            val answer = CompletableDeferred<Unit>()
+            val returned = CompletableDeferred<Job>()
+            val h = harness(
+                Harness(
+                    pairer = { _, _, _ ->
+                        val job = currentCoroutineContext().job
+                        // Like a call that is already past the point of being cancelled.
+                        withContext(NonCancellable) {
+                            entered.complete(Unit)
+                            answer.await()
+                        }
+                        returned.complete(job)
+                        if (!succeeds) throw PairingException("too late")
+                        record("other", Harness.OTHER_PORT)
+                    },
+                ),
+            )
+            h.app.start()
+            h.discovery.servers.value = listOf(discovered("other", Harness.OTHER_PORT))
+            h.await { ui -> ui.servers.any { it.serverId == "other" } }
+            h.app.openPairing("other")
+            h.app.submitPairing("123456")
+            h.awaitTrue { entered.isCompleted }
+            h.app.dismissDialog()
+            answer.complete(Unit)
+            runBlocking { withTimeout(Harness.TIMEOUT_MS) { returned.await().join() } }
+
+            assertNull(h.app.ui.value.dialog)
+            assertTrue(h.store.list().isEmpty())
+            assertEquals("local", h.app.ui.value.activeServerId)
+            h.close()
+        }
+        harness = null
     }
 
     @Test
