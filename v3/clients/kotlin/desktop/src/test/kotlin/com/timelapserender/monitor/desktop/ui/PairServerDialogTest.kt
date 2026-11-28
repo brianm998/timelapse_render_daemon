@@ -79,17 +79,19 @@ class PairServerDialogTest {
         val certificate = TestCertificate.generate()
         val running = FakeTrdService().startTls(certificate).also { closing += it }
         val fingerprint = certificate.fingerprintSha256Hex
-        assertEquals(fingerprint, probeFingerprint("127.0.0.1", running.port, fingerprint.take(16)))
+        // A terminated server no longer tells its port.
+        val port = running.port
+        assertEquals(fingerprint, probeFingerprint("127.0.0.1", port, fingerprint.take(16)))
 
         val other = (if (fingerprint[0] == '0') "1" else "0") + fingerprint.substring(1, 16)
         val mismatch = assertThrows(PairingException::class.java) {
-            runBlocking { probeFingerprint("127.0.0.1", running.port, other) }
+            runBlocking { probeFingerprint("127.0.0.1", port, other) }
         }
         assertEquals(FINGERPRINT_MISMATCH, mismatch.message)
 
         running.close()
         val unreachable = assertThrows(PairingException::class.java) {
-            runBlocking { probeFingerprint("127.0.0.1", running.port, fingerprint.take(16)) }
+            runBlocking { probeFingerprint("127.0.0.1", port, fingerprint.take(16)) }
         }
         assertEquals(PairingClient.CONNECTION_FAILED, unreachable.message)
     }
