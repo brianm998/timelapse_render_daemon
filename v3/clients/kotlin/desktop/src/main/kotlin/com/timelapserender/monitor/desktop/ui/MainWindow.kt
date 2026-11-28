@@ -24,6 +24,7 @@ import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -88,7 +89,7 @@ private fun ConnectedView(ui: AppUi, app: AppState) {
             ),
         )
         Row(Modifier.weight(1f)) {
-            ActivityPlaceholder(ui, app, Modifier.weight(1f).fillMaxHeight().testTag(MainWindowTags.ACTIVITY))
+            ActivityArea(ui, app, Modifier.weight(1f).fillMaxHeight().testTag(MainWindowTags.ACTIVITY))
             if (ui.detailsVisible) {
                 VerticalDivider(
                     modifier = Modifier.fillMaxHeight().testTag(MainWindowTags.DIVIDER).draggable(
@@ -100,7 +101,7 @@ private fun ConnectedView(ui: AppUi, app: AppState) {
                     ),
                     thickness = 4.dp,
                 )
-                // Nothing can be selected until the Activity list exists, so only the scan summary.
+                // The scan summary; the selected row's details are not drawn yet.
                 Column(Modifier.width(detailsWidth).fillMaxHeight().padding(16.dp).testTag(MainWindowTags.DETAILS)) {
                     Text(ui.lastScanText)
                 }
@@ -109,19 +110,38 @@ private fun ConnectedView(ui: AppUi, app: AppState) {
     }
 }
 
-/** Stands where the Activity list will be. */
+/** The Activity list, or the pairing prompt when the server does not know this computer. */
 @Composable
-private fun ActivityPlaceholder(ui: AppUi, app: AppState, modifier: Modifier) {
-    Column(
-        modifier.padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        if (ui.connection is ConnectionState.NeedsPairing) {
+private fun ActivityArea(ui: AppUi, app: AppState, modifier: Modifier) {
+    val activity = ui.activity
+    if (ui.connection is ConnectionState.NeedsPairing) {
+        Column(
+            modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
             Text("This computer is not paired with the server.")
             Button(onClick = { app.openPairing(ui.activeServerId) }) { Text("Pair…") }
-        } else {
-            Text("Activity")
+        }
+        return
+    }
+    Box(modifier) {
+        val session = app.session
+        if (activity != null && session != null) {
+            // Another server's list starts afresh: nothing of the old rows is compared or reused.
+            key(session) {
+                ActivityList(
+                    activity = activity,
+                    listState = app.listState,
+                    scrollKeeper = app.scrollKeeper,
+                    posters = session.posters,
+                    connected = ui.connected,
+                    selectedKey = ui.selectedKey,
+                    onSelect = app::select,
+                    onLoadOlder = session.presenter::loadOlder,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
         }
     }
 }

@@ -27,6 +27,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import org.jetbrains.skia.EncodedImageFormat
+import org.jetbrains.skia.Surface
+import java.nio.file.Files
+import java.nio.file.Path
 import java.time.ZoneOffset
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -87,6 +91,12 @@ class RecordingRunner : CommandRunner {
     }
 }
 
+/** A small JPEG, as a server's poster. */
+fun jpeg(): ByteArray = Surface.makeRasterN32Premul(32, 18).use { surface ->
+    surface.canvas.clear(0xFF336699.toInt())
+    checkNotNull(surface.makeImageSnapshot().encodeToData(EncodedImageFormat.JPEG)).bytes
+}
+
 fun record(id: String, port: Int, name: String = "stored-$id") =
     ServerRecord(id, name, "10.0.0.2", port, "ab", "token-$id", "linux-x64", 1L)
 
@@ -95,7 +105,8 @@ fun discovered(id: String, port: Int, name: String = "found-$id") =
 
 /**
  * An [AppState] over in-process fakes: [local] answers at the local entry, [other] at port
- * [OTHER_PORT]. Nothing is dialled on the network, run on the computer or written to disk.
+ * [OTHER_PORT]. Nothing is dialled on the network or run on the computer; only posters are written,
+ * to a temporary directory.
  */
 class Harness(
     val settings: FakeSettings = FakeSettings(),
@@ -110,6 +121,7 @@ class Harness(
     private val runningOther = other.startInProcess()
     val discovery = FakeDiscovery()
     val runner = RecordingRunner()
+    val posterDir: Path = Files.createTempDirectory("trm-posters")
 
     /** The waits between connect attempts, as the app asked for them. */
     val delays = CopyOnWriteArrayList<Long>()
@@ -136,6 +148,7 @@ class Harness(
         pairer = pairer,
         deviceName = { "test-desk" },
         zone = ZoneOffset.UTC,
+        posterCacheDir = posterDir,
     )
 
     fun localDown() {
@@ -159,6 +172,7 @@ class Harness(
         app.close()
         runningLocal.close()
         runningOther.close()
+        posterDir.toFile().deleteRecursively()
     }
 
     companion object {

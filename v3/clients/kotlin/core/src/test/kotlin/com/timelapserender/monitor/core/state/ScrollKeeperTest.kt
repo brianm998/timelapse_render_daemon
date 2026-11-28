@@ -97,4 +97,18 @@ class ScrollKeeperTest {
         assertEquals(ScrollDecision.StayAtTop, keeper.decide(before, after, "card/x", true))
         assertEquals(ScrollDecision.KeepAnchor("video/1", 1), keeper.decide(before, after, "video/1", false))
     }
+
+    @Test
+    fun onlyTheKeysThatCountAreAddedToThePill() {
+        val keeper = ScrollKeeper()
+        assertEquals(
+            ScrollDecision.KeepAnchor("b", 1),
+            keeper.decide(keys("a", "b"), keys("header", "x", "a", "b"), "b", false) { it != "header" },
+        )
+        // A later update adds to what was counted; one that counts nothing leaves it.
+        assertEquals(
+            ScrollDecision.KeepAnchor("b", 1),
+            keeper.decide(keys("header", "x", "a", "b"), keys("y", "header", "x", "a", "b"), "b", false) { false },
+        )
+    }
 }

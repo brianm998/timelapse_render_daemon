@@ -28,7 +28,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -36,6 +35,7 @@ import com.timelapserender.monitor.core.servers.RegisteredServer
 import com.timelapserender.monitor.core.servers.ServerSource
 import com.timelapserender.monitor.core.state.ChipRole
 import com.timelapserender.monitor.desktop.AppUi
+import com.timelapserender.monitor.desktop.ui.rows.Chip
 
 const val ALL_EXPORT_PATHS = "All export paths"
 
@@ -165,19 +165,5 @@ private fun ExportPathFilter(ui: AppUi, onSelect: (String?) -> Unit) {
                 DropdownMenuItem(text = { Text(path) }, onClick = { pick(path) })
             }
         }
-    }
-}
-
-@Composable
-private fun Chip(text: String, role: ChipRole, modifier: Modifier = Modifier) {
-    val color = when (role) {
-        ChipRole.Neutral -> Color(0xFF616161)
-        ChipRole.Active -> Color(0xFF1565C0)
-        ChipRole.Ok -> Color(0xFF2E7D32)
-        ChipRole.Warning -> Color(0xFF8D5A00)
-        ChipRole.Error -> Color(0xFFC62828)
-    }
-    Surface(color = color, contentColor = Color.White, shape = MaterialTheme.shapes.small, modifier = modifier) {
-        Text(text, Modifier.padding(horizontal = 8.dp, vertical = 2.dp), style = MaterialTheme.typography.labelMedium)
     }
 }

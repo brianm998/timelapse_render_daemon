@@ -73,7 +73,8 @@ class TopBarTest {
             .assertTextEquals("2 rendering · 1 queued · 3 exporting · 1 failed")
         compose.onNodeWithText("Pause all rendering").assertExists()
         compose.onNodeWithText("SANDBOX").assertDoesNotExist()
-        compose.onNodeWithText("Activity").assertExists()
+        compose.onNodeWithTag(ACTIVITY_LIST_TAG).assertExists()
+        compose.onNodeWithText("LRT_1").assertExists()
     }
 
     @Test

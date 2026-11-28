@@ -35,6 +35,7 @@ import com.timelapserender.monitor.desktop.platform.PreferencesSettings
 import com.timelapserender.monitor.desktop.platform.SystemCommandRunner
 import com.timelapserender.monitor.desktop.platform.TrdService
 import com.timelapserender.monitor.desktop.platform.WindowGeometry
+import com.timelapserender.monitor.desktop.platform.defaultCacheDir
 import com.timelapserender.monitor.desktop.ui.AppMenuBar
 import com.timelapserender.monitor.desktop.ui.MainWindow
 import com.timelapserender.monitor.desktop.ui.isSearchShortcut
@@ -110,6 +111,7 @@ private fun createAppState(options: Options): AppState {
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Swing),
         localOverride = options.server != null,
         deviceName = { runCatching { InetAddress.getLocalHost().hostName }.getOrDefault("Desktop") },
+        posterCacheDir = defaultCacheDir(System.getProperty("os.name"), System::getenv, home),
     )
 }
 

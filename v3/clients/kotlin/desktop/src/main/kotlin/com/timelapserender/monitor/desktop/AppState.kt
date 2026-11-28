@@ -27,6 +27,8 @@ import com.timelapserender.monitor.core.state.SnapshotRepository
 import com.timelapserender.monitor.desktop.platform.DesktopSettings
 import com.timelapserender.monitor.desktop.platform.TrdService
 import com.timelapserender.monitor.desktop.platform.WindowGeometry
+import com.timelapserender.monitor.desktop.ui.rows.PosterLoader
+import com.timelapserender.monitor.desktop.ui.rows.ThumbnailPosters
 import com.timelapserender.trd.v1.DevicePlatform
 import com.timelapserender.trd.v1.Snapshot
 import io.grpc.ManagedChannel
@@ -47,6 +49,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.nio.file.Path
 import java.time.ZoneId
 import java.util.Locale
 import kotlin.coroutines.CoroutineContext
@@ -104,6 +107,8 @@ data class AppUi(
     val notice: String? = null,
     /** Counts the requests to focus the search field (Cmd/Ctrl+F). */
     val searchFocusRequests: Int = 0,
+    /** The Activity row the user selected, by its list key; null with nothing selected. */
+    val selectedKey: String? = null,
 ) {
     val activeServer: RegisteredServer? get() = servers.firstOrNull { it.serverId == activeServerId }
 
@@ -179,6 +184,8 @@ class AppState(
     private val clock: () -> Long = System::currentTimeMillis,
     private val zone: ZoneId = ZoneId.systemDefault(),
     private val io: CoroutineContext = Dispatchers.IO,
+    /** Where posters are cached; with null the rows keep their placeholder. */
+    private val posterCacheDir: Path? = null,
 ) : AutoCloseable {
     /** The connection to one server and the models over it. */
     class Session internal constructor(
@@ -187,6 +194,7 @@ class AppState(
         val repository: SnapshotRepository,
         val presenter: ActivityPresenter,
         val commands: Commands,
+        val posters: PosterLoader,
         internal val scope: CoroutineScope,
     ) {
         internal fun close() {
@@ -277,7 +285,8 @@ class AppState(
             val presenter = ActivityPresenter(
                 repository, filter, client, sessionScope, clock, zone, serverName = server.name,
             )
-            val next = Session(server, client, repository, presenter, Commands(client), sessionScope)
+            val posters = posterCacheDir?.let { ThumbnailPosters(client, it) } ?: PosterLoader { null }
+            val next = Session(server, client, repository, presenter, Commands(client), posters, sessionScope)
             session = next
             _ui.update {
                 it.copy(
@@ -289,6 +298,7 @@ class AppState(
                     exportPaths = exportPaths(null, it.filter.exportPath),
                     lastScanText = AppUi.NOT_SCANNED,
                     notice = null,
+                    selectedKey = null,
                 )
             }
             // Unconfined, so that no connection state is conflated away before a reconnect is seen.
@@ -375,6 +385,9 @@ class AppState(
         filter.update { it.copy(exportPath = path) }
         _ui.update { it.copy(filter = filter.value) }
     }
+
+    /** A single click on an Activity row (spec 2 §6.3). */
+    fun select(key: String) = _ui.update { it.copy(selectedKey = key) }
 
     fun requestSearchFocus() = _ui.update { it.copy(searchFocusRequests = it.searchFocusRequests + 1) }
 

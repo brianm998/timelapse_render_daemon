@@ -257,6 +257,18 @@ class ActivityPresenterTest {
     }
 
     @Test
+    fun theRowsCarryTheFilterTheyWereBuiltWith() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            env.script(scripted())
+            val filter = MutableStateFlow(ActivityFilter(search = "lrt_c"))
+            val p = presenter(env, filter)
+            assertEquals(filter.value, p.ui.first { it.recent.size == 1 }.filter)
+            filter.value = ActivityFilter()
+            assertEquals(ActivityFilter(), p.ui.first { it.recent.size == 2 }.filter)
+        }
+    }
+
+    @Test
     fun emptyStatesUseTheConfiguredHistoryDays() = runTest(timeout = 60.seconds) {
         Env(backgroundScope).use { env ->
             env.script(Snapshot.newBuilder().setPhase(Phase.PHASE_IDLE).build(), recentDays = 14)
