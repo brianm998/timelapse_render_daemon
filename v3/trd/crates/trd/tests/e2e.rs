@@ -11,10 +11,14 @@
 //! test signals only the fake ffmpeg it starts itself, its own daemon, and the renders of its own
 //! daemon. The waits poll a state the daemon reaches, under a hang guard. They are not timing
 //! assertions.
+//!
+//! A sandbox render can end in under a second, so the daemon under test runs [`Gate`] as its
+//! ffmpeg: the renders a test has to control are held until it releases them, and then the real
+//! ffmpeg renders them.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
@@ -37,8 +41,6 @@ type Client = TrdServiceClient<Channel>;
 const HANG_GUARD: Duration = Duration::from_secs(120);
 /// How often a settled state is polled.
 const POLL: Duration = Duration::from_millis(100);
-/// How often a render that lasts about a second is polled, so that a control can catch it running.
-const FAST_POLL: Duration = Duration::from_millis(5);
 /// `sandbox.py`, from the crate directory (crates/trd) up to v3/trd.
 const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sandbox/sandbox.py");
 
@@ -84,6 +86,44 @@ const HIDDEN_AFTER_UPDATE: [&str; 1] = ["sandbox-e"];
 
 /// The XMP values the sandbox frames carry (§12): Make, Model and ISO, in that order.
 const XMP_VALUES: [&str; 3] = ["SandboxCam", "SC-1", "1600"];
+
+/// The gate's pattern for every render of sequence A: its export folder and outputs carry it.
+const HOLD_A: &str = "sandbox-a";
+/// The gate's pattern for every render of the added variant: its output names carry it.
+const HOLD_ADDED: &str = "_3840w_";
+
+/// The stand-in `ffmpeg` of [`Gate`]. Only a render (it has `-progress`) is ever held: while a file
+/// in `hold/` names a part of its arguments, it marks `held/<name>` and waits. A release moves the
+/// file to `released/`; when it is gone otherwise (the test's folder is being removed), or after
+/// 12000 polls (at least ten minutes), the script fails instead. Then it becomes the real ffmpeg,
+/// with the same pid, start time and arguments, so the daemon controls and adopts it as before.
+const GATE_SCRIPT: &str = r#"#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+render=no
+for arg in "$@"; do
+  if [ "$arg" = "-progress" ]; then render=yes; fi
+done
+if [ "$render" = yes ]; then
+  for hold in "$TRD_E2E_GATE_DIR"/hold/*; do
+    [ -e "$hold" ] || continue
+    name=${hold##*/}
+    case "$*" in
+      *"$name"*) ;;
+      *) continue ;;
+    esac
+    : > "$TRD_E2E_GATE_DIR/held/$name"
+    polls=0
+    while [ -e "$hold" ]; do
+      polls=$((polls + 1))
+      [ "$polls" -le 12000 ] || exit 1
+      sleep 0.05
+    done
+    [ -e "$TRD_E2E_GATE_DIR/released/$name" ] || exit 1
+  done
+fi
+exec "$TRD_E2E_REAL_FFMPEG" "$@"
+"#;
 
 /// Whether the real-tool tests run. The default run returns from each test at once.
 fn e2e_enabled() -> bool {
@@ -177,6 +217,73 @@ impl Fixture {
     }
 }
 
+/// Holds chosen renders until the test releases them. Its folder has `tools/`, a `TRD_FFMPEG_DIR`
+/// whose ffmpeg is [`GATE_SCRIPT`] and whose ffprobe is the real one, and the `hold/`, `held/` and
+/// `released/` folders the script uses. Unix only when run; it builds on every platform.
+struct Gate {
+    root: PathBuf,
+    real_ffmpeg: OsString,
+}
+
+impl Gate {
+    fn new(root: PathBuf, real_ffmpeg: &OsStr, real_ffprobe: &OsStr) -> Gate {
+        for folder in ["tools", "hold", "held", "released"] {
+            fs::create_dir_all(root.join(folder)).expect("a folder of the gate");
+        }
+        // A child writes the script: this process, which spawns from several threads, never holds
+        // a write descriptor to a file that is about to be executed (ETXTBSY on Linux).
+        let mut writer = Command::new("sh")
+            .args(["-c", r#"cat > "$1" && chmod 755 "$1""#, "sh"])
+            .arg(root.join("tools").join("ffmpeg"))
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("sh starts");
+        writer
+            .stdin
+            .take()
+            .expect("stdin is piped")
+            .write_all(GATE_SCRIPT.as_bytes())
+            .expect("the gate script is sent");
+        assert!(
+            writer.wait().expect("sh ends").success(),
+            "the gate script is written"
+        );
+        let linked = Command::new("ln")
+            .arg("-s")
+            .arg(real_ffprobe)
+            .arg(root.join("tools").join("ffprobe"))
+            .status()
+            .expect("ln runs");
+        assert!(linked.success(), "ffprobe is linked beside the gate");
+        Gate {
+            root,
+            real_ffmpeg: real_ffmpeg.to_owned(),
+        }
+    }
+
+    /// Makes `command` use the gate as its ffmpeg.
+    fn apply(&self, command: &mut Command) {
+        command
+            .env("TRD_FFMPEG_DIR", self.root.join("tools"))
+            .env("TRD_E2E_REAL_FFMPEG", &self.real_ffmpeg)
+            .env("TRD_E2E_GATE_DIR", &self.root);
+    }
+
+    /// Holds every render started from now on whose arguments contain `pattern`.
+    fn hold(&self, pattern: &str) {
+        fs::write(self.root.join("hold").join(pattern), "").expect("the hold file");
+    }
+
+    /// Lets the renders held for `pattern` go on to the real ffmpeg.
+    fn release(&self, pattern: &str) {
+        fs::rename(
+            self.root.join("hold").join(pattern),
+            self.root.join("released").join(pattern),
+        )
+        .expect("the pattern is held");
+    }
+}
+
 /// `sandbox.py drip` at 50 frames a second, started in the background. Killed when dropped.
 struct Drip {
     child: Child,
@@ -248,9 +355,11 @@ struct Daemon {
 
 impl Daemon {
     /// Starts the daemon on `tree` with the same flags every time, and waits for `TRD_LISTENING`.
-    fn start(tree: &Path) -> Daemon {
+    /// With a `gate`, the daemon's ffmpeg is the gate's.
+    fn start(tree: &Path, gate: Option<&Gate>) -> Daemon {
         keep_orphans_in_session();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_trd"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_trd"));
+        command
             .arg("daemon")
             .arg("--sandbox")
             .arg("--no-mdns")
@@ -266,9 +375,11 @@ impl Daemon {
             .env_remove("TRD_FAKE_FFPROBE")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("trd daemon starts");
+            .stderr(Stdio::null());
+        if let Some(gate) = gate {
+            gate.apply(&mut command);
+        }
+        let mut child = command.spawn().expect("trd daemon starts");
         let mut stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
         let mut line = String::new();
         stdout.read_line(&mut line).expect("the listening line");
@@ -676,12 +787,20 @@ async fn e2e_daemon_with_real_tools() {
     let tools = real_tools();
     let fixture = Fixture::new();
     let tree = fixture.build_tree();
+    let program = |tool: &ResolvedTool| tool.command.as_ref().expect("resolved").program.clone();
+    let gate = Gate::new(
+        fixture.path("gate"),
+        &program(&tools.ffmpeg),
+        &program(&tools.ffprobe),
+    );
+    gate.hold(HOLD_A);
     let mut drip = Drip::start(&tree);
-    let daemon = Daemon::start(&tree);
+    let daemon = Daemon::start(&tree, Some(&gate));
     let mut client = daemon.loopback().await;
 
     // After the drip ends, A renders. The first of its renders that runs is suspended, then
-    // resumed, and its status follows each control.
+    // resumed, and its status follows each control. The gate holds that render until the controls
+    // are done, so it cannot end before them, and A's other variants wait behind it.
     let drip_status = drip.finish().await;
     assert!(
         drip_status.success(),
@@ -690,7 +809,7 @@ async fn e2e_daemon_with_real_tools() {
     let (first_key, first_id) = settle(
         &mut client,
         "a render of A is running",
-        FAST_POLL,
+        POLL,
         &HIDDEN_BEFORE_UPDATE,
         |s| {
             VARIANTS.iter().find_map(|key| {
@@ -771,6 +890,7 @@ async fn e2e_daemon_with_real_tools() {
         },
     )
     .await;
+    gate.release(HOLD_A);
 
     settle(
         &mut client,
@@ -810,9 +930,11 @@ async fn e2e_daemon_with_real_tools() {
     check_sequence_c(&mut client, &snapshot).await;
     check_history(&mut client).await;
 
-    // UpdateConfig adds a variant. Renders of it start at once, so a render of it is suspended while
-    // it runs and the daemon is killed. A new daemon with the same flags and data folder adopts that
-    // suspended render from its own database, shows it still suspended, and ResumeRender finishes it.
+    // UpdateConfig adds a variant. Renders of it start at once, and the gate holds them, so a render
+    // of it is suspended while it runs and the daemon is killed. A new daemon with the same flags and
+    // data folder adopts that suspended render from its own database, shows it still suspended, and
+    // ResumeRender and the gate's release finish it.
+    gate.hold(HOLD_ADDED);
     let state = client
         .get_config(pb::GetConfigRequest {})
         .await
@@ -837,7 +959,7 @@ async fn e2e_daemon_with_real_tools() {
     let (run_id, run_sequence) = settle(
         &mut client,
         "a render of the added variant is running",
-        FAST_POLL,
+        POLL,
         &HIDDEN_AFTER_UPDATE,
         |s| {
             s.in_progress.iter().find_map(|card| {
@@ -862,7 +984,7 @@ async fn e2e_daemon_with_real_tools() {
     drop(client);
     daemon.crash();
 
-    let daemon = Daemon::start(&tree);
+    let daemon = Daemon::start(&tree, Some(&gate));
     let mut client = daemon.loopback().await;
     settle(
         &mut client,
@@ -882,6 +1004,7 @@ async fn e2e_daemon_with_real_tools() {
         })
         .await
         .expect("ResumeRender finishes the adopted render");
+    gate.release(HOLD_ADDED);
     settle(
         &mut client,
         "the adopted render is finished",
@@ -984,7 +1107,7 @@ async fn e2e_ignores_foreign_renders() {
             .spawn()
             .expect("the stand-in ffmpeg starts");
 
-    let daemon = Daemon::start(&tree);
+    let daemon = Daemon::start(&tree, None);
     let mut client = daemon.loopback().await;
 
     // Two scans after the stand-in started, so the daemon has looked at it at least twice.
@@ -1016,4 +1139,59 @@ async fn e2e_ignores_foreign_renders() {
     );
     let _ = foreign.kill();
     let _ = foreign.wait();
+}
+
+/// The gate of the real-tool test holds only a render whose arguments name a held pattern, and
+/// after the release runs its target with the arguments unchanged. `echo` stands in for ffmpeg, so
+/// this runs without the real tools and without a daemon.
+#[cfg(unix)]
+#[test]
+fn e2e_gate_holds_render_until_released() {
+    let fixture = Fixture::new();
+    let echo = OsStr::new("/bin/echo");
+    let gate = Gate::new(fixture.path("gate"), echo, echo);
+    gate.hold("held-name");
+    let ffmpeg = |args: &[&str]| {
+        let mut command = Command::new(gate.root.join("tools").join("ffmpeg"));
+        gate.apply(&mut command);
+        command
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped());
+        command
+    };
+    let marker = gate.root.join("held").join("held-name");
+
+    // Not a render, and a render that names no held pattern: both pass straight through.
+    for args in [["-i", "held-name.mov"], ["-progress", "other-name.mov"]] {
+        let output = ffmpeg(&args).output().expect("the gate runs");
+        assert!(output.status.success(), "{args:?}: {:?}", output.status);
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{}\n", args.join(" "))
+        );
+    }
+    assert!(!marker.exists(), "neither call was held");
+
+    let args = ["-progress", "progress.txt", "two words/held-name.mov"];
+    let mut held = ffmpeg(&args).spawn().expect("the gate runs");
+    let started = Instant::now();
+    while !marker.exists() {
+        assert!(
+            started.elapsed() < HANG_GUARD,
+            "the render was not held within {HANG_GUARD:?}"
+        );
+        std::thread::sleep(POLL);
+    }
+    assert!(
+        matches!(held.try_wait(), Ok(None)),
+        "the held render is still running"
+    );
+    gate.release("held-name");
+    let output = held.wait_with_output().expect("the released render ends");
+    assert!(output.status.success(), "{:?}", output.status);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("{}\n", args.join(" "))
+    );
 }
