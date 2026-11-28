@@ -261,7 +261,8 @@ class DetailsPaneTest {
         awaitInPane("Still no space")
         assertEquals(1, h.local.callCount("GetRenderDetails"))
         h.local.snapshots = listOf(withFailure { setLastSeenMs(9_000) })
-        h.awaitTrue { h.local.callCount("GetRenderDetails") == 2 }
+        // The fake counts a call before its handler records the request, so wait for the request.
+        h.awaitTrue { requests(h).size == 2 }
         assertEquals(listOf("f-1", "f-1"), requests(h).map { it.failureId })
     }
 
