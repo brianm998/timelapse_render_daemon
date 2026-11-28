@@ -2,7 +2,7 @@
 
 - The app watches the events of the active server only, the one it is connected to. Switching back
   to a server resumes from the last `seq` stored for it, so events that happened meanwhile are
-  notified then.
+  notified then. A Log window's own connection to another server (DSK-09) is not watched.
 - The last `seq` is keyed by the server id that `GetServerInfo` reports, not the registry id, so a
   `--server` sandbox and the installed `trd` (both the local entry) keep their own.
 - A log entry carries no kind label. It is taken from the failure card (waited for up to 2 s in the
