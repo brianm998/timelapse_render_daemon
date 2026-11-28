@@ -13,8 +13,7 @@ tier = "light"
 effort = "medium"
 
 [agent.review]
-tier = "light"
-effort = "low"
+tier = "deep"
 
 [step.explore]
 type = "agent"
@@ -27,7 +26,7 @@ type = "agent"
 category = "developing"
 agent = "light"
 budget = "4h"
-next = "test"
+next = "review"
 
 [step.test]
 type = "test"
@@ -37,7 +36,7 @@ suites = ["t0-diff-check", "t0-spdx", "t0-workflows", "t0-scripts", "t0-makefile
           "kotlin-test", "android-test", "ios-kit-test", "ios-build"]
 max_rounds = 3
 on_red = "develop"
-next = "review"
+next = "land"
 
 [step.review]
 type = "agent"
@@ -45,7 +44,7 @@ category = "review"
 agent = "review"
 max_rounds = 2
 on_red = "develop"
-next = "land"
+next = "test"
 
 [step.land]
 type = "landing"
