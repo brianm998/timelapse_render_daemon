@@ -31,6 +31,8 @@ import com.timelapserender.monitor.desktop.platform.DesktopSettings
 import com.timelapserender.monitor.desktop.platform.TrdService
 import com.timelapserender.monitor.desktop.platform.WindowGeometry
 import com.timelapserender.monitor.desktop.ui.LogScroll
+import com.timelapserender.monitor.desktop.ui.rows.PosterLoader
+import com.timelapserender.monitor.desktop.ui.rows.ThumbnailPosters
 import com.timelapserender.monitor.desktop.ui.TrayStatus
 import com.timelapserender.monitor.desktop.ui.config.ConfigController
 import com.timelapserender.trd.v1.DevicePlatform
@@ -56,6 +58,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.nio.file.Path
 import java.time.ZoneId
 import java.util.Locale
 import kotlin.coroutines.CoroutineContext
@@ -145,6 +148,8 @@ data class AppUi(
     val notice: String? = null,
     /** Counts the requests to focus the search field (Cmd/Ctrl+F). */
     val searchFocusRequests: Int = 0,
+    /** The Activity row the user selected, by its list key; null with nothing selected. */
+    val selectedKey: String? = null,
     /** False while the app is only in the tray. */
     val windowVisible: Boolean = true,
     /** Counts the requests to bring the window to the front. */
@@ -227,6 +232,8 @@ class AppState(
     private val clock: () -> Long = System::currentTimeMillis,
     private val zone: ZoneId = ZoneId.systemDefault(),
     private val io: CoroutineContext = Dispatchers.IO,
+    /** Where posters are cached; with null the rows keep their placeholder. */
+    private val posterCacheDir: Path? = null,
     private val preferences: AppPreferences = InMemoryAppPreferences(),
     /** Shows a notification (the tray's `sendNotification`). */
     private val notify: (Notification) -> Unit = {},
@@ -242,6 +249,7 @@ class AppState(
         val repository: SnapshotRepository,
         val presenter: ActivityPresenter,
         val commands: Commands,
+        val posters: PosterLoader,
         internal val scope: CoroutineScope,
     ) {
         internal fun close() {
@@ -373,7 +381,8 @@ class AppState(
             val presenter = ActivityPresenter(
                 repository, filter, client, sessionScope, clock, zone, serverName = server.name,
             )
-            val next = Session(server, client, repository, presenter, Commands(client), sessionScope)
+            val posters = posterCacheDir?.let { ThumbnailPosters(client, it) } ?: PosterLoader { null }
+            val next = Session(server, client, repository, presenter, Commands(client), posters, sessionScope)
             session = next
             _ui.update {
                 it.copy(
@@ -386,6 +395,7 @@ class AppState(
                     exportPaths = exportPaths(null, it.filter.exportPath),
                     lastScanText = AppUi.NOT_SCANNED,
                     notice = null,
+                    selectedKey = null,
                 )
             }
             // Unconfined, so that no connection state is conflated away before a reconnect is seen.
@@ -595,6 +605,9 @@ class AppState(
         filter.update { it.copy(exportPath = path) }
         _ui.update { it.copy(filter = filter.value) }
     }
+
+    /** A single click on an Activity row (spec 2 §6.3). */
+    fun select(key: String) = _ui.update { it.copy(selectedKey = key) }
 
     /**
      * Opens the Config window of the active server, or brings it to the front. It has its own

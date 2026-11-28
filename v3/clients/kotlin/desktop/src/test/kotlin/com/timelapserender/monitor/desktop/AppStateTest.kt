@@ -75,6 +75,23 @@ class AppStateTest {
     }
 
     @Test
+    fun switchingServersClearsTheSelection() {
+        val h = harness(Harness())
+        h.store.save(record("other", Harness.OTHER_PORT))
+        h.registry.refresh()
+        h.app.start()
+        h.awaitConnectedTo("Fake trd")
+        h.app.select("card:/exp/LRT_a")
+        h.app.selectServer("local")
+        assertEquals("card:/exp/LRT_a", h.app.ui.value.selectedKey)
+
+        h.app.selectServer("other")
+
+        assertNull(h.app.ui.value.selectedKey)
+        assertNull(h.awaitConnectedTo("Other trd").selectedKey)
+    }
+
+    @Test
     fun selectingTheActiveServerKeepsTheConnectionAndTheScrollPosition() {
         val h = harness(Harness())
         h.app.start()

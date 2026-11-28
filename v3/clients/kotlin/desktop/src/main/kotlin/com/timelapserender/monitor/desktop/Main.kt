@@ -38,6 +38,7 @@ import com.timelapserender.monitor.desktop.platform.PreferencesSettings
 import com.timelapserender.monitor.desktop.platform.SystemCommandRunner
 import com.timelapserender.monitor.desktop.platform.TrdService
 import com.timelapserender.monitor.desktop.platform.WindowGeometry
+import com.timelapserender.monitor.desktop.platform.defaultCacheDir
 import com.timelapserender.monitor.desktop.ui.AppMenuBar
 import com.timelapserender.monitor.desktop.ui.AppTray
 import com.timelapserender.monitor.desktop.ui.LogWindow
@@ -158,6 +159,7 @@ private fun createAppState(options: Options, notify: (Notification) -> Unit, tra
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Swing),
         localOverride = options.server != null,
         deviceName = { runCatching { InetAddress.getLocalHost().hostName }.getOrDefault("Desktop") },
+        posterCacheDir = defaultCacheDir(System.getProperty("os.name"), System::getenv, home),
         preferences = JavaAppPreferences(node),
         notify = notify,
         traySupported = traySupported,
