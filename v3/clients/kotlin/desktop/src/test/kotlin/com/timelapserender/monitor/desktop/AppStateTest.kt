@@ -12,6 +12,7 @@ import com.timelapserender.monitor.desktop.platform.RELEASES_URL
 import com.timelapserender.monitor.desktop.platform.WindowGeometry
 import com.timelapserender.trd.v1.SequenceCard
 import com.timelapserender.trd.v1.Snapshot
+import com.timelapserender.trd.v1.WatchSnapshotsRequest
 import io.grpc.Status
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
@@ -398,6 +399,87 @@ class AppStateTest {
         h.app.openLogFolder()
         h.awaitTrue { h.runner.calls.size == 2 }
         assertTrue(h.runner.calls[1][1].endsWith("TimelapseRenderDaemon"))
+    }
+
+    @Test
+    fun closingTheWindowKeepsTheAppInTheTray() {
+        val h = harness(Harness(traySupported = true))
+        var quits = 0
+        assertTrue(h.app.ui.value.windowVisible)
+        h.app.closeWindow { quits++ }
+        assertFalse(h.app.ui.value.windowVisible)
+        assertEquals(0, quits)
+        h.app.openWindow()
+        assertTrue(h.app.ui.value.windowVisible)
+        assertEquals(1, h.app.ui.value.openWindowRequests)
+        // Opening a visible window still asks for it to come to the front.
+        h.app.openWindow()
+        assertEquals(2, h.app.ui.value.openWindowRequests)
+    }
+
+    @Test
+    fun closingTheWindowQuitsWhenKeepRunningInTheTrayIsOff() {
+        val h = harness(Harness(traySupported = true))
+        h.app.setKeepRunningInTray(false)
+        var quits = 0
+        h.app.closeWindow { quits++ }
+        assertEquals(1, quits)
+        assertTrue(h.app.ui.value.windowVisible)
+    }
+
+    @Test
+    fun closingTheWindowQuitsWithoutATray() {
+        val h = harness(Harness(traySupported = false))
+        assertTrue(h.preferences.keepRunningInTray)
+        var quits = 0
+        h.app.closeWindow { quits++ }
+        assertEquals(1, quits)
+        assertTrue(h.app.ui.value.windowVisible)
+    }
+
+    @Test
+    fun snapshotsAreAskedForAtThePreferredRate() {
+        val h = harness(Harness())
+        fun rates() = h.local.requestsOf<WatchSnapshotsRequest>().map { it.maxPerSecond }
+        h.app.start()
+        h.awaitTrue { rates().isNotEmpty() }
+        assertTrue(rates().all { it == DEFAULT_SNAPSHOT_RATE })
+
+        h.app.setSnapshotRate(9)
+        h.awaitTrue { rates().lastOrNull() == 9 }
+        assertEquals(9, h.preferences.snapshotRate)
+        assertEquals(9, h.app.ui.value.preferences.snapshotRate)
+
+        h.app.setSnapshotRate(99)
+        h.awaitTrue { rates().lastOrNull() == 10 }
+        assertEquals(10, h.app.ui.value.preferences.snapshotRate)
+    }
+
+    @Test
+    fun theStoredSnapshotRateIsUsedFromTheStart() {
+        val preferences = InMemoryAppPreferences().apply { snapshotRate = 2 }
+        val h = harness(Harness(preferences = preferences))
+        h.app.start()
+        h.awaitTrue { h.local.requestsOf<WatchSnapshotsRequest>().isNotEmpty() }
+        assertEquals(2, h.local.requestsOf<WatchSnapshotsRequest>().first().maxPerSecond)
+    }
+
+    @Test
+    fun aFailingEventWatcherLeavesTheSessionRunning() {
+        val asked = CompletableDeferred<Unit>()
+        val preferences = object : AppPreferences by InMemoryAppPreferences() {
+            override fun get(serverId: String): Long? {
+                asked.complete(Unit)
+                error("preferences unreadable")
+            }
+        }
+        val h = harness(Harness(preferences = preferences))
+        h.app.start()
+        h.awaitTrue { asked.isCompleted }
+        h.awaitConnectedTo("Fake trd")
+        assertTrue(h.app.session!!.scope.isActive)
+        h.app.rescanNow()
+        h.awaitTrue { h.local.callCount("RescanNow") == 1 }
     }
 
     @Test

@@ -60,9 +60,9 @@ class MenusTest {
         assertFalse(item(offline, MenuAction.CONFIG).enabled)
         assertTrue(item(connected, MenuAction.LOG).enabled)
         assertFalse(item(offline, MenuAction.LOG).enabled)
-        for (later in listOf(MenuAction.PAIR_PHONE, MenuAction.PREFERENCES)) {
-            assertFalse(item(connected, later).enabled)
-        }
+        assertFalse(item(connected, MenuAction.PAIR_PHONE).enabled)
+        assertTrue(item(connected, MenuAction.PREFERENCES).enabled)
+        assertTrue(item(offline, MenuAction.PREFERENCES).enabled)
     }
 
     @Test
@@ -80,6 +80,10 @@ class MenusTest {
             assertEquals(AppDialog.About, h.app.ui.value.dialog)
             perform(MenuAction.DETAILS)
             assertFalse(h.app.ui.value.detailsVisible)
+            perform(MenuAction.PREFERENCES)
+            assertTrue(h.app.ui.value.preferencesOpen)
+            h.app.closePreferences()
+            assertFalse(h.app.ui.value.preferencesOpen)
             perform(MenuAction.PAUSE_ALL)
             perform(MenuAction.RESCAN)
             perform(MenuAction.START_TRD)
@@ -87,6 +91,8 @@ class MenusTest {
             perform(MenuAction.RELEASES)
             perform(MenuAction.LOG)
             assertEquals(listOf("local"), h.app.logs.value.map { it.server.serverId })
+            perform(MenuAction.CONFIG)
+            assertEquals(listOf("local"), h.app.configWindows.value.map { it.serverId })
             // id, launchctl, the log folder and the releases page.
             h.awaitTrue {
                 h.local.callCount("SetGlobalPause") == 1 && h.local.callCount("RescanNow") == 1 &&

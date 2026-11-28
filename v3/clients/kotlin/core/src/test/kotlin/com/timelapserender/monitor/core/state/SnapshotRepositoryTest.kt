@@ -5,8 +5,12 @@ package com.timelapserender.monitor.core.state
 
 import com.timelapserender.monitor.core.net.ConnectionState
 import com.timelapserender.trd.v1.Snapshot
+import com.timelapserender.trd.v1.WatchSnapshotsRequest
 import io.grpc.Status
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -27,6 +31,34 @@ class SnapshotRepositoryTest {
             val s = repo.state.first { it.snapshot != null }
             assertEquals(7L, s.snapshot!!.revision)
             assertEquals(1234L, s.lastUpdateMs)
+        }
+    }
+
+    @Test
+    fun aChangedRateRestartsTheWatchAndKeepsTheSnapshot() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            env.fake.snapshots = listOf(Snapshot.newBuilder().setRevision(3).build())
+            val rate = MutableStateFlow(4)
+            val ended = Channel<Unit>(Channel.UNLIMITED)
+            val repo = SnapshotRepository(
+                env.client, backgroundScope,
+                delayer = {
+                    ended.send(Unit)
+                    awaitCancellation()
+                },
+                maxPerSecond = rate,
+            )
+            repo.start()
+            ended.receive() // the first stream has ended and the loop waits to restart it
+            env.fake.failWith["WatchSnapshots"] = Status.UNAVAILABLE
+            rate.value = 7
+            ended.receive() // the new rate does not wait for the old loop
+            assertEquals(3L, repo.state.value.snapshot!!.revision)
+            env.fake.failWith.clear()
+            rate.value = 2
+            ended.receive()
+            assertEquals(listOf(4, 2), env.fake.requestsOf<WatchSnapshotsRequest>().map { it.maxPerSecond })
+            assertEquals(3, env.fake.callCount("WatchSnapshots"))
         }
     }
 
