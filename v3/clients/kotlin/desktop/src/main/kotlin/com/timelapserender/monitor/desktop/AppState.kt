@@ -305,10 +305,13 @@ class AppState(
                 }
             }
             sessionScope.launch {
-                combine(repository.state, presenter.ui) { repo, activity -> repo to activity }
-                    .collect { (repo, activity) ->
+                combine(repository.state, presenter.ui) { _, _ -> }
+                    .collect {
                         synchronized(lock) {
                             if (session !== next) return@synchronized
+                            // Read in this order, the repository is never older than what was presented.
+                            val activity = presenter.ui.value
+                            val repo = repository.state.value
                             _ui.update {
                                 val up = repo.connection is ConnectionState.Connected
                                 it.copy(

@@ -3,6 +3,7 @@
 
 package com.timelapserender.monitor.desktop.ui
 
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertTextEquals
@@ -57,6 +58,10 @@ class TopBarTest {
         compose.waitUntil(Harness.TIMEOUT_MS) { compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty() }
     }
 
+    private fun awaitNoText(text: String) {
+        compose.waitUntil(Harness.TIMEOUT_MS) { compose.onAllNodesWithText(text).fetchSemanticsNodes().isEmpty() }
+    }
+
     @Test
     fun theTopBarShowsTheNamePhaseAndCounts() {
         show()
@@ -95,7 +100,10 @@ class TopBarTest {
     fun theSearchShortcutFocusesTheSearchField() {
         val h = show()
         h.app.requestSearchFocus()
-        compose.waitForIdle()
+        compose.waitUntil(Harness.TIMEOUT_MS) {
+            compose.onNodeWithTag(TopBarTags.SEARCH).fetchSemanticsNode()
+                .config.getOrElse(SemanticsProperties.Focused) { false }
+        }
         compose.onNodeWithTag(TopBarTags.SEARCH).assertIsFocused()
     }
 
@@ -104,7 +112,7 @@ class TopBarTest {
         val h = show()
         compose.onNodeWithTag(TopBarTags.EXPORT_PATH).performClick()
         compose.onNodeWithText("/exports/a").performClick()
-        compose.waitForIdle()
+        awaitText("/exports/a ▾")
         assertEquals("/exports/a", h.settings.exportPath)
         compose.onNodeWithTag(TopBarTags.EXPORT_PATH).assertTextContains("/exports/a ▾")
     }
@@ -181,7 +189,7 @@ class TopBarTest {
         compose.onNodeWithTag(MainWindowTags.DETAILS).assertExists()
         compose.onNodeWithText("Not scanned yet").assertExists()
         h.app.toggleDetails()
-        compose.waitForIdle()
+        awaitNoText("Not scanned yet")
         compose.onNodeWithTag(MainWindowTags.DETAILS).assertDoesNotExist()
     }
 
@@ -191,11 +199,11 @@ class TopBarTest {
         h.app.showAbout()
         awaitText("Close")
         compose.onNodeWithText("Close").performClick()
-        compose.onNodeWithText("Close").assertDoesNotExist()
-        h.local.failWith["RescanNow"] = Status.UNAVAILABLE.withDescription("rescan failed")
+        awaitNoText("Close")
+        h.local.failWith["RescanNow"] = Status.FAILED_PRECONDITION.withDescription("rescan failed")
         h.app.rescanNow()
         awaitText("rescan failed")
         compose.onNodeWithText("Dismiss").performClick()
-        compose.onNodeWithText("rescan failed").assertDoesNotExist()
+        awaitNoText("rescan failed")
     }
 }
