@@ -7,6 +7,9 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isPopup
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
@@ -73,7 +76,8 @@ class TopBarTest {
             .assertTextEquals("2 rendering · 1 queued · 3 exporting · 1 failed")
         compose.onNodeWithText("Pause all rendering").assertExists()
         compose.onNodeWithText("SANDBOX").assertDoesNotExist()
-        compose.onNodeWithText("Activity").assertExists()
+        compose.onNodeWithTag(ACTIVITY_LIST_TAG).assertExists()
+        compose.onNodeWithText("LRT_1").assertExists()
     }
 
     @Test
@@ -111,7 +115,8 @@ class TopBarTest {
     fun theExportPathFilterOffersTheSnapshotPaths() {
         val h = show()
         compose.onNodeWithTag(TopBarTags.EXPORT_PATH).performClick()
-        compose.onNodeWithText("/exports/a").performClick()
+        // The card shows the path too; pick the menu's entry.
+        compose.onNode(hasText("/exports/a") and hasAnyAncestor(isPopup())).performClick()
         awaitText("/exports/a ▾")
         assertEquals("/exports/a", h.settings.exportPath)
         compose.onNodeWithTag(TopBarTags.EXPORT_PATH).assertTextContains("/exports/a ▾")

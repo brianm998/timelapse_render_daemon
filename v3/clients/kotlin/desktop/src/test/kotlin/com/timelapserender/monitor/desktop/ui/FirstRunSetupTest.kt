@@ -3,6 +3,7 @@
 
 package com.timelapserender.monitor.desktop.ui
 
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
@@ -30,6 +31,8 @@ import org.junit.Test
 import java.nio.file.Paths
 import java.util.concurrent.CopyOnWriteArrayList
 
+private const val OTHER_PROBLEM = "Another problem"
+
 class FirstRunSetupTest {
     @get:Rule
     val compose = createComposeRule()
@@ -50,6 +53,8 @@ class FirstRunSetupTest {
             builder.addProblems(
                 Problem.newBuilder().setId("fda").setKind(ProblemKind.PROBLEM_FULL_DISK_ACCESS_MISSING),
             )
+            // Any other problem: its banner offers no How to fix.
+            builder.addProblems(Problem.newBuilder().setId("other").setTitle(OTHER_PROBLEM))
         }
         return builder.build()
     }
@@ -176,7 +181,10 @@ class FirstRunSetupTest {
         val h = show(snapshot(Phase.PHASE_WAITING_FOR_DISK_ACCESS, diskAccessMissing = true))
         // Setup comes by itself only without a config; the problem's How to fix opens it.
         awaitText("How to fix")
+        awaitText(OTHER_PROBLEM)
         compose.onNodeWithText(SETUP_TITLE).assertDoesNotExist()
+        // One button, on the Full Disk Access banner.
+        compose.onAllNodesWithText("How to fix").assertCountEquals(1)
         compose.onNodeWithText("How to fix").performClick()
         awaitText(STEP_DISK_ACCESS)
         compose.onNodeWithText(DISK_ACCESS_DETAIL).assertExists()

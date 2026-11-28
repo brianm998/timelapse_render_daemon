@@ -29,12 +29,15 @@ class ScrollKeeper {
      * @param newKeys the keys after it
      * @param firstVisibleKey the key of the first row in the viewport, or null when unknown
      * @param atTop whether the first row is visible
+     * @param counts whether a new key above the anchor counts towards the pill; a list that also
+     *   holds headers, or that changed because the filter did, leaves those out
      */
     fun decide(
         prevKeys: List<String>,
         newKeys: List<String>,
         firstVisibleKey: String?,
         atTop: Boolean,
+        counts: (String) -> Boolean = { true },
     ): ScrollDecision {
         if (atTop || firstVisibleKey == null || newKeys.isEmpty()) {
             insertedAbove = 0
@@ -43,7 +46,7 @@ class ScrollKeeper {
         val anchor = if (firstVisibleKey in newKeys) firstVisibleKey else survivingNeighbour(prevKeys, newKeys, firstVisibleKey)
             ?: return ScrollDecision.StayAtTop
         val known = prevKeys.toHashSet()
-        insertedAbove += newKeys.takeWhile { it != anchor }.count { it !in known }
+        insertedAbove += newKeys.takeWhile { it != anchor }.count { it !in known && counts(it) }
         return ScrollDecision.KeepAnchor(anchor, insertedAbove)
     }
 

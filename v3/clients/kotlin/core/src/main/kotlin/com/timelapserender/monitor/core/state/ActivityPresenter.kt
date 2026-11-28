@@ -146,6 +146,8 @@ data class ActivityUi(
     val olderError: String? = null,
     /** Why the snapshot stream last failed, while the rows shown may be stale. */
     val watchError: String? = null,
+    /** The filter these rows were built with, so a UI can tell a filter change from new rows. */
+    val filter: ActivityFilter = ActivityFilter(),
 ) {
     /** Every row key in display order (S4): problems, failures, each card then its variants, recently rendered. */
     val keys: List<String>
@@ -279,6 +281,7 @@ class ActivityPresenter(
             loadingOlder = o.loading,
             olderError = o.error,
             watchError = r.watchError,
+            filter = f,
         )
     }
 
