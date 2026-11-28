@@ -26,7 +26,7 @@ data class MenuItemModel(val action: MenuAction, val label: String, val enabled:
 data class MenuModel(val title: String, val items: List<MenuItemModel>)
 
 /**
- * The menus for [ui]. Pair a phone… and Config… are disabled until their windows exist.
+ * The menus for [ui]. Pair a phone… is disabled until its window exists.
  */
 fun menuModel(ui: AppUi): List<MenuModel> {
     val paused = ui.activity?.header?.globalPause == true
@@ -42,7 +42,7 @@ fun menuModel(ui: AppUi): List<MenuModel> {
         MenuModel(
             "View",
             listOf(
-                MenuItemModel(MenuAction.CONFIG, "Config…", enabled = false, key = Key.E),
+                MenuItemModel(MenuAction.CONFIG, "Config…", enabled = ui.connected, key = Key.E),
                 MenuItemModel(MenuAction.LOG, "Log…", enabled = ui.connected, key = Key.L),
                 MenuItemModel(MenuAction.DETAILS, "Details pane", key = Key.D),
                 MenuItemModel(MenuAction.PREFERENCES, "Preferences…", key = Key.Comma),
@@ -74,6 +74,7 @@ fun menuModel(ui: AppUi): List<MenuModel> {
 fun AppState.perform(action: MenuAction, closeWindow: () -> Unit) {
     when (action) {
         MenuAction.CONNECT -> showServers()
+        MenuAction.CONFIG -> openConfig()
         MenuAction.CLOSE_WINDOW -> closeWindow()
         MenuAction.LOG -> openLog()
         MenuAction.DETAILS -> toggleDetails()
@@ -85,7 +86,7 @@ fun AppState.perform(action: MenuAction, closeWindow: () -> Unit) {
         MenuAction.PREFERENCES -> showPreferences()
         MenuAction.RELEASES -> openReleasesPage()
         // Disabled in the model.
-        MenuAction.PAIR_PHONE, MenuAction.CONFIG -> Unit
+        MenuAction.PAIR_PHONE -> Unit
     }
 }
 

@@ -56,11 +56,11 @@ class MenusTest {
         assertTrue(item(connected, MenuAction.RESCAN).enabled)
         assertTrue(item(connected, MenuAction.LOG_FOLDER).enabled)
         assertFalse(item(connected.copy(activeServerId = "other"), MenuAction.LOG_FOLDER).enabled)
+        assertTrue(item(connected, MenuAction.CONFIG).enabled)
+        assertFalse(item(offline, MenuAction.CONFIG).enabled)
         assertTrue(item(connected, MenuAction.LOG).enabled)
         assertFalse(item(offline, MenuAction.LOG).enabled)
-        for (later in listOf(MenuAction.PAIR_PHONE, MenuAction.CONFIG)) {
-            assertFalse(item(connected, later).enabled)
-        }
+        assertFalse(item(connected, MenuAction.PAIR_PHONE).enabled)
         assertTrue(item(connected, MenuAction.PREFERENCES).enabled)
         assertTrue(item(offline, MenuAction.PREFERENCES).enabled)
     }
@@ -91,6 +91,8 @@ class MenusTest {
             perform(MenuAction.RELEASES)
             perform(MenuAction.LOG)
             assertEquals(listOf("local"), h.app.logs.value.map { it.server.serverId })
+            perform(MenuAction.CONFIG)
+            assertEquals(listOf("local"), h.app.configWindows.value.map { it.serverId })
             // id, launchctl, the log folder and the releases page.
             h.awaitTrue {
                 h.local.callCount("SetGlobalPause") == 1 && h.local.callCount("RescanNow") == 1 &&
