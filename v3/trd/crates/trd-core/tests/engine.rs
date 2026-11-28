@@ -245,6 +245,7 @@ fn build_engine(
         config_path: paths.config.clone(),
         data_dir: paths.data.clone(),
         codecs: codecs::builtin(),
+        explicit_codecs: None,
         resolve_tools: Box::new(move || resolve_tools(&resolve_paths, &resolve_shared)),
         disk_access: Box::new(ScriptedDisk(shared.disk.clone())),
         scan_fs: Arc::new(GuardedFs {
@@ -1349,7 +1350,12 @@ fn second_config(w: &World) -> PathBuf {
 
 #[tokio::test]
 async fn switch_scans_the_new_folders() {
-    let mut w = World::new(Opts::default());
+    // The histograms must arrive for S1 to render and Qb to queue; an unreleased stand-in exiftool
+    // would also hold the runtime's shutdown on its blocking thread.
+    let mut w = World::new(Opts {
+        exif_released: true,
+        ..Opts::default()
+    });
     // S1 renders (held); Qb is complete and queued behind it.
     w.add_raw("S1", 5);
     w.set_export("S1", 5);
@@ -1557,4 +1563,99 @@ async fn switch_loads_the_new_backups_and_drops_the_old() {
         card(&w.snap(), "LRT_B1").is_none_or(|c| !c.raw_from_backup),
         "the old config's backup candidates are gone"
     );
+}
+
+// ---- The codec table reloads while the engine runs (spec 1 §6.2) ----
+
+fn extra_codec_entry() -> RenderType {
+    RenderType {
+        codec: "ExtraCodec".to_owned(),
+        frame_rate: 25,
+        resolution: Some(vec![1280, 720]),
+    }
+}
+
+fn table_with_extra() -> codecs::VideoCodecs {
+    let mut table = codecs::builtin();
+    let extra = table["ProResUHQ"].clone();
+    table.insert("ExtraCodec".to_owned(), extra);
+    table
+}
+
+fn codec_file(w: &World) -> PathBuf {
+    codecs::sibling_codecs_path(&w.paths.config)
+}
+
+fn only_variant_is_known(w: &World) -> bool {
+    let snap = w.snap();
+    card(&snap, "LRT_S1").is_some_and(|c| {
+        c.variants.len() == 1
+            && c.variants
+                .iter()
+                .all(|v| v.status != VariantStatus::UnknownCodec)
+    })
+}
+
+#[tokio::test]
+async fn codec_file_edit_reaches_the_engine() {
+    let mut w = World::new(Opts {
+        rendering: vec![extra_codec_entry()],
+        ..Opts::default()
+    });
+    w.add_raw("S1", 5);
+    w.set_export("S1", 3);
+    w.tick().await;
+    assert!(problem(&w.snap(), "codec:ExtraCodec").is_some());
+
+    let text = serde_json::to_string(&table_with_extra()).expect("json");
+    fs::write(codec_file(&w), text).expect("a codec file");
+    w.tick().await;
+    let snap = w.snap();
+    assert!(
+        problem(&snap, "codec:ExtraCodec").is_none(),
+        "the unknown-codec problem clears: {:?}",
+        snap.problems
+    );
+    assert!(only_variant_is_known(&w), "the entry plans");
+}
+
+#[tokio::test]
+async fn bad_codec_file_keeps_last_good_table() {
+    let mut w = World::new(Opts {
+        rendering: vec![extra_codec_entry()],
+        ..Opts::default()
+    });
+    w.add_raw("S1", 5);
+    w.set_export("S1", 3);
+    let text = serde_json::to_string(&table_with_extra()).expect("json");
+    fs::write(codec_file(&w), text).expect("a codec file");
+    w.tick().await;
+    assert!(problem(&w.snap(), "codec:ExtraCodec").is_none());
+
+    fs::write(codec_file(&w), "{ this is not json, at all").expect("a bad codec file");
+    w.tick().await;
+    let snap = w.snap();
+    assert!(
+        problem(&snap, "codec:ExtraCodec").is_none(),
+        "still on the last good table: {:?}",
+        snap.problems
+    );
+    assert!(only_variant_is_known(&w));
+}
+
+#[tokio::test]
+async fn set_codecs_swaps_the_table() {
+    let mut w = World::new(Opts {
+        rendering: vec![extra_codec_entry()],
+        ..Opts::default()
+    });
+    w.add_raw("S1", 5);
+    w.set_export("S1", 3);
+    w.tick().await;
+    assert!(problem(&w.snap(), "codec:ExtraCodec").is_some());
+
+    w.engine().set_codecs(table_with_extra());
+    w.tick().await;
+    assert!(problem(&w.snap(), "codec:ExtraCodec").is_none());
+    assert!(only_variant_is_known(&w));
 }

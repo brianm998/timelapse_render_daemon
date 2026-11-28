@@ -306,6 +306,7 @@ pub fn assemble(
         config_path,
         data_dir: settings.dirs.data.clone(),
         codecs: codec_table,
+        explicit_codecs: settings.codecs.clone(),
         resolve_tools: resolve,
         disk_access: Box::new(MacDiskAccess::new(
             settings.fda_check,

@@ -1745,7 +1745,9 @@ impl TrdService for Server {
         authorize(&request)?;
         let request = request.into_inner();
         let table = codecs_from_proto(&request.codecs)?;
-        let state = {
+        // Held across the write and the push, so it cannot interleave with SetConfigPath.
+        let _switch = self.shared.config_switch.lock().await;
+        let (state, engine_table) = {
             let mut slot = self.shared.lock_config();
             slot.reload();
             let target = match slot.codecs.path() {
@@ -1787,8 +1789,13 @@ impl TrdService for Server {
                 ),
                 &LogFields::default(),
             );
-            config_state(&slot, now_ms())
+            (config_state(&slot, now_ms()), slot.codec_table())
         };
+        self.shared
+            .handle
+            .set_codecs(engine_table)
+            .await
+            .map_err(|_| shutting_down())?;
         Ok(Response::new(state))
     }
 
