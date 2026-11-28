@@ -1393,6 +1393,8 @@ async fn switch_scans_the_new_folders() {
         1,
         "the render that was running is not stopped"
     );
+    // Let S1's fake ffmpeg finish, so it does not outlive the test.
+    fs::write(&w.paths.release_render, b"").expect("the render release");
 }
 
 #[tokio::test]
