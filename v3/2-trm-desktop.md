@@ -329,6 +329,16 @@ Warning, Error; default Info), search, Copy selected lines.
   Finder** (`open -R "/Applications/Timelapse Render Daemon.app"`); the step completes by itself
   when the problem disappears.
 - The `PROBLEM_FULL_DISK_ACCESS_MISSING` banner's **How to fix** opens step 2.
+- **Pair a phone…** is not in the menu unless connected over loopback; the dialog closes when that
+  ends. While a code is shown the device list is read again every few seconds.
+- Setup opens by itself once per connection to the local server and stays open for its second step
+  until closed. **Create a new config** uses the path `GetConfig` reports when it is `trd`'s default,
+  else the overview §4 default of this computer. While `trd` still reports no config after a choice,
+  setup says to restart it.
+- **Pairing this desktop** (device name: host name + " (desktop)") is offered for a discovered
+  server, and by **Add a server…** in the server list for one typed in: address, port, code and at
+  least the 16 fingerprint digits the pairing dialog shows. The whole fingerprint is read in a TLS
+  handshake that accepts only a certificate starting with those digits, and is then pinned.
 
 ### 6.8 Tray, notifications and preferences
 

@@ -45,8 +45,10 @@ import com.timelapserender.monitor.desktop.ui.AppTray
 import com.timelapserender.monitor.desktop.ui.LogWindow
 import com.timelapserender.monitor.desktop.ui.MainWindow
 import com.timelapserender.monitor.desktop.ui.PreferencesWindow
+import com.timelapserender.monitor.desktop.ui.chooseConfigFile
 import com.timelapserender.monitor.desktop.ui.config.ConfigWindowContent
 import com.timelapserender.monitor.desktop.ui.config.isSaveShortcut
+import com.timelapserender.monitor.desktop.ui.desktopDeviceName
 import com.timelapserender.monitor.desktop.ui.isSearchShortcut
 import com.timelapserender.monitor.desktop.ui.perform
 import com.timelapserender.monitor.desktop.ui.performTray
@@ -160,7 +162,10 @@ private fun createAppState(options: Options, notify: (Notification) -> Unit, tra
         opener = FileOpener(HostOs.current, SystemCommandRunner()),
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Swing),
         localOverride = options.server != null,
-        deviceName = { runCatching { InetAddress.getLocalHost().hostName }.getOrDefault("Desktop") },
+        deviceName = {
+            desktopDeviceName(runCatching { InetAddress.getLocalHost().hostName }.getOrDefault("Desktop"))
+        },
+        configChooser = ::chooseConfigFile,
         posterCacheDir = defaultCacheDir(System.getProperty("os.name"), System::getenv, home),
         preferences = JavaAppPreferences(node),
         notify = notify,

@@ -47,6 +47,7 @@ import com.timelapserender.monitor.desktop.ui.rows.RenderedRow
 import com.timelapserender.monitor.desktop.ui.rows.SecondaryText
 import com.timelapserender.monitor.desktop.ui.rows.SequenceCardRow
 import com.timelapserender.monitor.desktop.ui.rows.VariantRowView
+import com.timelapserender.trd.v1.ProblemKind
 import kotlinx.coroutines.launch
 
 const val ACTIVITY_LIST_TAG = "activity-list"
@@ -139,6 +140,8 @@ fun ActivityList(
     /** Whether the server is this computer's `trd`, whose files can be opened. */
     loopback: Boolean = false,
     onAction: (RowAction, ActionTarget) -> Unit = { _, _ -> },
+    /** The Full Disk Access banner's **How to fix**; null where it is not offered. */
+    onDiskAccessHelp: (() -> Unit)? = null,
 ) {
     val items = remember(activity) { activityItems(activity) }
     val shown = remember(listState) { Shown() }
@@ -200,7 +203,12 @@ fun ActivityList(
                 val selected = item.key == selectedKey
                 val select = { onSelect(item.key) }
                 when (item) {
-                    is ActivityItem.Problem -> ProblemBanner(item.row, tag)
+                    is ActivityItem.Problem -> ProblemBanner(
+                        item.row,
+                        tag,
+                        onHowToFix = onDiskAccessHelp
+                            .takeIf { item.row.kind == ProblemKind.PROBLEM_FULL_DISK_ACCESS_MISSING },
+                    )
                     is ActivityItem.Header ->
                         Text(item.title, tag.padding(top = 8.dp), style = MaterialTheme.typography.titleMedium)
                     is ActivityItem.Failure -> {

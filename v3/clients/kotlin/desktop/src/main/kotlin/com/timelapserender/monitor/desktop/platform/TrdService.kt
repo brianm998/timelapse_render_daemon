@@ -11,6 +11,12 @@ import java.util.concurrent.TimeUnit
 
 const val RELEASES_URL = "https://github.com/brianm998/timelapse_render_daemon/releases"
 
+/** The Full Disk Access pane of the macOS Privacy settings. */
+const val PRIVACY_SETTINGS_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+
+/** Where the macOS installer puts `trd`. */
+const val TRD_APP_PATH = "/Applications/Timelapse Render Daemon.app"
+
 enum class HostOs {
     MAC, LINUX, WINDOWS;
 
@@ -92,7 +98,7 @@ data class ActionResult(val error: String? = null) {
  * the spec 1 §10.4 service names), opening its log folder and opening web pages.
  */
 class TrdService(
-    private val os: HostOs,
+    val os: HostOs,
     private val runner: CommandRunner,
     private val home: String,
     private val env: (String) -> String? = System::getenv,
@@ -127,7 +133,24 @@ class TrdService(
         ).resolve("TimelapseRenderDaemon").resolve("logs")
     }
 
+    /** `trd`'s default config file (overview §4). */
+    fun defaultConfigPath(): Path = when (os) {
+        HostOs.MAC -> Paths.get(home, "Library", "Application Support", "TimelapseRenderDaemon")
+        HostOs.LINUX -> Paths.get(
+            env("XDG_CONFIG_HOME")?.takeIf { it.isNotEmpty() } ?: Paths.get(home, ".config").toString(),
+        ).resolve("trd")
+        HostOs.WINDOWS -> Paths.get(
+            env("APPDATA")?.takeIf { it.isNotEmpty() } ?: Paths.get(home, "AppData", "Roaming").toString(),
+        ).resolve("TimelapseRenderDaemon")
+    }.resolve("config.json")
+
     fun openLogFolder(): ActionResult = open(logFolder().toString())
+
+    /** macOS only. */
+    fun openPrivacySettings(): ActionResult = open(PRIVACY_SETTINGS_URL)
+
+    /** Selects the installed `trd` in the Finder. macOS only. */
+    fun showTrdInFinder(): ActionResult = openerResult(os, runner.runOpener(listOf("open", "-R", TRD_APP_PATH)))
 
     fun openReleasesPage(): ActionResult = open(RELEASES_URL)
 

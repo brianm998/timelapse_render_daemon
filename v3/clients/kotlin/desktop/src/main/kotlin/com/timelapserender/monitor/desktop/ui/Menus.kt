@@ -25,17 +25,15 @@ data class MenuItemModel(val action: MenuAction, val label: String, val enabled:
 
 data class MenuModel(val title: String, val items: List<MenuItemModel>)
 
-/**
- * The menus for [ui]. Pair a phone… is disabled until its window exists.
- */
+/** The menus for [ui]. Pair a phone… is there only while connected over loopback. */
 fun menuModel(ui: AppUi): List<MenuModel> {
     val paused = ui.activity?.header?.globalPause == true
     return listOf(
         MenuModel(
             "File",
-            listOf(
+            listOfNotNull(
                 MenuItemModel(MenuAction.CONNECT, "Connect to another computer…"),
-                MenuItemModel(MenuAction.PAIR_PHONE, "Pair a phone…", enabled = false),
+                MenuItemModel(MenuAction.PAIR_PHONE, "Pair a phone…").takeIf { ui.loopback },
                 MenuItemModel(MenuAction.CLOSE_WINDOW, "Close window"),
             ),
         ),
@@ -85,8 +83,7 @@ fun AppState.perform(action: MenuAction, closeWindow: () -> Unit) {
         MenuAction.ABOUT -> showAbout()
         MenuAction.PREFERENCES -> showPreferences()
         MenuAction.RELEASES -> openReleasesPage()
-        // Disabled in the model.
-        MenuAction.PAIR_PHONE -> Unit
+        MenuAction.PAIR_PHONE -> showDevices()
     }
 }
 

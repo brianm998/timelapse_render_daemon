@@ -12,17 +12,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.timelapserender.monitor.core.servers.ServerSource
 import com.timelapserender.monitor.desktop.AppDialog
@@ -30,15 +24,15 @@ import com.timelapserender.monitor.desktop.AppState
 import com.timelapserender.monitor.desktop.AppUi
 import com.timelapserender.monitor.desktop.WINDOW_TITLE
 
-const val PAIR_CODE_TAG = "pair-code"
-
 /** The dialog of [AppUi.dialog], if any. */
 @Composable
 fun AppDialogs(ui: AppUi, app: AppState) {
     when (val dialog = ui.dialog) {
         null -> Unit
         AppDialog.Servers -> ServersDialog(ui, app)
-        is AppDialog.Pair -> PairDialog(dialog, app)
+        is AppDialog.Pair -> PairServerDialog(dialog, app)
+        is AppDialog.PairByAddress -> PairByAddressDialog(dialog, app)
+        is AppDialog.Devices -> DevicesDialog(dialog.model, app::dismissDialog)
         is AppDialog.Confirm -> ConfirmDialog(dialog.confirmation, app::confirm, app::dismissDialog)
         AppDialog.About -> AlertDialog(
             onDismissRequest = app::dismissDialog,
@@ -85,37 +79,6 @@ private fun ServersDialog(ui: AppUi, app: AppState) {
             }
         },
         confirmButton = { TextButton(onClick = app::dismissDialog) { Text("Close") } },
+        dismissButton = { TextButton(onClick = app::showAddServer) { Text("Add a server…") } },
     )
 }
-
-/** Overview §6.6: type the 6-digit code shown on the other computer. */
-@Composable
-private fun PairDialog(dialog: AppDialog.Pair, app: AppState) {
-    var code by remember(dialog.server.serverId) { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = app::dismissDialog,
-        title = { Text("Pair with ${dialog.server.name}") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Enter the 6-digit code shown on the trd machine.")
-                OutlinedTextField(
-                    value = code,
-                    onValueChange = { typed -> code = typed.filter { it.isDigit() }.take(CODE_LENGTH) },
-                    singleLine = true,
-                    enabled = !dialog.busy,
-                    modifier = Modifier.testTag(PAIR_CODE_TAG),
-                )
-                dialog.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = { app.submitPairing(code) },
-                enabled = !dialog.busy && code.length == CODE_LENGTH,
-            ) { Text(if (dialog.busy) "Pairing…" else "Pair") }
-        },
-        dismissButton = { TextButton(onClick = app::dismissDialog) { Text("Cancel") } },
-    )
-}
-
-private const val CODE_LENGTH = 6

@@ -65,7 +65,7 @@ class FakeTrdService {
     /** A handler of the named method (bare name) waits for this gate before it answers. */
     val gates = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
 
-    /** The request messages of the controls that name a target or a value, WatchSnapshots, GetRenderDetails, ListRenderedVideos, ListLog, WatchLog, ValidateConfig, UpdateConfig, UpdateCodecs, SetConfigPath and ListDirectory, in arrival order. */
+    /** The request messages of Pair, the controls that name a target or a value, WatchSnapshots, GetRenderDetails, ListRenderedVideos, ListLog, WatchLog, ValidateConfig, UpdateConfig, UpdateCodecs, SetConfigPath and ListDirectory, in arrival order. */
     val requests = CopyOnWriteArrayList<Any>()
 
     inline fun <reified T : Any> requestsOf(): List<T> = requests.filterIsInstance<T>()
@@ -87,7 +87,10 @@ class FakeTrdService {
 
     private val impl = object : TrdServiceGrpcKt.TrdServiceCoroutineImplBase() {
         override suspend fun getServerInfo(request: GetServerInfoRequest) = serverInfo
-        override suspend fun pair(request: PairRequest) = pairResponse
+        override suspend fun pair(request: PairRequest): PairResponse {
+            requests += request
+            return pairResponse
+        }
         override suspend fun getSnapshot(request: GetSnapshotRequest) = snapshots.last()
         override fun watchSnapshots(request: WatchSnapshotsRequest): Flow<Snapshot> {
             requests += request

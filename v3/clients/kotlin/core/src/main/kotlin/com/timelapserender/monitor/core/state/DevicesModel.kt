@@ -58,6 +58,10 @@ class DevicesModel(
     val state: StateFlow<DevicesUi> = _state.asStateFlow()
     private var countdown: Job? = null
 
+    /** The message of the last failed read of the list: the only one a later read may clear. */
+    @Volatile
+    private var listError: String? = null
+
     fun startPairing() {
         scope.launch {
             try {
@@ -92,6 +96,7 @@ class DevicesModel(
                 _state.update { it.copy(error = e.statusMessage()) }
                 return@launch
             }
+            _state.update { it.copy(error = null) }
             load()
         }
     }
@@ -120,11 +125,15 @@ class DevicesModel(
                     if (it.lastSeenMs <= 0) "never" else Format.relativeTime(it.lastSeenMs, now, zone),
                 )
             }
-            _state.update { it.copy(devices = rows, error = null) }
+            val cleared = listError
+            listError = null
+            _state.update { it.copy(devices = rows, error = it.error.takeUnless { error -> error == cleared }) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            _state.update { it.copy(error = e.statusMessage()) }
+            val message = e.statusMessage()
+            listError = message
+            _state.update { it.copy(error = message) }
         }
     }
 
