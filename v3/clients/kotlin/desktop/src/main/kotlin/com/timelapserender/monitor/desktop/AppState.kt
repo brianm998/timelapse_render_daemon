@@ -4,6 +4,7 @@
 package com.timelapserender.monitor.desktop
 
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.ui.window.Notification
 import com.timelapserender.monitor.core.discovery.ServerDiscovery
 import com.timelapserender.monitor.core.format.Format
 import com.timelapserender.monitor.core.net.ChannelFactory
@@ -22,6 +23,7 @@ import com.timelapserender.monitor.core.state.ActivityFilter
 import com.timelapserender.monitor.core.state.ActivityPresenter
 import com.timelapserender.monitor.core.state.ActivityUi
 import com.timelapserender.monitor.core.state.Commands
+import com.timelapserender.monitor.core.state.EventWatcher
 import com.timelapserender.monitor.core.state.LogModel
 import com.timelapserender.monitor.core.state.ScrollKeeper
 import com.timelapserender.monitor.core.state.SnapshotRepository
@@ -31,6 +33,7 @@ import com.timelapserender.monitor.desktop.platform.WindowGeometry
 import com.timelapserender.monitor.desktop.ui.LogScroll
 import com.timelapserender.monitor.desktop.ui.rows.PosterLoader
 import com.timelapserender.monitor.desktop.ui.rows.ThumbnailPosters
+import com.timelapserender.monitor.desktop.ui.TrayStatus
 import com.timelapserender.trd.v1.DevicePlatform
 import com.timelapserender.trd.v1.Snapshot
 import io.grpc.ManagedChannel
@@ -46,7 +49,10 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
@@ -89,7 +95,25 @@ sealed interface AppDialog {
     data object About : AppDialog
 }
 
-/** Everything the main window draws. */
+/** The preferences as the preferences window shows them. */
+data class PreferencesUi(
+    val notifyFinished: Boolean = true,
+    val notifyFailed: Boolean = true,
+    val keepRunningInTray: Boolean = true,
+    val snapshotRate: Int = DEFAULT_SNAPSHOT_RATE,
+    /** Whether any "Don't ask again" was chosen. */
+    val confirmationsSkipped: Boolean = false,
+)
+
+private fun AppPreferences.toUi() = PreferencesUi(
+    notifyFinished,
+    notifyFailed,
+    keepRunningInTray,
+    snapshotRate,
+    skipStopConfirmation || skipPauseAllConfirmation,
+)
+
+/** Everything the app draws: the main window, the tray and the preferences window. */
 data class AppUi(
     val servers: List<RegisteredServer> = emptyList(),
     val activeServerId: String = LOCAL_SERVER_ID,
@@ -111,6 +135,13 @@ data class AppUi(
     val searchFocusRequests: Int = 0,
     /** The Activity row the user selected, by its list key; null with nothing selected. */
     val selectedKey: String? = null,
+    /** False while the app is only in the tray. */
+    val windowVisible: Boolean = true,
+    /** Counts the requests to bring the window to the front. */
+    val openWindowRequests: Int = 0,
+    val trayStatus: TrayStatus = TrayStatus.IDLE,
+    val preferencesOpen: Boolean = false,
+    val preferences: PreferencesUi = PreferencesUi(),
 ) {
     val activeServer: RegisteredServer? get() = servers.firstOrNull { it.serverId == activeServerId }
 
@@ -188,6 +219,13 @@ class AppState(
     private val io: CoroutineContext = Dispatchers.IO,
     /** Where posters are cached; with null the rows keep their placeholder. */
     private val posterCacheDir: Path? = null,
+    private val preferences: AppPreferences = InMemoryAppPreferences(),
+    /** Shows a notification (the tray's `sendNotification`). */
+    private val notify: (Notification) -> Unit = {},
+    /** Whether the system has a tray; without one a hidden window could not be reached. */
+    private val traySupported: Boolean = false,
+    /** The wait before the event stream is asked for again. */
+    private val eventDelayer: suspend (Long) -> Unit = { delay(it) },
 ) : AutoCloseable {
     /** The connection to one server and the models over it. */
     class Session internal constructor(
@@ -237,11 +275,13 @@ class AppState(
     /** The open Log windows, one per server at most. */
     val logs: StateFlow<List<LogSession>> = _logs.asStateFlow()
     private val filter = MutableStateFlow(ActivityFilter(settings.search, settings.exportPath))
+    private val snapshotRate = MutableStateFlow(preferences.snapshotRate)
     private val _ui = MutableStateFlow(
         AppUi(
             servers = registry.servers.value,
             filter = filter.value,
             detailsVisible = settings.detailsPaneVisible,
+            preferences = preferences.toUi(),
         ),
     )
     private var pairing: Job? = null
@@ -314,7 +354,7 @@ class AppState(
 
             val sessionScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext.job))
             val client = clientFactory(server, sessionScope)
-            val repository = SnapshotRepository(client, sessionScope, clock)
+            val repository = SnapshotRepository(client, sessionScope, clock, maxPerSecond = snapshotRate)
             val presenter = ActivityPresenter(
                 repository, filter, client, sessionScope, clock, zone, serverName = server.name,
             )
@@ -327,6 +367,7 @@ class AppState(
                     activeServerId = server.serverId,
                     connection = ConnectionState.Connecting,
                     everConnected = false,
+                    trayStatus = TrayStatus.IDLE,
                     activity = presenter.ui.value,
                     exportPaths = exportPaths(null, it.filter.exportPath),
                     lastScanText = AppUi.NOT_SCANNED,
@@ -362,6 +403,7 @@ class AppState(
                                     connection = repo.connection,
                                     everConnected = it.everConnected || up,
                                     activity = activity,
+                                    trayStatus = trayStatus(up, repo.snapshot),
                                     exportPaths = exportPaths(repo.snapshot, it.filter.exportPath),
                                     lastScanText = lastScanText(repo.snapshot),
                                     // A start failure is stale once the local server answers.
@@ -377,8 +419,76 @@ class AppState(
                         }
                     }
             }
+            sessionScope.launch { watchEvents(client, repository) }
             client.start()
             repository.start()
+        }
+    }
+
+    /**
+     * Notifies the events of the connected server. The last seen event is kept under the id the
+     * server reports, so a `--server` sandbox and the installed trd do not share it.
+     */
+    private suspend fun watchEvents(client: TrdClient, repository: SnapshotRepository) {
+        val notifier = Notifier(preferences, notify) { failureKindLabel(it, repository, client) }
+        client.state
+            .mapNotNull { (it as? ConnectionState.Connected)?.info?.serverId }
+            .distinctUntilChanged()
+            .collectLatest { serverId ->
+                try {
+                    EventWatcher(client, preferences, serverId, delayer = eventDelayer)
+                        .events()
+                        .collect { notifier.handle(it) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    System.err.println("Notifications stopped: ${e.message ?: e}")
+                }
+            }
+    }
+
+    /** From the whole snapshot, so the search and the export-path filter do not change the dot. */
+    private fun trayStatus(connected: Boolean, snapshot: Snapshot?): TrayStatus = when {
+        !connected || snapshot == null -> TrayStatus.IDLE
+        snapshot.failuresCount > 0 || snapshot.counts.failures > 0 -> TrayStatus.FAILURES
+        snapshot.counts.rendering > 0 -> TrayStatus.RENDERING
+        else -> TrayStatus.IDLE
+    }
+
+    /** The window's close button: stays in the tray if that is wanted and possible, else [quit]. */
+    fun closeWindow(quit: () -> Unit) {
+        if (preferences.keepRunningInTray && traySupported) {
+            _ui.update { it.copy(windowVisible = false) }
+        } else {
+            quit()
+        }
+    }
+
+    fun openWindow() = _ui.update { it.copy(windowVisible = true, openWindowRequests = it.openWindowRequests + 1) }
+
+    fun showPreferences() = _ui.update { it.copy(preferencesOpen = true) }
+
+    fun closePreferences() = _ui.update { it.copy(preferencesOpen = false) }
+
+    fun setNotifyFinished(on: Boolean) = changePreferences { notifyFinished = on }
+
+    fun setNotifyFailed(on: Boolean) = changePreferences { notifyFailed = on }
+
+    fun setKeepRunningInTray(on: Boolean) = changePreferences { keepRunningInTray = on }
+
+    fun setSnapshotRate(perSecond: Int) = changePreferences {
+        snapshotRate = perSecond
+        this@AppState.snapshotRate.value = snapshotRate
+    }
+
+    fun resetConfirmations() {
+        changePreferences { resetConfirmations() }
+    }
+
+    private fun changePreferences(change: AppPreferences.() -> Unit) {
+        synchronized(lock) {
+            preferences.change()
+            _ui.update { it.copy(preferences = preferences.toUi()) }
         }
     }
 
