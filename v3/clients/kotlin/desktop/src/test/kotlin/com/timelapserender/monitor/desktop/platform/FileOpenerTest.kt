@@ -61,6 +61,8 @@ class FileOpenerTest {
     fun linuxOpensTheFileOrItsDirectory() {
         assertEquals(listOf("xdg-open", path), ran(HostOs.LINUX) { open(path) })
         assertEquals(listOf("xdg-open", "/exports/a b"), ran(HostOs.LINUX) { reveal(path) })
+        assertEquals(listOf("xdg-open", "/"), ran(HostOs.LINUX) { reveal("/LRT_1.mov") })
+        assertEquals(listOf("xdg-open", "LRT_1.mov"), ran(HostOs.LINUX) { reveal("LRT_1.mov") })
     }
 
     @Test

@@ -3,9 +3,6 @@
 
 package com.timelapserender.monitor.desktop.platform
 
-import java.nio.file.InvalidPathException
-import java.nio.file.Paths
-
 /**
  * Opens a rendered video of this computer's `trd`, or shows it in the file manager (spec 2 §6.4).
  * Both block until the command has answered.
@@ -30,12 +27,15 @@ class FileOpener(private val os: HostOs, private val runner: CommandRunner) {
         HostOs.WINDOWS -> "explorer.exe"
     }
 
-    private fun directoryOf(path: String): String =
-        try {
-            Paths.get(path).parent?.toString() ?: path
-        } catch (e: InvalidPathException) {
-            path
+    /** Split on `/` by hand: `java.nio.file` follows the OS this runs on, not [os]. */
+    private fun directoryOf(path: String): String {
+        val slash = path.lastIndexOf('/')
+        return when {
+            slash < 0 -> path
+            slash == 0 -> "/"
+            else -> path.substring(0, slash)
         }
+    }
 
     private fun run(argv: List<String>): ActionResult = openerResult(os, runner.runOpener(argv))
 
