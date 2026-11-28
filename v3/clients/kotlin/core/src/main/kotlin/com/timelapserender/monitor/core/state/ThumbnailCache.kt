@@ -77,6 +77,16 @@ class ThumbnailCache(
         }
     }
 
+    /** Forgets the cached copies of [id], for bytes that turned out to be unusable: the next [get] asks again. */
+    fun discard(id: String) {
+        synchronized(lock) { memory.remove(id) }
+        try {
+            Files.deleteIfExists(path(id))
+        } catch (e: java.io.IOException) {
+            // A cache that cannot be written is still a cache.
+        }
+    }
+
     /** Number of thumbnails on disk (for tests and diagnostics). */
     fun diskFiles(): List<Path> = listFiles()
 

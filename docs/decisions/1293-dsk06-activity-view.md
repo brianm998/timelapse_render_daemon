@@ -12,3 +12,6 @@
 - A click selects a row and highlights it. Opening a video on double click is a row action and comes
   with the other actions (DSK-07), as do the card menu, the variant and failure buttons.
 - File names are truncated in the middle by our own composable; their semantics keep the whole name.
+- A poster that cannot be fetched or decoded stays a placeholder, is reported on stderr with the
+  video id and is asked for again after a reconnect. Undecodable bytes are dropped from the cache,
+  which would otherwise answer every retry with them. A video without a poster is not reported.

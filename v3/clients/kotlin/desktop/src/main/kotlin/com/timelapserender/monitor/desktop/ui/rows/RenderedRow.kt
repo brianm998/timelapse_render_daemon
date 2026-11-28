@@ -54,21 +54,35 @@ fun interface PosterLoader {
 
 /**
  * Posters through a [ThumbnailCache] under [cacheDir], one cache per server id as the server reports
- * it (a sandbox `trd` and the installed one both are the "local" entry), decoded by Skia.
+ * it (a sandbox `trd` and the installed one both are the "local" entry), decoded by Skia. A poster
+ * that cannot be fetched or decoded is [report]ed and left out; a video the server has no poster for
+ * is not a failure.
  */
-class ThumbnailPosters(private val client: TrdClient, private val cacheDir: Path) : PosterLoader {
+class ThumbnailPosters(
+    private val client: TrdClient,
+    private val cacheDir: Path,
+    private val report: (String) -> Unit = System.err::println,
+) : PosterLoader {
     private val caches = HashMap<String, ThumbnailCache>()
 
     override suspend fun load(renderedVideoId: String): ImageBitmap? {
         val serverId = (client.state.value as? ConnectionState.Connected)?.info?.serverId ?: return null
         val cache = synchronized(caches) { caches.getOrPut(serverId) { ThumbnailCache(client, serverId, cacheDir) } }
         return withContext(Dispatchers.IO) {
-            try {
-                cache.get(renderedVideoId)?.let { SkiaImage.makeFromEncoded(it).toComposeImageBitmap() }
+            val bytes = try {
+                cache.get(renderedVideoId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // A poster that cannot be fetched or decoded stays a placeholder.
+                report("Poster of video $renderedVideoId could not be fetched: $e")
+                null
+            } ?: return@withContext null
+            try {
+                SkiaImage.makeFromEncoded(bytes).toComposeImageBitmap()
+            } catch (e: Exception) {
+                // Not kept, so that the next request fetches it again.
+                cache.discard(renderedVideoId)
+                report("Poster of video $renderedVideoId could not be decoded: $e")
                 null
             }
         }

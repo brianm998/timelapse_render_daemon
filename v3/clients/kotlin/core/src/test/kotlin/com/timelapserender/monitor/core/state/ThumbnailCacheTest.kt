@@ -124,6 +124,20 @@ class ThumbnailCacheTest {
     }
 
     @Test
+    fun aDiscardedThumbnailIsFetchedAgain() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            env.fake.thumbnails = mapOf("a" to thumb(5))
+            val cache = ThumbnailCache(env.client, "srv", dir)
+            cache.get("a")
+            cache.discard("a")
+            assertTrue(cache.diskFiles().isEmpty())
+            env.fake.thumbnails = mapOf("a" to thumb(6))
+            assertArrayEquals(byteArrayOf(6), cache.get("a"))
+            assertEquals(2, env.fake.callCount("GetThumbnail"))
+        }
+    }
+
+    @Test
     fun otherFailuresArePropagatedAndNotRemembered() = runTest(timeout = 60.seconds) {
         Env(backgroundScope).use { env ->
             env.fake.thumbnails = mapOf("a" to thumb(5))

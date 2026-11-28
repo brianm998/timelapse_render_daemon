@@ -40,6 +40,7 @@ import com.timelapserender.monitor.desktop.jpeg
 import com.timelapserender.monitor.desktop.ui.rows.POSTER_PLACEHOLDER_TAG
 import com.timelapserender.monitor.desktop.ui.rows.POSTER_TAG
 import com.timelapserender.monitor.desktop.ui.rows.PosterLoader
+import com.timelapserender.monitor.desktop.ui.rows.ThumbnailPosters
 import com.timelapserender.trd.v1.FailureCard
 import com.timelapserender.trd.v1.Problem
 import com.timelapserender.trd.v1.RenderedVideo
@@ -58,6 +59,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import java.time.ZoneOffset
+import java.util.concurrent.CopyOnWriteArrayList
 
 class ActivityListTest {
     @get:Rule
@@ -156,7 +158,8 @@ class ActivityListTest {
         assertEquals(tops.size, tops.distinct().size)
     }
 
-    private fun exists(tag: String) = compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+    private fun exists(tag: String, unmerged: Boolean = false) =
+        compose.onAllNodesWithTag(tag, useUnmergedTree = unmerged).fetchSemanticsNodes().isNotEmpty()
 
     private fun awaitTag(tag: String) = compose.waitUntil(Harness.TIMEOUT_MS) { exists(tag) }
 
@@ -381,5 +384,60 @@ class ActivityListTest {
         assertEquals(2, h.local.callCount("GetThumbnail"))
         val box = compose.onNode(hasTestTag(POSTER_TAG), useUnmergedTree = true).fetchSemanticsNode().size
         assertEquals(16f / 9f, box.width.toFloat() / box.height, 0.05f)
+    }
+
+    @Test
+    fun aPosterThatCannotBeFetchedIsReportedAndAskedAgainOnAReconnect() {
+        val h = Harness()
+        h.local.thumbnails = mapOf("v-1" to thumbnail(jpeg()))
+        h.local.failWith["GetThumbnail"] = Status.INTERNAL.withDescription("poster store broken")
+        aFailedPosterComesBackOnAReconnect(h, "could not be fetched") { h.local.failWith.remove("GetThumbnail") }
+    }
+
+    @Test
+    fun aPosterThatCannotBeDecodedIsReportedAndAskedAgainOnAReconnect() {
+        val h = Harness()
+        h.local.thumbnails = mapOf("v-1" to thumbnail(byteArrayOf(1, 2, 3)))
+        aFailedPosterComesBackOnAReconnect(h, "could not be decoded") {
+            h.local.thumbnails = mapOf("v-1" to thumbnail(jpeg()))
+        }
+    }
+
+    private fun thumbnail(bytes: ByteArray) = Thumbnail.newBuilder().setJpeg(ByteString.copyFrom(bytes)).build()
+
+    /** Shows one video whose poster fails, [repair]s the server, then drops and restores `connected`. */
+    private fun aFailedPosterComesBackOnAReconnect(h: Harness, failure: String, repair: () -> Unit) {
+        val snapshot = Snapshot.newBuilder().addRecentlyRendered(video("v-1") { setHasThumbnail(true) })
+            .setRecentlyRenderedTotal(1).build()
+        val ui = connect(snapshot, h) { it.recent.size == 1 }
+        val reports = CopyOnWriteArrayList<String>()
+        val posters = ThumbnailPosters(h.app.session!!.client, h.posterDir) { reports += it }
+        var connected by mutableStateOf(true)
+        val listState = LazyListState()
+        val keeper = ScrollKeeper()
+        compose.setContent {
+            MaterialTheme {
+                Box(Modifier.requiredSize(900.dp, 600.dp)) {
+                    ActivityList(ui, listState, keeper, posters, connected, null, {}, {})
+                }
+            }
+        }
+        compose.waitUntil(Harness.TIMEOUT_MS) { reports.isNotEmpty() }
+        compose.waitForIdle()
+        assertTrue(reports.single(), reports.single().startsWith("Poster of video v-1 $failure: "))
+        assertTrue(exists(POSTER_PLACEHOLDER_TAG, unmerged = true))
+        connected = false
+        compose.waitForIdle()
+        // Let the request made while disconnected end, so that only the reconnect can bring the poster.
+        compose.waitUntil(Harness.TIMEOUT_MS) { reports.size == 2 }
+        repair()
+        compose.waitForIdle()
+        assertTrue(exists(POSTER_PLACEHOLDER_TAG, unmerged = true))
+        assertFalse(exists(POSTER_TAG, unmerged = true))
+
+        connected = true
+        compose.waitUntil(Harness.TIMEOUT_MS) { exists(POSTER_TAG, unmerged = true) }
+        assertFalse(exists(POSTER_PLACEHOLDER_TAG, unmerged = true))
+        assertEquals(2, reports.size)
     }
 }
