@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Timelapse Render Daemon contributors
+
 # Versions for the desktop and Android clients (spec 2 §3). The AndroidX entries are pinned
 # exactly at the newest stable releases compatible with AGP 8.10.1 / compileSdk 36 on the day of
 # DSK-01. No bump of the §3 starting set was needed.

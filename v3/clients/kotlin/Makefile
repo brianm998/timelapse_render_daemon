@@ -3,7 +3,7 @@
 #
 # The Kotlin desktop client Makefile (spec 2 §7, component `desktop`). Every recipe is a plain
 # delegation to ./gradlew or scripts/, and no line runs at parse time, so `make -n <target>`
-# works on every OS. 
+# works on every OS.
 
 .PHONY: run develop release clean test check ci coverage contract
 
