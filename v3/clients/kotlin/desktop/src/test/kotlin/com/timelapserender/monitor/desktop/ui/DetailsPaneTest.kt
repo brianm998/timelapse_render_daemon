@@ -15,8 +15,10 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import com.google.protobuf.ByteString
+import com.timelapserender.monitor.core.state.DetailsState
 import com.timelapserender.monitor.desktop.Harness
 import com.timelapserender.monitor.desktop.jpeg
+import com.timelapserender.trd.v1.FailureCard
 import com.timelapserender.trd.v1.GetRenderDetailsRequest
 import com.timelapserender.trd.v1.RenderDetails
 import com.timelapserender.trd.v1.Snapshot
@@ -220,6 +222,88 @@ class DetailsPaneTest {
         assertEquals(1, h.local.callCount("GetRenderDetails"))
         h.local.snapshots = listOf(withRunning { setStatus(VariantStatus.VARIANT_SUSPENDED) })
         h.awaitTrue { h.local.callCount("GetRenderDetails") == 2 }
+    }
+
+    private fun disconnect(h: Harness) {
+        h.local.failWith["GetServerInfo"] = Status.UNAVAILABLE
+        h.local.failWith["WatchSnapshots"] = Status.UNAVAILABLE
+        h.await { !it.connected }
+    }
+
+    @Test
+    fun theDetailsStayWhileDisconnectedAndAreAskedForAgainAfterAReconnect() {
+        val h = show()
+        val key = ControlFixtures.variantTag("running")
+        h.app.select(key)
+        awaitInPane(command)
+        disconnect(h)
+        h.local.renderDetails = details().toBuilder().setCommandLine("ffmpeg -i after-reconnect").build()
+        // Looks at the selection again, now without a connection.
+        h.app.select(key)
+        val shown = checkNotNull(h.app.session).details.state.value
+        assertEquals(command, (shown as DetailsState.Loaded).details.commandLine)
+        assertInPane(command)
+        assertEquals(1, h.local.callCount("GetRenderDetails"))
+        h.localUp()
+        awaitInPane("ffmpeg -i after-reconnect")
+        assertEquals(listOf("r-running", "r-running"), requests(h).map { it.renderId })
+    }
+
+    @Test
+    fun aRepeatedFailureAsksAgainAndAnotherChangeDoesNot() {
+        val h = show()
+        h.app.select(ControlFixtures.FAILURE)
+        awaitInPane("frame=  843")
+        fun withFailure(change: FailureCard.Builder.() -> Unit) =
+            ControlFixtures.snapshot().toBuilder()
+                .setFailures(0, ControlFixtures.failure.toBuilder().apply(change)).build()
+        h.local.snapshots = listOf(withFailure { setSummary("Still no space") })
+        awaitInPane("Still no space")
+        assertEquals(1, h.local.callCount("GetRenderDetails"))
+        h.local.snapshots = listOf(withFailure { setLastSeenMs(9_000) })
+        h.awaitTrue { h.local.callCount("GetRenderDetails") == 2 }
+        assertEquals(listOf("f-1", "f-1"), requests(h).map { it.failureId })
+    }
+
+    @Test
+    fun aFailureWithoutACommandLineShowsAndCopiesTheRendersOne() {
+        val snapshot = ControlFixtures.snapshot().toBuilder()
+            .setFailures(0, ControlFixtures.failure.toBuilder().clearCommandLine()).build()
+        val h = show(snapshot = snapshot)
+        h.app.select(ControlFixtures.FAILURE)
+        awaitInPane(command)
+        compose.onNodeWithTag(DetailsTags.COMMAND_LINE, useUnmergedTree = true).assertExists()
+        paneButton(COPY_COMMAND_LINE).performScrollTo().performClick()
+        assertEquals(listOf(command), h.copies.toList())
+    }
+
+    @Test
+    fun aClipboardThatFailsSaysSo() {
+        val h = show()
+        h.copyFailure = IllegalStateException("clipboard busy")
+        h.app.select(ControlFixtures.FAILURE)
+        awaitInPane("The disk filled up")
+        paneButton(COPY_REPORT).performClick()
+        h.await { it.notice == "Could not copy: clipboard busy" }
+        assertTrue(h.copies.isEmpty())
+    }
+
+    @Test
+    fun aLargePosterThatCouldNotBeFetchedIsAskedForAgainAfterAReconnect() {
+        val h = Harness()
+        h.local.thumbnail = Thumbnail.newBuilder().setJpeg(ByteString.copyFrom(jpeg())).build()
+        h.local.failWith["GetThumbnail"] = Status.INTERNAL
+        val video = ControlFixtures.video("v-1").toBuilder().setHasThumbnail(true).build()
+        show(h, ControlFixtures.snapshot().toBuilder().setRecentlyRendered(0, video).build())
+        h.app.select(ControlFixtures.VIDEO)
+        awaitInPane(command)
+        compose.onNodeWithTag(DetailsTags.POSTER_PLACEHOLDER, useUnmergedTree = true).assertExists()
+        disconnect(h)
+        compose.waitForIdle()
+        h.localUp()
+        compose.waitUntil(Harness.TIMEOUT_MS) {
+            compose.onAllNodesWithTag(DetailsTags.POSTER, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+        }
     }
 
     @Test

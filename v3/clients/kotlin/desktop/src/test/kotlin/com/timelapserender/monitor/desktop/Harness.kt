@@ -133,6 +133,9 @@ class Harness(
     /** Every text the app put on the clipboard. */
     val copies = CopyOnWriteArrayList<String>()
 
+    /** When set, the clipboard throws it. */
+    @Volatile var copyFailure: Exception? = null
+
     /** Every notification the app sent. */
     val notifications = CopyOnWriteArrayList<Notification>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -143,7 +146,10 @@ class Harness(
         settings = settings,
         service = TrdService(os, runner, "/home/tester") { null },
         opener = FileOpener(os, runner),
-        copier = { copies += it },
+        copier = {
+            copyFailure?.let { failure -> throw failure }
+            copies += it
+        },
         scope = scope,
         localOverride = localOverride,
         clientFactory = { server, sessionScope ->

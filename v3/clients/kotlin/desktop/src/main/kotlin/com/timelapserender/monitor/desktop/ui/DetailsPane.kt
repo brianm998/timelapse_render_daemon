@@ -236,6 +236,7 @@ fun DetailsPane(
     details: DetailsState?,
     emptyText: String,
     loopback: Boolean,
+    connected: Boolean,
     posters: PosterLoader,
     time: (Long) -> String,
     onAction: (RowAction, ActionTarget) -> Unit,
@@ -268,7 +269,7 @@ fun DetailsPane(
                         }
                         is DetailsSelection.Failure -> FailureDetails(selection, details, time, onAction, onCopy, onRefresh)
                         is DetailsSelection.Video -> {
-                            VideoDetails(selection, loopback, posters, time, onAction)
+                            VideoDetails(selection, loopback, connected, posters, time, onAction)
                             RenderSection(details, selection.target, time, onCopy, onRefresh)
                         }
                     }
@@ -430,6 +431,7 @@ private fun FailureDetails(
 private fun VideoDetails(
     selection: DetailsSelection.Video,
     loopback: Boolean,
+    connected: Boolean,
     posters: PosterLoader,
     time: (Long) -> String,
     onAction: (RowAction, ActionTarget) -> Unit,
@@ -438,7 +440,8 @@ private fun VideoDetails(
     val target = ActionTarget.Video(selection.key, video.outputPath)
     Title(video.outputFilename)
     var poster by remember(video.id) { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(video.id, video.hasThumbnail, posters) {
+    // Asked again on a reconnect, for a poster that could not be fetched.
+    LaunchedEffect(video.id, video.hasThumbnail, posters, connected) {
         if (video.hasThumbnail) posters.load(video.id)?.let { poster = it }
     }
     Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f)) {

@@ -125,6 +125,7 @@ private fun DetailsArea(ui: AppUi, app: AppState, modifier: Modifier) {
         details = details,
         emptyText = ui.lastScanText,
         loopback = ui.loopback,
+        connected = ui.connected,
         posters = session?.posters ?: PosterLoader { null },
         time = app::formatTime,
         onAction = app::perform,
