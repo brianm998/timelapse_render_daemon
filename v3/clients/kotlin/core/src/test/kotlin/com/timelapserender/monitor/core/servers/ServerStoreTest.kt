@@ -62,11 +62,14 @@ class ServerStoreTest {
     fun defaultDataDirFollowsThePlatform() {
         val env = mapOf("XDG_CONFIG_HOME" to "/xdg", "APPDATA" to "C:\\Users\\u\\AppData\\Roaming")
         assertEquals(
-            "/Users/u/Library/Application Support/TimelapseRenderMonitor",
-            defaultDataDir("Mac OS X", env::get, "/Users/u").toString(),
+            java.nio.file.Paths.get("/Users/u", "Library", "Application Support", "TimelapseRenderMonitor"),
+            defaultDataDir("Mac OS X", env::get, "/Users/u"),
         )
-        assertEquals("/xdg/trm", defaultDataDir("Linux", env::get, "/home/u").toString())
-        assertEquals("/home/u/.config/trm", defaultDataDir("Linux", { null }, "/home/u").toString())
+        assertEquals(java.nio.file.Paths.get("/xdg", "trm"), defaultDataDir("Linux", env::get, "/home/u"))
+        assertEquals(
+            java.nio.file.Paths.get("/home/u", ".config", "trm"),
+            defaultDataDir("Linux", { null }, "/home/u"),
+        )
         val win = defaultDataDir("Windows 11", env::get, "C:\\Users\\u").toString()
         assertTrue(win, win.endsWith("TimelapseRenderMonitor") && win.contains("AppData"))
     }
