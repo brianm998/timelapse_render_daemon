@@ -112,4 +112,24 @@ class DevicesModelTest {
             assertTrue(m.state.first { it.error == "no such device" }.devices.isEmpty())
         }
     }
+
+    @Test
+    fun readingTheListKeepsAnActionsErrorAndClearsItsOwn() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            env.fake.failWith["StartPairing"] = Status.UNAVAILABLE.withDescription("the LAN listener is off")
+            val m = DevicesModel(env.client, backgroundScope, clock = { base }, zone = utc)
+            m.startPairing()
+            m.state.first { it.error != null }
+            env.fake.pairedDevices = listOf(device("d1", DevicePlatform.DEVICE_PLATFORM_IOS, "2025-11-20T14:02:00Z", 0))
+            m.refresh()
+            assertEquals("the LAN listener is off", m.state.first { it.devices.size == 1 }.error)
+
+            env.fake.failWith["ListPairedDevices"] = Status.INTERNAL.withDescription("no list")
+            m.refresh()
+            m.state.first { it.error == "no list" }
+            env.fake.failWith.clear()
+            m.refresh()
+            assertNull(m.state.first { it.error != "no list" }.error)
+        }
+    }
 }

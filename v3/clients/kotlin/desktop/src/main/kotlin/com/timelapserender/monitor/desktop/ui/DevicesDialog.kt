@@ -70,8 +70,7 @@ fun DevicesDialog(model: DevicesModel, onDismiss: () -> Unit) {
     }
     val remaining = ui.pairing?.remainingSeconds
     LaunchedEffect(model, remaining) {
-        // A failed action's message stays until the user does something else.
-        if (remaining != null && remaining % REFRESH_SECONDS == 0L && ui.error == null) model.refresh()
+        if (remaining != null && remaining % REFRESH_SECONDS == 0L) model.refresh()
     }
     AlertDialog(
         onDismissRequest = onDismiss,
