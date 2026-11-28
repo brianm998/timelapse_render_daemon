@@ -77,8 +77,12 @@ class RecordingRunner : CommandRunner {
 
     @Volatile var results: Map<String, CommandResult> = mapOf("/usr/bin/id" to CommandResult(0, "501\n"))
 
+    /** When set, every command throws it after being recorded. */
+    @Volatile var failure: Exception? = null
+
     override fun run(argv: List<String>): CommandResult {
         calls += argv
+        failure?.let { throw it }
         return results[argv.first()] ?: CommandResult(0, "")
     }
 }

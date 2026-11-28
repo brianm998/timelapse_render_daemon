@@ -35,11 +35,24 @@ data class CommandResult(val exitCode: Int, val output: String)
 /** Runs one command. Tests record the calls instead of running anything. */
 fun interface CommandRunner {
     fun run(argv: List<String>): CommandResult
+
+    /**
+     * Runs a program that opens a folder or a page. It may stay in the foreground for as long as
+     * what it opened (`xdg-open` does when it starts the browser itself).
+     */
+    fun runOpener(argv: List<String>): CommandResult = run(argv)
 }
 
-/** Runs commands for real, giving up after [timeoutSeconds]. */
+/**
+ * Runs commands for real, waiting [timeoutSeconds]. A command still running then is killed and
+ * reported as failed; an opener is left running and counts as having opened its target.
+ */
 class SystemCommandRunner(private val timeoutSeconds: Long = 30) : CommandRunner {
-    override fun run(argv: List<String>): CommandResult {
+    override fun run(argv: List<String>): CommandResult = execute(argv, opener = false)
+
+    override fun runOpener(argv: List<String>): CommandResult = execute(argv, opener = true)
+
+    private fun execute(argv: List<String>, opener: Boolean): CommandResult {
         // Output goes to a file so that a command that never exits cannot block the reader.
         val log = Files.createTempFile("trm-command", ".log")
         try {
@@ -50,6 +63,7 @@ class SystemCommandRunner(private val timeoutSeconds: Long = 30) : CommandRunner
             }
             process.outputStream.close()
             val finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
+            if (!finished && opener) return CommandResult(0, "")
             if (!finished) process.destroyForcibly()
             val output = String(Files.readAllBytes(log), Charsets.UTF_8).trim()
             return if (finished) {
@@ -123,7 +137,7 @@ class TrdService(
             HostOs.LINUX -> "xdg-open"
             HostOs.WINDOWS -> "explorer.exe"
         }
-        val result = runner.run(listOf(program, target))
+        val result = runner.runOpener(listOf(program, target))
         // explorer.exe exits with 1 even when it opened the target.
         val ok = result.exitCode == 0 || (os == HostOs.WINDOWS && result.exitCode == 1)
         return if (ok) ActionResult() else failure(result)

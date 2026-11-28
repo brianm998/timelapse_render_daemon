@@ -399,4 +399,12 @@ class AppStateTest {
         h.awaitTrue { h.runner.calls.size == 2 }
         assertTrue(h.runner.calls[1][1].endsWith("TimelapseRenderDaemon"))
     }
+
+    @Test
+    fun aThrowingOpenIsANotice() {
+        val h = harness(Harness())
+        h.runner.failure = java.io.IOException("no temporary file")
+        h.app.openReleasesPage()
+        h.await { it.notice == "no temporary file" }
+    }
 }

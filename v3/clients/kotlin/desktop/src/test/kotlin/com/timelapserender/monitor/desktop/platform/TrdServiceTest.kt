@@ -9,6 +9,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.file.Files
 import java.nio.file.Paths
+import java.util.concurrent.TimeUnit
 
 class TrdServiceTest {
     private val runner = RecordingRunner()
@@ -109,6 +110,32 @@ class TrdServiceTest {
             assertEquals(SystemCommandRunner.NOT_RUN, result.exitCode)
             assertTrue(result.output, result.output.contains("did not finish"))
         } finally {
+            Files.delete(source)
+            Files.delete(dir)
+        }
+    }
+
+    @Test
+    fun theSystemRunnerLeavesAnOpenerRunning() {
+        val dir = Files.createTempDirectory("trm-opener")
+        val source = dir.resolve("Later.java")
+        val marker = dir.resolve("survived")
+        Files.write(
+            source,
+            (
+                "public class Later { public static void main(String[] a) throws Exception { " +
+                    "Thread.sleep(5000); new java.io.File(a[0]).createNewFile(); } }"
+                ).toByteArray(),
+        )
+        try {
+            val result = SystemCommandRunner(1).runOpener(listOf(java, source.toString(), marker.toString()))
+            assertEquals(CommandResult(0, ""), result)
+            // The marker appears only if the program was not killed; the deadline guards a hang.
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(120)
+            while (!Files.exists(marker) && System.nanoTime() < deadline) Thread.sleep(50)
+            assertTrue(Files.exists(marker))
+        } finally {
+            Files.deleteIfExists(marker)
             Files.delete(source)
             Files.delete(dir)
         }

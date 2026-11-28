@@ -4,6 +4,7 @@
 package com.timelapserender.monitor.desktop.ui
 
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyShortcut
 import com.timelapserender.monitor.core.net.ConnectionState
 import com.timelapserender.monitor.desktop.AppDialog
 import com.timelapserender.monitor.desktop.AppUi
@@ -11,6 +12,7 @@ import com.timelapserender.monitor.desktop.Harness
 import com.timelapserender.monitor.desktop.StartState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -89,7 +91,11 @@ class MenusTest {
 
     @Test
     fun shortcutsUseCommandOnTheMacAndControlElsewhere() {
-        assertEquals(menuShortcut(Key.E, mac = true).toString(), menuShortcut(Key.E, mac = true).toString())
+        for (key in listOf(Key.E, Key.L, Key.D, Key.Comma, Key.R)) {
+            assertEquals(KeyShortcut(key, meta = true), menuShortcut(key, mac = true))
+            assertEquals(KeyShortcut(key, ctrl = true), menuShortcut(key, mac = false))
+            assertNotEquals(menuShortcut(key, mac = true), menuShortcut(key, mac = false))
+        }
         assertTrue(isSearchShortcut(Key.F, meta = true, ctrl = false, mac = true))
         assertFalse(isSearchShortcut(Key.F, meta = false, ctrl = true, mac = true))
         assertTrue(isSearchShortcut(Key.F, meta = false, ctrl = true, mac = false))

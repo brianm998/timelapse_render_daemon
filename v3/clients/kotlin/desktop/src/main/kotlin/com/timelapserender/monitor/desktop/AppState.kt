@@ -432,7 +432,13 @@ class AppState(
 
     private fun localAction(block: () -> String?) {
         scope.launch {
-            val error = withContext(io) { block() }
+            val error = try {
+                withContext(io) { block() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                e.message ?: e.toString()
+            }
             if (error != null) _ui.update { it.copy(notice = error) }
         }
     }
