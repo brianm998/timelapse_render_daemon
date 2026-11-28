@@ -6,7 +6,6 @@ package com.timelapserender.monitor.desktop.ui.rows
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -49,15 +48,20 @@ fun SequenceCardRow(
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    card.name,
-                    Modifier.weight(1f, fill = false),
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold,
-                )
-                Chip(card.stageText, card.stageRole)
-                if (card.paused) Chip("paused", ChipRole.Warning)
-                Spacer(Modifier.weight(1f))
+                Row(
+                    Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        card.name,
+                        Modifier.weight(1f, fill = false),
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Chip(card.stageText, card.stageRole)
+                    if (card.paused) Chip("paused", ChipRole.Warning)
+                }
                 ActionMenu(sequenceActions(card.paused), onAction)
             }
             LinearProgressIndicator(progress = { card.progress }, modifier = Modifier.fillMaxWidth())

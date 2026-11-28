@@ -15,18 +15,20 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,7 +48,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.timelapserender.monitor.desktop.platform.FileOpener
 import com.timelapserender.trd.v1.VariantStatus
-import kotlinx.coroutines.withTimeoutOrNull
 
 /** Every control of a row (spec 2 §6.4). */
 enum class RowAction(val label: String) {
@@ -115,34 +116,44 @@ fun videoActions(loopback: Boolean, fileExists: Boolean): List<RowAction> = buil
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ActionButtons(actions: List<RowAction>, onAction: (RowAction) -> Unit, modifier: Modifier = Modifier) {
-    FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        for (action in actions) {
-            TextButton(
-                onClick = { onAction(action) },
-                modifier = Modifier.defaultMinSize(minHeight = 32.dp),
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-            ) { Text(action.label) }
+    Compact {
+        FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            for (action in actions) {
+                TextButton(
+                    onClick = { onAction(action) },
+                    modifier = Modifier.height(28.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                ) { Text(action.label) }
+            }
         }
     }
+}
+
+/** Buttons for a pointer: no touch-sized space around them, so that rows stay low. */
+@Composable
+private fun Compact(content: @Composable () -> Unit) {
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp, content = content)
 }
 
 /** A variant's actions as icon buttons, each named by its tooltip and content description. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun IconActionButtons(actions: List<RowAction>, onAction: (RowAction) -> Unit, modifier: Modifier = Modifier) {
-    Row(modifier) {
-        for (action in actions) {
-            TooltipArea(
-                tooltip = {
-                    Surface(shadowElevation = 4.dp, shape = MaterialTheme.shapes.small) {
-                        Text(action.label, Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
-                    }
-                },
-            ) {
-                IconButton(
-                    onClick = { onAction(action) },
-                    modifier = Modifier.size(32.dp).semantics { contentDescription = action.label },
-                ) { ActionIcon(action) }
+    Compact {
+        Row(modifier) {
+            for (action in actions) {
+                TooltipArea(
+                    tooltip = {
+                        Surface(shadowElevation = 4.dp, shape = MaterialTheme.shapes.small) {
+                            Text(action.label, Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+                        }
+                    },
+                ) {
+                    IconButton(
+                        onClick = { onAction(action) },
+                        modifier = Modifier.size(32.dp).semantics { contentDescription = action.label },
+                    ) { ActionIcon(action) }
+                }
             }
         }
     }
@@ -153,10 +164,12 @@ fun IconActionButtons(actions: List<RowAction>, onAction: (RowAction) -> Unit, m
 fun ActionMenu(actions: List<RowAction>, onAction: (RowAction) -> Unit, modifier: Modifier = Modifier) {
     var open by remember { mutableStateOf(false) }
     Box(modifier) {
-        IconButton(
-            onClick = { open = true },
-            modifier = Modifier.size(32.dp).semantics { contentDescription = SEQUENCE_MENU },
-        ) { Text("⋮", style = MaterialTheme.typography.titleMedium) }
+        Compact {
+            IconButton(
+                onClick = { open = true },
+                modifier = Modifier.size(28.dp).semantics { contentDescription = SEQUENCE_MENU },
+            ) { Text("⋮", style = MaterialTheme.typography.titleMedium) }
+        }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             for (action in actions) {
                 DropdownMenuItem(
