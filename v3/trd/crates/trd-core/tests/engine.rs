@@ -533,6 +533,118 @@ fn apply(world: &mut World, control: Control) -> Result<(), ControlError> {
     world.engine().apply(control)
 }
 
+/// The scan interval of the run-loop tests: far beyond [`HANG_GUARD`], so a wait cannot be
+/// satisfied by the periodic tick.
+const LONG_INTERVAL: Duration = Duration::from_secs(3600);
+
+/// Writes a config with [`LONG_INTERVAL`], starts the engine's run loop on its own task and waits
+/// for the first tick's snapshot.
+async fn start_run_loop(world: &mut World) -> tokio::task::JoinHandle<()> {
+    world.write_config(|config| config.scan_interval_seconds = LONG_INTERVAL.as_secs_f64());
+    let engine = world.engine.take().expect("an engine");
+    let run = tokio::spawn(engine.run());
+    wait_for(world, |s| s.phase != Phase::Starting).await;
+    run
+}
+
+/// Waits, without ticking or moving the manual clock, until `done` holds on the snapshot.
+async fn wait_for(world: &World, mut done: impl FnMut(&Snapshot) -> bool) {
+    let deadline = Instant::now() + HANG_GUARD;
+    while !done(&world.snap()) {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the engine"
+        );
+        tokio::time::sleep(POLL).await;
+    }
+}
+
+/// Shuts the run loop down and joins its task.
+async fn stop_run_loop(world: &World, run: tokio::task::JoinHandle<()>) {
+    world.handle.shutdown().await;
+    run.await.expect("the run loop");
+}
+
+#[tokio::test]
+async fn rescan_now_scans_at_once() {
+    let mut w = World::new(Opts::default());
+    let run = start_run_loop(&mut w).await;
+
+    // A partial export: no histogram collection or render starts. The manual clock stays put, so
+    // only the control can cause the scan that finds it.
+    w.add_raw("S1", 5);
+    w.set_export("S1", 3);
+    w.handle
+        .control(Control::RescanNow)
+        .await
+        .expect("rescan now");
+    wait_for(&w, |s| card(s, "LRT_S1").is_some()).await;
+
+    stop_run_loop(&w, run).await;
+}
+
+#[tokio::test]
+async fn retry_scans_at_once() {
+    let key = pro_res().variant_key();
+    let mut w = World::new(Opts {
+        paused_variants: vec![("LRT_S1".to_owned(), key.clone())],
+        ..Opts::default()
+    });
+    w.add_raw("S1", 5);
+    w.set_export("S1", 3);
+    let run = start_run_loop(&mut w).await;
+    assert!(card(&w.snap(), "LRT_S1").is_some(), "the first scan");
+
+    w.add_raw("S2", 5);
+    w.set_export("S2", 3);
+    w.handle
+        .control(Control::Retry {
+            sequence: "LRT_S1".to_owned(),
+            variant_key: key,
+        })
+        .await
+        .expect("retry");
+    wait_for(&w, |s| card(s, "LRT_S2").is_some()).await;
+
+    stop_run_loop(&w, run).await;
+}
+
+#[tokio::test]
+async fn controls_keep_the_tick_deadline() {
+    let mut w = World::new(Opts::default());
+    let run = start_run_loop(&mut w).await;
+    // The next periodic tick will scan.
+    w.advance(LONG_INTERVAL);
+    let scanned = w.shared.lists.load(Ordering::SeqCst);
+
+    // Tokio's time moves only by `advance` from here, as long as this test never sleeps on it.
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(2000)).await;
+    w.handle
+        .control(Control::PauseAllRendering)
+        .await
+        .expect("pause");
+    assert_eq!(
+        w.shared.lists.load(Ordering::SeqCst),
+        scanned,
+        "neither the time so far nor the control causes a scan"
+    );
+
+    // 4000 s after the first tick, but only 2000 s after the control.
+    tokio::time::advance(Duration::from_secs(2000)).await;
+    let deadline = Instant::now() + HANG_GUARD;
+    while w.shared.lists.load(Ordering::SeqCst) == scanned {
+        assert!(
+            Instant::now() < deadline,
+            "the control postponed the periodic tick"
+        );
+        tokio::task::yield_now().await;
+    }
+
+    tokio::time::resume();
+    stop_run_loop(&w, run).await;
+}
+
 #[tokio::test]
 async fn lifecycle() {
     let mut w = World::new(Opts {
