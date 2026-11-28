@@ -3,6 +3,7 @@
 
 package com.timelapserender.monitor.desktop
 
+import androidx.compose.ui.window.Notification
 import com.timelapserender.monitor.core.discovery.DiscoveredServer
 import com.timelapserender.monitor.core.discovery.ServerDiscovery
 import com.timelapserender.monitor.core.fake.FakeTrdService
@@ -103,6 +104,8 @@ class Harness(
     localOverride: Boolean = false,
     os: HostOs = HostOs.MAC,
     pairer: suspend (ServerEndpoint, String, String) -> ServerRecord = { _, _, _ -> error("no pairing expected") },
+    val preferences: AppPreferences = InMemoryAppPreferences(),
+    traySupported: Boolean = false,
 ) : AutoCloseable {
     val local = FakeTrdService()
     val other = FakeTrdService().also { it.serverInfo = info("other", "Other trd", local = false) }
@@ -113,6 +116,9 @@ class Harness(
 
     /** The waits between connect attempts, as the app asked for them. */
     val delays = CopyOnWriteArrayList<Long>()
+
+    /** Every notification the app sent. */
+    val notifications = CopyOnWriteArrayList<Notification>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val registry = ServerRegistry(store, ServerEndpoint("127.0.0.1", LOCAL_PORT, TlsMode.Plaintext))
     val app = AppState(
@@ -136,6 +142,10 @@ class Harness(
         pairer = pairer,
         deviceName = { "test-desk" },
         zone = ZoneOffset.UTC,
+        preferences = preferences,
+        notify = { notifications += it },
+        traySupported = traySupported,
+        eventDelayer = { delay(20) },
     )
 
     fun localDown() {

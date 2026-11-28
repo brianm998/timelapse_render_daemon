@@ -20,10 +20,12 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isSpecified
+import androidx.compose.ui.window.Notification
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
+import androidx.compose.ui.window.rememberTrayState
 import androidx.compose.ui.window.rememberWindowState
 import com.timelapserender.monitor.core.discovery.JmdnsDiscovery
 import com.timelapserender.monitor.core.net.ServerEndpoint
@@ -37,15 +39,20 @@ import com.timelapserender.monitor.desktop.platform.SystemCommandRunner
 import com.timelapserender.monitor.desktop.platform.TrdService
 import com.timelapserender.monitor.desktop.platform.WindowGeometry
 import com.timelapserender.monitor.desktop.ui.AppMenuBar
+import com.timelapserender.monitor.desktop.ui.AppTray
 import com.timelapserender.monitor.desktop.ui.LogWindow
 import com.timelapserender.monitor.desktop.ui.MainWindow
+import com.timelapserender.monitor.desktop.ui.PreferencesWindow
 import com.timelapserender.monitor.desktop.ui.isSearchShortcut
 import com.timelapserender.monitor.desktop.ui.perform
+import com.timelapserender.monitor.desktop.ui.performTray
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.swing.Swing
 import kotlinx.coroutines.Dispatchers
 import java.awt.Dimension
+import java.awt.Frame
+import java.awt.SystemTray
 import java.net.InetAddress
 import java.util.prefs.Preferences
 import kotlin.system.exitProcess
@@ -101,17 +108,21 @@ fun StartScreen() {
     }
 }
 
-private fun createAppState(options: Options): AppState {
+private fun createAppState(options: Options, notify: (Notification) -> Unit, traySupported: Boolean): AppState {
     val home = System.getProperty("user.home")
     val dataDir = defaultDataDir(System.getProperty("os.name"), System::getenv, home)
+    val node = Preferences.userRoot().node(PreferencesSettings.NODE)
     return AppState(
         registry = ServerRegistry(JsonFileServerStore(dataDir), ServerRegistry.localEndpoint(options.server)),
         discovery = JmdnsDiscovery(),
-        settings = PreferencesSettings(Preferences.userRoot().node(PreferencesSettings.NODE)),
+        settings = PreferencesSettings(node),
         service = TrdService(HostOs.current, SystemCommandRunner(), home),
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Swing),
         localOverride = options.server != null,
         deviceName = { runCatching { InetAddress.getLocalHost().hostName }.getOrDefault("Desktop") },
+        preferences = JavaAppPreferences(node),
+        notify = notify,
+        traySupported = traySupported,
     )
 }
 
@@ -128,7 +139,11 @@ fun main(args: Array<String>) {
         System.setProperty("apple.awt.application.name", WINDOW_TITLE)
     }
     application {
-        val app = remember { createAppState(options).also { it.start() } }
+        val trayState = rememberTrayState()
+        val traySupported = remember { SystemTray.isSupported() }
+        val app = remember {
+            createAppState(options, trayState::sendNotification, traySupported).also { it.start() }
+        }
         val ui by app.ui.collectAsState()
         val geometry = remember { app.windowGeometry }
         val windowState = rememberWindowState(
@@ -139,8 +154,14 @@ fun main(args: Array<String>) {
             app.close()
             exitApplication()
         }
+        val close = { app.closeWindow(quit) }
+        if (traySupported) {
+            AppTray(ui, trayState) { app.performTray(it, quit) }
+        }
+        if (ui.preferencesOpen) PreferencesWindow(app)
         Window(
-            onCloseRequest = quit,
+            onCloseRequest = close,
+            visible = ui.windowVisible,
             state = windowState,
             title = ui.windowTitle,
             onPreviewKeyEvent = { event ->
@@ -155,7 +176,14 @@ fun main(args: Array<String>) {
                 snapshotFlow { geometryOf(windowState.size, windowState.position, windowState.placement) }
                     .collect { it?.let(app::saveWindowGeometry) }
             }
-            AppMenuBar(ui, mac) { action -> app.perform(action, quit) }
+            LaunchedEffect(ui.openWindowRequests) {
+                if (ui.openWindowRequests > 0) {
+                    window.extendedState = window.extendedState and Frame.ICONIFIED.inv()
+                    window.toFront()
+                    window.requestFocus()
+                }
+            }
+            AppMenuBar(ui, mac) { action -> app.perform(action, close) }
             MainWindow(app)
         }
         val logs by app.logs.collectAsState()

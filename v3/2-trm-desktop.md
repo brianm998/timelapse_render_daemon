@@ -314,9 +314,11 @@ Warning, Error; default Info), search, Copy selected lines.
   when failures exist; tooltip = the counts line; menu: Open window, Pause all rendering / Resume
   rendering, Quit.
 - Closing the window keeps the app in the tray when "Keep running in the tray" is on (default on);
-  Quit ends it.
+  Quit ends it. Where the system has no tray, closing the window quits.
 - Notifications through `TrayState.sendNotification`: overview §6.8 texts, from `EventWatcher`
-  for every paired or local server that the app is connected to.
+  for every paired or local server that the app is connected to (the active server, §6.2). A
+  failure's kind label is that of its failure card; once the card is gone, the label of the
+  `FAILURE_*` code that starts the log message.
 - Preferences window: notifications for finished sequences (on), for failed renders (on), keep
   running in the tray (on), snapshot rate (1–10 per second, default 4), and the "Don't ask again"
   choices (reset button). Stored with `java.util.prefs.Preferences` under
