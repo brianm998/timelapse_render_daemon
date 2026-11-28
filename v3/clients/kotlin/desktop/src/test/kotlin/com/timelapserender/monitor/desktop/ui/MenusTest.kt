@@ -60,7 +60,7 @@ class MenusTest {
         assertFalse(item(offline, MenuAction.CONFIG).enabled)
         assertTrue(item(connected, MenuAction.LOG).enabled)
         assertFalse(item(offline, MenuAction.LOG).enabled)
-        assertFalse(item(connected, MenuAction.PAIR_PHONE).enabled)
+        assertTrue(item(connected, MenuAction.PAIR_PHONE).enabled)
         assertTrue(item(connected, MenuAction.PREFERENCES).enabled)
         assertTrue(item(offline, MenuAction.PREFERENCES).enabled)
     }

@@ -69,6 +69,9 @@ fun MainWindow(app: AppState) {
                     ) { Text(notice) }
                 }
                 AppDialogs(ui, app)
+                // Setup waits while another dialog is open.
+                val setup = ui.setup
+                if (setup != null && ui.dialog == null) FirstRunSetup(ui, setup, app)
             }
         }
     }
@@ -140,6 +143,11 @@ private fun ActivityArea(ui: AppUi, app: AppState, modifier: Modifier) {
                     onSelect = app::select,
                     onLoadOlder = session.presenter::loadOlder,
                     modifier = Modifier.fillMaxSize(),
+                    onDiskAccessHelp = if (ui.loopback && ui.fullDiskAccessMissing) {
+                        app::openFullDiskAccessHelp
+                    } else {
+                        null
+                    },
                 )
             }
         }

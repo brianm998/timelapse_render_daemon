@@ -117,6 +117,8 @@ class Harness(
     pairer: suspend (ServerEndpoint, String, String) -> ServerRecord = { _, _, _ -> error("no pairing expected") },
     val preferences: AppPreferences = InMemoryAppPreferences(),
     traySupported: Boolean = false,
+    fingerprintProbe: suspend (String, Int, String) -> String = { _, _, _ -> error("no probe expected") },
+    configChooser: () -> String? = { error("no file chooser expected") },
 ) : AutoCloseable {
     val local = FakeTrdService()
     val other = FakeTrdService().also { it.serverInfo = info("other", "Other trd", local = false) }
@@ -159,6 +161,8 @@ class Harness(
         notify = { notifications += it },
         traySupported = traySupported,
         eventDelayer = { delay(20) },
+        fingerprintProbe = fingerprintProbe,
+        configChooser = configChooser,
     )
 
     fun localDown() {
