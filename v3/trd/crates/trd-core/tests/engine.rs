@@ -1350,7 +1350,12 @@ fn second_config(w: &World) -> PathBuf {
 
 #[tokio::test]
 async fn switch_scans_the_new_folders() {
-    let mut w = World::new(Opts::default());
+    // The histograms must arrive for S1 to render and Qb to queue; an unreleased stand-in exiftool
+    // would also hold the runtime's shutdown on its blocking thread.
+    let mut w = World::new(Opts {
+        exif_released: true,
+        ..Opts::default()
+    });
     // S1 renders (held); Qb is complete and queued behind it.
     w.add_raw("S1", 5);
     w.set_export("S1", 5);
