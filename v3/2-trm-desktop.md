@@ -420,6 +420,8 @@ every `*/build/test-results/test/TEST-*.xml` into `build/mason-desktop-results.x
     `release-asset-desktop-<target>` and runs the packaged app's self-test (§9): macOS
     `hdiutil attach`, then the app's `Contents/MacOS/` launcher with `--self-test --self-test-output
     $RUNNER_TEMP/selftest.txt`, then `codesign --verify --strict --deep` on the mounted app; Linux
+    first `sudo mkdir -p /usr/share/desktop-directories` (the package's postinst runs
+    `xdg-desktop-menu install`, which fails without a system menu directory), then
     `sudo apt-get install -y ./timelapse-render-monitor_*_amd64.deb`, then the launcher found under
     `/opt/timelapse-render-monitor/bin/` with the same flags, then `sudo apt-get remove -y
     timelapse-render-monitor`; Windows `msiexec /i <msi> /qn`, then the launcher under

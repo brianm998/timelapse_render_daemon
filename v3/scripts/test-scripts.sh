@@ -515,6 +515,18 @@ else
   fail "check-workflows.sh fails for a fixture workflow with a syntax error" "rc=$rc $out"
 fi
 
+# ---------------------------------------------------------------- v3-system-tests.yml
+
+# The .deb's postinst fails on a machine without a system menu directory.
+wf="$real_v3/../.github/workflows/v3-system-tests.yml"
+mkdir_line="$(grep -nF 'sudo mkdir -p /usr/share/desktop-directories' "$wf" | head -n 1 | cut -d: -f1)"
+deb_line="$(grep -nF 'apt-get install -y ./pkg/timelapse-render-monitor_' "$wf" | head -n 1 | cut -d: -f1)"
+if [ -n "$mkdir_line" ] && [ -n "$deb_line" ] && [ "$mkdir_line" -lt "$deb_line" ]; then
+  pass "the desktop self-test creates the system menu directory before installing the .deb"
+else
+  fail "the desktop self-test creates the system menu directory before installing the .deb" "mkdir line=${mkdir_line:-none} install line=${deb_line:-none}"
+fi
+
 # ---------------------------------------------------------------- check-test-names.py
 
 names="python3 -I $here/check-test-names.py"

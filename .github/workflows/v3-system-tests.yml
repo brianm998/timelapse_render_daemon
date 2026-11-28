@@ -479,6 +479,9 @@ jobs:
         timeout-minutes: 10
         run: |
           set -euo pipefail
+          # The package's postinst runs xdg-desktop-menu install, which fails without a system
+          # menu directory. Desktop systems have one; the runner may not.
+          sudo mkdir -p /usr/share/desktop-directories
           sudo apt-get update
           sudo apt-get install -y ./pkg/timelapse-render-monitor_*_amd64.deb
           launcher="$(find /opt/timelapse-render-monitor/bin -maxdepth 1 -type f | head -n 1)"
