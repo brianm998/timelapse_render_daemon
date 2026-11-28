@@ -11,10 +11,14 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 rustup show
 cargo fmt --all --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
+# Clippy and the test build go through a wrapper that cleans and retries once when a build script
+# binary cannot be executed (docs/decisions/1307-trd-build-script-recovery.md).
+bash scripts/test-recover-build-script.sh
+bash scripts/recover-build-script.sh cargo clippy --workspace --all-targets --locked -- -D warnings
 bash scripts/test-check-system-tests.sh
 bash scripts/check-system-tests.sh
 bash scripts/test-wait-for-trd.sh
+bash scripts/recover-build-script.sh cargo test --workspace --locked --no-run
 cargo test --workspace --locked
 if [ "$(uname -s)" = Darwin ]; then
   # The macOS installer (TRD-24): the self-check assembles a bundle and a .pkg from stubs, and the
