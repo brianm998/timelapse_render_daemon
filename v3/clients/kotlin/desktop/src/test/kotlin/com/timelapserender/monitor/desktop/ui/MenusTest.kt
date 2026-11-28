@@ -56,9 +56,11 @@ class MenusTest {
         assertTrue(item(connected, MenuAction.RESCAN).enabled)
         assertTrue(item(connected, MenuAction.LOG_FOLDER).enabled)
         assertFalse(item(connected.copy(activeServerId = "other"), MenuAction.LOG_FOLDER).enabled)
-        for (later in listOf(MenuAction.PAIR_PHONE, MenuAction.CONFIG, MenuAction.LOG, MenuAction.PREFERENCES)) {
+        for (later in listOf(MenuAction.PAIR_PHONE, MenuAction.CONFIG, MenuAction.LOG)) {
             assertFalse(item(connected, later).enabled)
         }
+        assertTrue(item(connected, MenuAction.PREFERENCES).enabled)
+        assertTrue(item(offline, MenuAction.PREFERENCES).enabled)
     }
 
     @Test
@@ -76,6 +78,10 @@ class MenusTest {
             assertEquals(AppDialog.About, h.app.ui.value.dialog)
             perform(MenuAction.DETAILS)
             assertFalse(h.app.ui.value.detailsVisible)
+            perform(MenuAction.PREFERENCES)
+            assertTrue(h.app.ui.value.preferencesOpen)
+            h.app.closePreferences()
+            assertFalse(h.app.ui.value.preferencesOpen)
             perform(MenuAction.PAUSE_ALL)
             perform(MenuAction.RESCAN)
             perform(MenuAction.START_TRD)

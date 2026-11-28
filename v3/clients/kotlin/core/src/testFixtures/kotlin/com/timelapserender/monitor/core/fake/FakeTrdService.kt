@@ -65,7 +65,7 @@ class FakeTrdService {
     /** A handler of the named method (bare name) waits for this gate before it answers. */
     val gates = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
 
-    /** The request messages of GetRenderDetails, ListRenderedVideos, ListLog, WatchLog, ValidateConfig, UpdateConfig, UpdateCodecs and ListDirectory, in arrival order. */
+    /** The request messages of WatchSnapshots, GetRenderDetails, ListRenderedVideos, ListLog, WatchLog, ValidateConfig, UpdateConfig, UpdateCodecs and ListDirectory, in arrival order. */
     val requests = CopyOnWriteArrayList<Any>()
 
     inline fun <reified T : Any> requestsOf(): List<T> = requests.filterIsInstance<T>()
@@ -84,7 +84,10 @@ class FakeTrdService {
         override suspend fun getServerInfo(request: GetServerInfoRequest) = serverInfo
         override suspend fun pair(request: PairRequest) = pairResponse
         override suspend fun getSnapshot(request: GetSnapshotRequest) = snapshots.last()
-        override fun watchSnapshots(request: WatchSnapshotsRequest): Flow<Snapshot> = snapshots.asFlow()
+        override fun watchSnapshots(request: WatchSnapshotsRequest): Flow<Snapshot> {
+            requests += request
+            return snapshots.asFlow()
+        }
         override suspend fun listRenderedVideos(request: ListRenderedVideosRequest): ListRenderedVideosResponse {
             requests += request
             val needle = request.search.lowercase()
