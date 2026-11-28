@@ -22,11 +22,13 @@ import com.timelapserender.monitor.core.state.ActivityFilter
 import com.timelapserender.monitor.core.state.ActivityPresenter
 import com.timelapserender.monitor.core.state.ActivityUi
 import com.timelapserender.monitor.core.state.Commands
+import com.timelapserender.monitor.core.state.LogModel
 import com.timelapserender.monitor.core.state.ScrollKeeper
 import com.timelapserender.monitor.core.state.SnapshotRepository
 import com.timelapserender.monitor.desktop.platform.DesktopSettings
 import com.timelapserender.monitor.desktop.platform.TrdService
 import com.timelapserender.monitor.desktop.platform.WindowGeometry
+import com.timelapserender.monitor.desktop.ui.LogScroll
 import com.timelapserender.monitor.desktop.ui.rows.PosterLoader
 import com.timelapserender.monitor.desktop.ui.rows.ThumbnailPosters
 import com.timelapserender.trd.v1.DevicePlatform
@@ -203,7 +205,37 @@ class AppState(
         }
     }
 
+    /**
+     * One Log window: its own connection to its server, so it stays live when the main window
+     * switches to another one.
+     */
+    class LogSession internal constructor(
+        val server: RegisteredServer,
+        val title: String,
+        val client: TrdClient,
+        val model: LogModel,
+        private val scope: CoroutineScope,
+    ) {
+        val scroll = LogScroll()
+        private val focus = MutableStateFlow(0)
+
+        /** Counts the requests to bring the window to the front. */
+        val focusRequests: StateFlow<Int> = focus.asStateFlow()
+
+        internal fun requestFocus() = focus.update { it + 1 }
+
+        internal fun close() {
+            model.stop()
+            scope.cancel()
+            client.close()
+        }
+    }
+
     private val lock = Any()
+    private val _logs = MutableStateFlow<List<LogSession>>(emptyList())
+
+    /** The open Log windows, one per server at most. */
+    val logs: StateFlow<List<LogSession>> = _logs.asStateFlow()
     private val filter = MutableStateFlow(ActivityFilter(settings.search, settings.exportPath))
     private val _ui = MutableStateFlow(
         AppUi(
@@ -265,6 +297,7 @@ class AppState(
     fun forgetServer(serverId: String) {
         if (serverId == LOCAL_SERVER_ID) return
         val wasActive = session?.server?.serverId == serverId
+        closeLog(serverId)
         registry.remove(serverId)
         _ui.update { it.copy(servers = registry.servers.value) }
         if (settings.lastServerId == serverId) settings.lastServerId = null
@@ -347,6 +380,60 @@ class AppState(
             client.start()
             repository.start()
         }
+    }
+
+    /** Opens the Log window of the active server, or brings the one it has to the front. */
+    fun openLog() {
+        synchronized(lock) {
+            val current = session ?: return
+            val open = _logs.value.firstOrNull { it.server.serverId == current.server.serverId }
+            if (open != null) {
+                open.requestFocus()
+                return
+            }
+            val name = _ui.value.activity?.header?.serverName?.takeIf { it.isNotEmpty() } ?: current.server.name
+            _logs.update { it + logSession(current.server, "Log — $name") }
+        }
+    }
+
+    fun closeLog(serverId: String) {
+        synchronized(lock) {
+            val open = _logs.value.firstOrNull { it.server.serverId == serverId } ?: return
+            _logs.update { it - open }
+            open.close()
+        }
+    }
+
+    private fun logSession(server: RegisteredServer, title: String): LogSession {
+        val logScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext.job))
+        val client = clientFactory(server, logScope)
+        val model = LogModel(client, logScope, clock, zone)
+        val log = LogSession(server, title, client, model, logScope)
+        logScope.launch(Dispatchers.Unconfined, CoroutineStart.UNDISPATCHED) {
+            var connectedBefore = false
+            var lost = false
+            client.state.collect { state ->
+                if (state is ConnectionState.Connected) {
+                    // Overview §6.2 S1: after a reconnect the list is at the top.
+                    if (lost) log.scroll.reset()
+                    connectedBefore = true
+                    lost = false
+                } else if (connectedBefore) {
+                    lost = true
+                }
+            }
+        }
+        client.start()
+        model.start()
+        return log
+    }
+
+    /** After pairing again, an open Log window moves to a connection with the new token. */
+    private fun renewLog(server: RegisteredServer) {
+        val open = _logs.value.firstOrNull { it.server.serverId == server.serverId } ?: return
+        open.close()
+        val next = logSession(server, open.title)
+        _logs.update { logs -> logs.map { if (it === open) next else it } }
     }
 
     /** Overview §6.2 S1: on first display, reconnect and server switch the list is at the top. */
@@ -494,7 +581,10 @@ class AppState(
                     registry.save(record)
                     settings.lastServerId = record.serverId
                     _ui.update { it.copy(dialog = null, servers = registry.servers.value) }
-                    registry.servers.value.firstOrNull { it.serverId == record.serverId }?.let { connect(it) }
+                    registry.servers.value.firstOrNull { it.serverId == record.serverId }?.let {
+                        connect(it)
+                        renewLog(it)
+                    }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -513,6 +603,8 @@ class AppState(
             pairing?.cancel()
             session?.close()
             session = null
+            _logs.value.forEach { it.close() }
+            _logs.value = emptyList()
         }
         scope.cancel()
         discovery.stop()
