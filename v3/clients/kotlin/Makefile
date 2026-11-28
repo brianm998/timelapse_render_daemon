@@ -3,8 +3,7 @@
 #
 # The Kotlin desktop client Makefile (spec 2 §7, component `desktop`). Every recipe is a plain
 # delegation to ./gradlew or scripts/, and no line runs at parse time, so `make -n <target>`
-# works on every OS. The Gradle wrapper, settings and scripts arrive with DSK-01; until then the
-# targets that call them fail when run, and `make -n` still passes.
+# works on every OS.
 
 .PHONY: run develop release clean test check ci coverage contract
 
@@ -45,9 +44,9 @@ check:
 ci:
 	bash scripts/ci-desktop.sh
 
-# HTML reports land under build/reports/kover.
+# HTML reports land under core/build/reports/kover and desktop/build/reports/kover.
 coverage:
-	./gradlew :core:koverVerify :desktop:koverVerify
+	./gradlew :core:koverVerify :desktop:koverVerify :core:koverHtmlReport :desktop:koverHtmlReport
 
 contract:
 	bash scripts/contract-test.sh
