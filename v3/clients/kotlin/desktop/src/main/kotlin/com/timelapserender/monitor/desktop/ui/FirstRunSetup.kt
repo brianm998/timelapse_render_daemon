@@ -42,7 +42,7 @@ const val SETUP_TITLE = "Set up trd"
 const val STEP_CONFIG = "Choose a config"
 const val USE_EXISTING_CONFIG = "Use an existing config.json…"
 const val CREATE_NEW_CONFIG = "Create a new config"
-const val RESTART_HINT = "If trd still reports no config, restart it: trd ▸ Start trd."
+const val CONFIG_PENDING_HINT = "Waiting for trd to take up the config…"
 const val STEP_DISK_ACCESS = "Allow Full Disk Access"
 const val OPEN_PRIVACY_SETTINGS = "Open Privacy settings"
 const val SHOW_TRD_IN_FINDER = "Show trd in Finder"
@@ -162,7 +162,7 @@ private fun ConfigStep(ui: AppUi, setup: FirstRunUi, controller: FirstRunControl
     val path = setup.configPath
     if (path != null) {
         Text("✓ Config: $path")
-        if (ui.phase == Phase.PHASE_NO_CONFIG) Text(RESTART_HINT)
+        if (ui.phase == Phase.PHASE_NO_CONFIG) Text(CONFIG_PENDING_HINT)
     } else {
         Text("trd has no config yet, so it scans nothing.")
     }
