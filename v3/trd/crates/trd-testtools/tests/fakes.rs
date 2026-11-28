@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 use trd_core::tools::{ToolProblem, Tools};
+use trd_testtools::make_tools_dir;
 
 const WAIT: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(10);
@@ -435,4 +436,37 @@ fn fake_tools_dir_resolves() {
         assert!(report.command.is_some());
     }
     assert_eq!(tools.ffmpeg.info.problem, None::<ToolProblem>);
+}
+
+/// Threads that build tools directories and run the copies at once, as parallel tests do. No run
+/// may find its program still open for writing (`ETXTBSY`).
+#[test]
+fn fresh_tool_copies_run_while_other_threads_copy() {
+    let bin_dir = Path::new(env!("CARGO_BIN_EXE_fake-ffmpeg"))
+        .parent()
+        .expect("the fakes' directory");
+    thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                for _ in 0..5 {
+                    let root = tempfile::tempdir().unwrap();
+                    make_tools_dir(bin_dir, root.path()).expect("the fake tools");
+                    let name = format!("exiftool{}", std::env::consts::EXE_SUFFIX);
+                    let out = Command::new(root.path().join(name))
+                        .arg("-ver")
+                        .env_remove("TRD_FAKE_EXIFTOOL")
+                        .output()
+                        .expect("the fresh copy starts");
+                    assert!(out.status.success(), "{out:?}");
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn make_tools_dir_reports_a_missing_binary() {
+    let root = tempfile::tempdir().unwrap();
+    let empty = root.path().join("empty");
+    assert!(make_tools_dir(&empty, &root.path().join("tools")).is_err());
 }
