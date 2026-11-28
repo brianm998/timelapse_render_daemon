@@ -16,6 +16,7 @@ import io.grpc.Status
 import io.grpc.inprocess.InProcessChannelBuilder
 import io.grpc.inprocess.InProcessServerBuilder
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
 import java.net.InetAddress
@@ -52,25 +53,70 @@ class FakeTrdService {
     @Volatile var startPairingResponse: StartPairingResponse = StartPairingResponse.newBuilder().setCode("123456").build()
     @Volatile var directoryListing: ListDirectoryResponse = ListDirectoryResponse.getDefaultInstance()
 
+    /** Per-id thumbnails; when empty every id gets [thumbnail], else an id not listed is NOT_FOUND. */
+    @Volatile var thumbnails: Map<String, Thumbnail> = emptyMap()
+    /** Per-path listings; when empty every path gets [directoryListing], else a path not listed is NOT_FOUND. */
+    @Volatile var directories: Map<String, ListDirectoryResponse> = emptyMap()
+    @Volatile var validateResponse: ValidateConfigResponse = ValidateConfigResponse.getDefaultInstance()
+    /** What UpdateConfig / UpdateCodecs answer; [configState] when null. */
+    @Volatile var updateConfigResult: ConfigState? = null
+    @Volatile var updateCodecsResult: ConfigState? = null
+
+    /** A handler of the named method (bare name) waits for this gate before it answers. */
+    val gates = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+
+    /** The request messages of GetRenderDetails, ListRenderedVideos, ListLog, WatchLog, ValidateConfig, UpdateConfig, UpdateCodecs and ListDirectory, in arrival order. */
+    val requests = CopyOnWriteArrayList<Any>()
+
+    inline fun <reified T : Any> requestsOf(): List<T> = requests.filterIsInstance<T>()
+
     fun callCount(method: String): Int = calls.count { it.method == method }
 
     fun methodsCalled(): Set<String> = calls.mapTo(HashSet()) { it.method }
 
     private val ack = Ack.getDefaultInstance()
 
+    /** An entry passes when its level is at least [min]; UNSPECIFIED (really INFO) lets everything through in this fake. */
+    private fun passesLevel(entry: LogEntry, min: LogLevel) =
+        min == LogLevel.LOG_LEVEL_UNSPECIFIED || entry.level.number >= min.number
+
     private val impl = object : TrdServiceGrpcKt.TrdServiceCoroutineImplBase() {
         override suspend fun getServerInfo(request: GetServerInfoRequest) = serverInfo
         override suspend fun pair(request: PairRequest) = pairResponse
         override suspend fun getSnapshot(request: GetSnapshotRequest) = snapshots.last()
         override fun watchSnapshots(request: WatchSnapshotsRequest): Flow<Snapshot> = snapshots.asFlow()
-        override suspend fun listRenderedVideos(request: ListRenderedVideosRequest) =
-            ListRenderedVideosResponse.newBuilder().addAllVideos(renderedVideos).build()
-        override suspend fun getThumbnail(request: GetThumbnailRequest) = thumbnail
-        override suspend fun getRenderDetails(request: GetRenderDetailsRequest) = renderDetails
-        override suspend fun listLog(request: ListLogRequest) =
-            ListLogResponse.newBuilder().addAllEntries(logEntries.reversed()).build()
-        override fun watchLog(request: WatchLogRequest): Flow<LogEntry> =
-            logEntries.filter { it.seq > request.afterSeq }.asFlow()
+        override suspend fun listRenderedVideos(request: ListRenderedVideosRequest): ListRenderedVideosResponse {
+            requests += request
+            val needle = request.search.lowercase()
+            val all = renderedVideos.filter {
+                needle.isEmpty() || it.sequenceName.lowercase().contains(needle) || it.outputFilename.lowercase().contains(needle)
+            }
+            val start = if (request.beforeId.isEmpty()) 0 else all.indexOfFirst { it.id == request.beforeId } + 1
+            val limit = if (request.limit == 0) 100 else request.limit
+            val page = all.drop(start).take(limit)
+            return ListRenderedVideosResponse.newBuilder().addAllVideos(page).setMore(start + page.size < all.size).build()
+        }
+        override suspend fun getThumbnail(request: GetThumbnailRequest): Thumbnail {
+            gates["GetThumbnail"]?.await()
+            val map = thumbnails
+            if (map.isEmpty()) return thumbnail
+            return map[request.renderedVideoId] ?: throw Status.NOT_FOUND.withDescription("no thumbnail").asException()
+        }
+        override suspend fun getRenderDetails(request: GetRenderDetailsRequest): RenderDetails {
+            requests += request
+            return renderDetails
+        }
+        override suspend fun listLog(request: ListLogRequest): ListLogResponse {
+            requests += request
+            val all = logEntries.filter { passesLevel(it, request.minLevel) }.sortedByDescending { it.seq }
+                .filter { request.beforeSeq == 0L || it.seq < request.beforeSeq }
+            val limit = if (request.limit == 0) 200 else request.limit
+            return ListLogResponse.newBuilder().addAllEntries(all.take(limit)).setMore(all.size > limit).build()
+        }
+        override fun watchLog(request: WatchLogRequest): Flow<LogEntry> {
+            requests += request
+            return logEntries.filter { it.seq > request.afterSeq && passesLevel(it, request.minLevel) }.asFlow()
+        }
         override suspend fun setGlobalPause(request: SetGlobalPauseRequest) = ack
         override suspend fun pauseSequence(request: SequenceRef) = ack
         override suspend fun resumeSequence(request: SequenceRef) = ack
@@ -82,13 +128,30 @@ class FakeTrdService {
         override suspend fun retryVariant(request: VariantRef) = ack
         override suspend fun dismissFailure(request: FailureRef) = ack
         override suspend fun dismissAllFailures(request: DismissAllFailuresRequest) = ack
-        override suspend fun rescanNow(request: RescanNowRequest) = ack
+        override suspend fun rescanNow(request: RescanNowRequest): Ack {
+            gates["RescanNow"]?.await()
+            return ack
+        }
         override suspend fun getConfig(request: GetConfigRequest) = configState
-        override suspend fun validateConfig(request: ValidateConfigRequest) = ValidateConfigResponse.getDefaultInstance()
-        override suspend fun updateConfig(request: UpdateConfigRequest) = configState
-        override suspend fun updateCodecs(request: UpdateCodecsRequest) = configState
+        override suspend fun validateConfig(request: ValidateConfigRequest): ValidateConfigResponse {
+            requests += request
+            return validateResponse
+        }
+        override suspend fun updateConfig(request: UpdateConfigRequest): ConfigState {
+            requests += request
+            return updateConfigResult ?: configState
+        }
+        override suspend fun updateCodecs(request: UpdateCodecsRequest): ConfigState {
+            requests += request
+            return updateCodecsResult ?: configState
+        }
         override suspend fun setConfigPath(request: SetConfigPathRequest) = configState
-        override suspend fun listDirectory(request: ListDirectoryRequest) = directoryListing
+        override suspend fun listDirectory(request: ListDirectoryRequest): ListDirectoryResponse {
+            requests += request
+            val map = directories
+            if (map.isEmpty()) return directoryListing
+            return map[request.path] ?: throw Status.NOT_FOUND.withDescription("no such directory").asException()
+        }
         override suspend fun startPairing(request: StartPairingRequest) = startPairingResponse
         override suspend fun listPairedDevices(request: ListPairedDevicesRequest) =
             ListPairedDevicesResponse.newBuilder().addAllDevices(pairedDevices).build()
