@@ -80,4 +80,18 @@ class SnapshotRepositoryTest {
             assertEquals(3L, repo.state.value.snapshot!!.revision)
         }
     }
+
+    @Test
+    fun reportsWhyTheStreamFailedUntilASnapshotArrives() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            env.fake.failWith["WatchSnapshots"] = Status.INTERNAL.withDescription("snapshot failed")
+            val release = CompletableDeferred<Unit>()
+            val repo = SnapshotRepository(env.client, backgroundScope, delayer = { release.await() })
+            repo.start()
+            assertEquals("snapshot failed", repo.state.first { it.watchError != null }.watchError)
+            env.fake.failWith.clear()
+            release.complete(Unit)
+            assertNull(repo.state.first { it.snapshot != null }.watchError)
+        }
+    }
 }

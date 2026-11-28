@@ -18,6 +18,7 @@ import com.timelapserender.trd.v1.Stage
 import com.timelapserender.trd.v1.VariantRow
 import com.timelapserender.trd.v1.VariantStatus
 import io.grpc.Status
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
@@ -128,11 +129,12 @@ class ActivityPresenterTest {
         env: Env,
         filter: MutableStateFlow<ActivityFilter> = MutableStateFlow(ActivityFilter()),
         repoClock: () -> Long = { now },
+        delayer: suspend (Long) -> Unit = { delay(it) },
     ): ActivityPresenter {
         val repo = SnapshotRepository(env.client, backgroundScope, clock = repoClock)
         repo.start()
         env.client.start()
-        return ActivityPresenter(repo, filter, env.client, backgroundScope, clock = { now }, zone = utc)
+        return ActivityPresenter(repo, filter, env.client, backgroundScope, clock = { now }, zone = utc, delayer = delayer)
     }
 
     private fun Env.script(snapshot: Snapshot, recentDays: Int = 30) {
@@ -323,6 +325,61 @@ class ActivityPresenterTest {
             val second = p.ui.first { progress(it).startsWith("1,200") }
             assertEquals(first.keys, second.keys)
             assertTrue(first.keys.isNotEmpty())
+        }
+    }
+
+    @Test
+    fun aFailedLoadOlderIsReportedAndCanBeRetried() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            val all = (1..2).map { video("v-$it", "LRT_x$it.mov") }
+            env.script(Snapshot.newBuilder().addRecentlyRendered(all[0]).setRecentlyRenderedTotal(2).build())
+            env.fake.renderedVideos = all
+            env.fake.failWith["ListRenderedVideos"] = Status.INTERNAL.withDescription("history unavailable")
+            val p = presenter(env)
+            p.ui.first { it.recent.size == 1 }
+            p.loadOlder()
+            val failed = p.ui.first { it.olderError != null }
+            assertEquals("history unavailable", failed.olderError)
+            assertTrue(failed.canLoadOlder)
+            assertFalse(failed.loadingOlder)
+            env.fake.failWith.clear()
+            p.loadOlder()
+            assertNull(p.ui.first { it.recent.size == 2 }.olderError)
+        }
+    }
+
+    @Test
+    fun aFailedConfigLoadIsRetried() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            env.script(Snapshot.newBuilder().build(), recentDays = 14)
+            env.fake.failWith["GetConfig"] = Status.INTERNAL
+            val p = presenter(env, delayer = {
+                env.fake.failWith.clear()
+            })
+            p.ui.first { it.recentEmptyText == "Nothing rendered in the last 14 days" }
+            assertTrue(env.fake.callCount("GetConfig") >= 2)
+        }
+    }
+
+    @Test
+    fun aVideoPushedOutOfTheSnapshotStaysOnceOlderPagesAreShown() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            val all = (1..3).map { video("v-$it", "LRT_x$it.mov") }
+            env.script(
+                Snapshot.newBuilder().addRecentlyRendered(all[0]).addRecentlyRendered(all[1]).setRecentlyRenderedTotal(3).build(),
+            )
+            env.fake.renderedVideos = all
+            val p = presenter(env)
+            p.ui.first { it.recent.size == 2 }
+            p.loadOlder()
+            p.ui.first { it.recent.size == 3 }
+            // the next subscription brings a new render, which pushes v-2 out of the snapshot
+            env.fake.snapshots = listOf(
+                Snapshot.newBuilder().addRecentlyRendered(video("v-0", "LRT_new.mov")).addRecentlyRendered(all[0])
+                    .setRecentlyRenderedTotal(4).build(),
+            )
+            val ui = p.ui.first { state -> state.recent.any { it.key == "v-0" } }
+            assertEquals(listOf("v-0", "v-1", "v-2", "v-3"), ui.recent.map { it.key })
         }
     }
 }

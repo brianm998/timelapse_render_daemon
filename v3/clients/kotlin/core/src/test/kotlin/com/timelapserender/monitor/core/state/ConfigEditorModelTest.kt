@@ -234,4 +234,86 @@ class ConfigEditorModelTest {
             assertFalse(ui.canSave)
         }
     }
+
+    @Test
+    fun anExternalCodecChangeIsNotOverwrittenByAConfigOnlyEdit() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            val m = loaded(env, backgroundScope)
+            // video_codecs.json changed on the server since the load
+            env.fake.updateConfigResult = base.toBuilder().setConfig(addPath("/x")(baseConfig)).setRevision("rev2")
+                .addCodecs(codecB).setCodecsRevision("external").build()
+            m.edit(addPath("/x"))
+            settle(m)
+            m.save()
+            val saved = m.state.first { !it.saving }
+            assertEquals(0, env.fake.callCount("UpdateCodecs"))
+            assertEquals(listOf(codecA, codecB), saved.codecs)
+            assertFalse(saved.dirty)
+        }
+    }
+
+    @Test
+    fun editedCodecsKeepTheLoadedRevisionSoAnExternalChangeConflictsOnEveryTry() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            val m = loaded(env, backgroundScope)
+            env.fake.updateConfigResult = base.toBuilder().setConfig(addPath("/x")(baseConfig)).setRevision("rev2")
+                .setCodecsRevision("external").build()
+            env.fake.failWith["UpdateCodecs"] = Status.FAILED_PRECONDITION
+            m.edit(addPath("/x"))
+            m.editCodecs { it + codecB }
+            settle(m)
+            m.save()
+            val first = m.state.first { it.conflict }
+            assertEquals(listOf(codecA, codecB), first.codecs)
+            assertTrue(first.dirty)
+
+            env.fake.failWith.clear()
+            env.fake.updateCodecsResult = env.fake.updateConfigResult
+            m.save()
+            m.state.first { !it.saving }
+            assertEquals("crev1", env.fake.requestsOf<UpdateCodecsRequest>().single().expectedRevision)
+            assertEquals(1, env.fake.callCount("UpdateConfig")) // the saved config is not sent again
+        }
+    }
+
+    @Test
+    fun aCodecThatTheConfigStartsUsingIsSavedFirst() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            val m = loaded(env, backgroundScope)
+            val use: (Config) -> Config = { it.toBuilder().addRendering(RenderVariant.newBuilder().setCodec("b")).build() }
+            env.fake.updateCodecsResult = base.toBuilder().addCodecs(codecB).setCodecsRevision("crev2").build()
+            env.fake.updateConfigResult = env.fake.updateCodecsResult!!.toBuilder().setConfig(use(baseConfig)).setRevision("rev2").build()
+            m.editCodecs { it + codecB }
+            m.edit(use)
+            settle(m)
+            m.save()
+            val saved = m.state.first { !it.saving }
+            assertEquals(
+                listOf("UpdateCodecs", "UpdateConfig"),
+                env.fake.calls.map { it.method }.filter { it.startsWith("Update") },
+            )
+            assertEquals("rev1", env.fake.requestsOf<UpdateConfigRequest>().single().expectedRevision)
+            assertFalse(saved.dirty)
+        }
+    }
+
+    @Test
+    fun anEditDuringASaveIsKeptAndNoSecondSaveStarts() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            val m = loaded(env, backgroundScope)
+            env.fake.updateConfigResult = base.toBuilder().setConfig(addPath("/x")(baseConfig)).setRevision("rev2").build()
+            m.edit(addPath("/x"))
+            settle(m)
+            m.save()
+            // the test dispatcher has not run the save yet
+            m.edit(addPath("/y"))
+            assertTrue(m.state.value.saving)
+            assertFalse(m.state.value.canSave)
+            m.save()
+            val saved = m.state.first { !it.saving && !it.validationPending }
+            assertEquals(1, env.fake.callCount("UpdateConfig"))
+            assertEquals(listOf("/exp", "/x", "/y"), saved.config!!.exportPathsList)
+            assertTrue(saved.dirty)
+        }
+    }
 }

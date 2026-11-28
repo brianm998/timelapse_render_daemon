@@ -62,12 +62,16 @@ class ConfigEditorModel(
     private var codecs: List<VideoCodec> = emptyList()
     private var validation: Job? = null
     private var loadJob: Job? = null
+    private var saveJob: Job? = null
+    private var saving = false
 
     /** Loads (or reloads) the config, discarding the edited copy and any conflict. */
     fun load() {
         validation?.cancel()
         loadJob?.cancel()
-        _state.update { it.copy(loading = true, error = null, validationPending = false) }
+        saveJob?.cancel()
+        saving = false
+        _state.update { it.copy(loading = true, saving = false, error = null, validationPending = false) }
         loadJob = scope.launch {
             try {
                 val s = client.getConfig()
@@ -115,45 +119,77 @@ class ConfigEditorModel(
         }
     }
 
-    /** Sends `UpdateConfig` with the loaded revision and, only if the codecs changed, `UpdateCodecs`. */
+    /**
+     * Sends `UpdateConfig` and, only if the codecs were edited, `UpdateCodecs`, each with the loaded
+     * revision. The config goes first, unless it renders with a codec that this edit adds. Edits made
+     * while the save is in flight are kept, and validated again.
+     */
     fun save() {
         val base = loaded ?: return
         if (!_state.value.canSave) return
         validation?.cancel()
+        val sentConfig = config
+        val sentCodecs = codecs
+        val configEdited = sentConfig != base.config
+        val codecsEdited = sentCodecs != base.codecsList
+        val added = sentCodecs.map { it.name }.toSet() - base.codecsList.map { it.name }.toSet()
+        val codecsFirst = codecsEdited && sentConfig.renderingList.any { it.codec in added }
+        saving = true
         _state.update { it.copy(saving = true, validationPending = false, error = null) }
-        scope.launch {
-            var current = base
+        saveJob = scope.launch {
+            var saved = base
+            // After one of two updates, the other half keeps its loaded value and revision, so that a
+            // retry still detects a change made on the server.
+            suspend fun sendConfig() {
+                saved = client.updateConfig(sentConfig, base.revision)
+                val current = loaded ?: base
+                loaded = if (codecsEdited && !codecsFirst) {
+                    saved.toBuilder().clearCodecs().addAllCodecs(current.codecsList)
+                        .setCodecsRevision(current.codecsRevision).build()
+                } else {
+                    saved
+                }
+            }
+            suspend fun sendCodecs() {
+                saved = client.updateCodecs(sentCodecs, base.codecsRevision)
+                val current = loaded ?: base
+                loaded = if (configEdited && codecsFirst) {
+                    saved.toBuilder().setConfig(current.config).setRevision(current.revision).build()
+                } else {
+                    saved
+                }
+            }
             try {
-                if (config != base.config) {
-                    current = client.updateConfig(config, base.revision)
-                    loaded = current
-                }
-                if (codecsChanged(current)) {
-                    current = client.updateCodecs(codecs, current.codecsRevision)
-                    loaded = current
-                }
-                config = current.config
-                codecs = current.codecsList
-                publish(current.issuesList, emptyList(), saving = false)
+                if (codecsEdited && codecsFirst) sendCodecs()
+                if (configEdited) sendConfig()
+                if (codecsEdited && !codecsFirst) sendCodecs()
+                saving = false
+                val editedMeanwhile = config != sentConfig || codecs != sentCodecs
+                if (config == sentConfig) config = saved.config
+                if (codecs == sentCodecs) codecs = saved.codecsList
+                publish(saved.issuesList, emptyList(), conflict = false, error = null)
+                if (editedMeanwhile) changed()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                saving = false
                 val conflict = e.statusCode() == Status.Code.FAILED_PRECONDITION
+                val editedMeanwhile = config != sentConfig || codecs != sentCodecs
                 publish(
-                    _state.value.issues, _state.value.rendering, saving = false, conflict = conflict,
+                    _state.value.issues, _state.value.rendering, conflict = conflict,
                     error = if (conflict) CONFIG_CONFLICT_MESSAGE else e.statusMessage(),
                 )
+                if (editedMeanwhile) changed()
             }
         }
     }
 
-    private fun codecsChanged(base: ConfigState? = loaded) = base != null && codecs != base.codecsList
+    private fun codecsChanged() = loaded?.let { codecs != it.codecsList } ?: false
 
     private fun publish(
         issues: List<ConfigIssue>,
         rendering: List<RenderVariant>,
         pending: Boolean = false,
-        saving: Boolean = false,
         conflict: Boolean = _state.value.conflict,
         error: String? = _state.value.error,
     ) {

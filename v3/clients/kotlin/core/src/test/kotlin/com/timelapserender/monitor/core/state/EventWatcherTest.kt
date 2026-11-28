@@ -8,7 +8,9 @@ import com.timelapserender.trd.v1.ListLogRequest
 import com.timelapserender.trd.v1.LogEntry
 import com.timelapserender.trd.v1.LogLevel
 import com.timelapserender.trd.v1.WatchLogRequest
+import io.grpc.Status
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -114,5 +116,66 @@ class EventWatcherTest {
         assertEquals(5L, store.get("a"))
         assertEquals(9L, store.get("b"))
         assertEquals(null, store.get("c"))
+    }
+
+    @Test
+    fun aThrowingCollectorEndsTheFlowAndItsEventIsDeliveredAgain() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            env.fake.logEntries = listOf(entry(1, finished), entry(2, failed))
+            val store = InMemoryLastSeqStore().also { it.set("srv", 1L) }
+            val watcher = EventWatcher(env.client, store, "srv", delayer = { error("must not retry") })
+            val thrown = runCatching { watcher.events().collect { throw IllegalStateException("notify failed") } }
+            assertEquals("notify failed", thrown.exceptionOrNull()?.message)
+            assertEquals(1L, store.get("srv"))
+            assertEquals(2L, watcher.events().first().seq)
+        }
+    }
+
+    @Test
+    fun aThrowingStoreEndsTheFlow() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            val store = object : LastSeqStore {
+                override fun get(serverId: String): Long? = null
+
+                override fun set(serverId: String, seq: Long): Unit = throw IllegalStateException("store failed")
+            }
+            val watcher = EventWatcher(env.client, store, "srv", delayer = { error("must not retry") })
+            val thrown = runCatching { watcher.events().collect {} }
+            assertEquals("store failed", thrown.exceptionOrNull()?.message)
+        }
+    }
+
+    @Test
+    fun failedRpcsAreReportedAndRetried() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            env.fake.logEntries = listOf(entry(1, finished))
+            env.fake.failWith["ListLog"] = Status.INTERNAL
+            env.fake.failWith["WatchLog"] = Status.UNAVAILABLE
+            val store = InMemoryLastSeqStore()
+            val failures = mutableListOf<Status.Code>()
+            val passes = Channel<Unit>(Channel.UNLIMITED)
+            val release = Channel<Unit>()
+            val watcher = EventWatcher(
+                env.client, store, "srv",
+                delayer = {
+                    passes.send(Unit)
+                    release.receive()
+                },
+                onRpcFailure = { failures += Status.fromThrowable(it).code },
+            )
+            val events = Channel<ServerEvent>(Channel.UNLIMITED)
+            backgroundScope.launch { watcher.events().collect { events.send(it) } }
+            passes.receive()
+            assertEquals(null, store.get("srv"))
+            assertEquals(0, env.fake.callCount("WatchLog"))
+            env.fake.failWith.remove("ListLog")
+            release.send(Unit)
+            passes.receive()
+            assertEquals(listOf(Status.Code.INTERNAL, Status.Code.UNAVAILABLE), failures)
+            env.fake.failWith.clear()
+            env.fake.logEntries = env.fake.logEntries + entry(2, failed)
+            release.send(Unit)
+            assertEquals(2L, events.receive().seq)
+        }
     }
 }

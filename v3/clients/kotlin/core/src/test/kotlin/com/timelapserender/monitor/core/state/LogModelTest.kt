@@ -8,10 +8,13 @@ import com.timelapserender.trd.v1.LogEntry
 import com.timelapserender.trd.v1.LogLevel
 import io.grpc.Status
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
@@ -25,8 +28,12 @@ class LogModelTest {
         LogEntry.newBuilder().setSeq(seq).setLevel(level).setSubject("subject").setMessage(message)
             .setAtMs(Instant.parse("2025-11-27T14:02:00Z").toEpochMilli()).build()
 
-    private fun model(env: Env, scope: CoroutineScope, pageSize: Int = 200) =
-        LogModel(env.client, scope, clock = { now }, zone = ZoneId.of("UTC"), pageSize = pageSize)
+    private fun model(
+        env: Env,
+        scope: CoroutineScope,
+        pageSize: Int = 200,
+        delayer: suspend (Long) -> Unit = { delay(it) },
+    ) = LogModel(env.client, scope, clock = { now }, zone = ZoneId.of("UTC"), pageSize = pageSize, delayer = delayer)
 
     @Test
     fun firstPageIsNewestFirstWithTheDefaultInfoFilter() = runTest(timeout = 60.seconds) {
@@ -92,14 +99,78 @@ class LogModelTest {
     }
 
     @Test
-    fun aFailedFirstPageIsReported() = runTest(timeout = 60.seconds) {
+    fun aFailedFirstPageIsReportedAndRetriedBeforeTheLogIsFollowed() = runTest(timeout = 60.seconds) {
         Env(backgroundScope).use { env ->
+            env.fake.logEntries = (1L..3L).map { entry(it) }
             env.fake.failWith["ListLog"] = Status.INTERNAL.withDescription("log unavailable")
-            val m = model(env, backgroundScope)
+            val passes = Channel<Unit>(Channel.UNLIMITED)
+            val release = Channel<Unit>()
+            val m = model(env, backgroundScope, pageSize = 2, delayer = {
+                passes.send(Unit)
+                release.receive()
+            })
             m.start()
-            val ui = m.state.first { it.error != null }
-            assertEquals("log unavailable", ui.error)
-            assertFalse(ui.loading)
+            passes.receive()
+            assertEquals("log unavailable", m.state.value.error)
+            assertFalse(m.state.value.loading)
+            assertEquals(0, env.fake.callCount("WatchLog"))
+
+            env.fake.failWith.clear()
+            release.send(Unit)
+            val ui = m.state.first { it.rows.isNotEmpty() }
+            assertNull(ui.error)
+            assertEquals(listOf("3", "2"), ui.rows.map { it.key })
+            assertTrue(ui.hasOlder)
+        }
+    }
+
+    @Test
+    fun aFailedLiveStreamIsReportedUntilItIsReopened() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            env.fake.logEntries = listOf(entry(1))
+            env.fake.failWith["WatchLog"] = Status.INTERNAL.withDescription("stream broke")
+            val passes = Channel<Unit>(Channel.UNLIMITED)
+            val release = Channel<Unit>()
+            val m = model(env, backgroundScope, delayer = {
+                passes.send(Unit)
+                release.receive()
+            })
+            m.start()
+            passes.receive()
+            assertEquals("stream broke", m.state.value.error)
+
+            env.fake.failWith.clear()
+            env.fake.logEntries = env.fake.logEntries + entry(2)
+            release.send(Unit)
+            val ui = m.state.first { it.rows.size == 2 && it.error == null }
+            assertEquals(listOf("2", "1"), ui.rows.map { it.key })
+        }
+    }
+
+    @Test
+    fun aFailedOlderPageStaysReportedWhileLiveEntriesArrive() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            env.fake.logEntries = (1L..3L).map { entry(it) }
+            val passes = Channel<Unit>(Channel.UNLIMITED)
+            val release = Channel<Unit>()
+            val m = model(env, backgroundScope, pageSize = 2, delayer = {
+                passes.send(Unit)
+                release.receive()
+            })
+            m.start()
+            passes.receive() // the first (empty) stream ended
+            env.fake.failWith["ListLog"] = Status.INTERNAL.withDescription("no older page")
+            m.loadOlder()
+            m.state.first { it.error != null }
+            env.fake.logEntries = env.fake.logEntries + entry(4)
+            release.send(Unit)
+            val live = m.state.first { it.rows.size == 3 }
+            assertEquals("no older page", live.error)
+
+            env.fake.failWith.clear()
+            m.loadOlder()
+            val older = m.state.first { it.rows.size == 4 }
+            assertNull(older.error)
         }
     }
 }

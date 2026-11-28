@@ -36,12 +36,14 @@ data class LogUi(
     val search: String = "",
     val hasOlder: Boolean = false,
     val loading: Boolean = true,
+    /** Why the first page, the live stream or the last older page failed; null when none did. */
     val error: String? = null,
 )
 
 /**
  * `ListLog` for the first page, `WatchLog` for live entries, older pages on demand; a level filter
- * (default Info) applied by the server and a search applied here. Rows are newest first.
+ * (default Info) applied by the server and a search applied here. Rows are newest first. A failed
+ * first page is retried before the log is followed; a failed stream is reported and reopened.
  */
 class LogModel(
     private val client: TrdClient,
@@ -57,6 +59,8 @@ class LogModel(
 
     private var entries: List<LogEntry> = emptyList() // newest first
     private var more = false
+    private var streamError: String? = null // the first page or the live stream
+    private var olderError: String? = null
     private var job: Job? = null
     private var olderJob: Job? = null
 
@@ -66,22 +70,32 @@ class LogModel(
         olderJob?.cancel()
         entries = emptyList()
         more = false
-        publish(loading = true, error = null)
+        streamError = null
+        olderError = null
+        publish(loading = true)
         job = scope.launch {
             val level = _state.value.minLevel
-            var newest = 0L
+            follow(firstPage(level), level)
+        }
+    }
+
+    /** Asks until the first page arrives, and returns its newest `seq`. */
+    private suspend fun firstPage(level: LogLevel): Long {
+        while (true) {
             try {
                 val page = client.listLog(0, pageSize, level)
                 entries = page.entriesList
                 more = page.more
-                newest = entries.firstOrNull()?.seq ?: 0L
-                publish(loading = false, error = null)
+                streamError = null
+                publish(loading = false)
+                return entries.firstOrNull()?.seq ?: 0L
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                publish(loading = false, error = e.statusMessage())
+                streamError = e.statusMessage()
+                publish(loading = false)
             }
-            follow(newest, level)
+            delayer(retryDelayMs)
         }
     }
 
@@ -98,24 +112,27 @@ class LogModel(
 
     fun setSearch(text: String) {
         _state.update { it.copy(search = text) }
-        publish(_state.value.loading, _state.value.error)
+        publish(_state.value.loading)
     }
 
     fun loadOlder() {
         val oldest = entries.lastOrNull()?.seq ?: return
         if (!more || olderJob?.isActive == true) return
         val level = _state.value.minLevel
+        olderError = null
+        publish(_state.value.loading)
         olderJob = scope.launch {
             try {
                 val page = client.listLog(oldest, pageSize, level)
                 val known = entries.mapTo(HashSet()) { it.seq }
                 entries = entries + page.entriesList.filter { it.seq !in known }
                 more = page.more
-                publish(false, null)
+                publish(false)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                publish(false, e.statusMessage())
+                olderError = e.statusMessage()
+                publish(false)
             }
         }
     }
@@ -128,19 +145,26 @@ class LogModel(
                     after = maxOf(after, entry.seq)
                     if (entries.none { it.seq == entry.seq }) {
                         entries = (listOf(entry) + entries).sortedByDescending { it.seq }
-                        publish(false, null)
+                        streamError = null
+                        publish(false)
                     }
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // reconnect below
+                streamError = e.statusMessage()
+                publish(false)
             }
             delayer(retryDelayMs)
+            // The stream is being reopened: the error stands again only if that fails too.
+            if (streamError != null) {
+                streamError = null
+                publish(false)
+            }
         }
     }
 
-    private fun publish(loading: Boolean, error: String?) {
+    private fun publish(loading: Boolean) {
         val now = clock()
         val needle = _state.value.search.trim()
         val rows = entries
@@ -151,6 +175,6 @@ class LogModel(
                     it.level, it.subject, it.message,
                 )
             }
-        _state.update { it.copy(rows = rows, hasOlder = more, loading = loading, error = error) }
+        _state.update { it.copy(rows = rows, hasOlder = more, loading = loading, error = streamError ?: olderError) }
     }
 }

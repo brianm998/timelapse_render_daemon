@@ -21,6 +21,8 @@ data class RepoState(
     val snapshot: Snapshot? = null,
     val connection: ConnectionState = ConnectionState.Connecting,
     val lastUpdateMs: Long = 0,
+    /** Why `WatchSnapshots` last failed; null again once a snapshot arrives. */
+    val watchError: String? = null,
 )
 
 /**
@@ -56,12 +58,13 @@ class SnapshotRepository(
         while (true) {
             try {
                 client.watchSnapshots().collect { snapshot ->
-                    _state.update { it.copy(snapshot = snapshot, lastUpdateMs = clock()) }
+                    _state.update { it.copy(snapshot = snapshot, lastUpdateMs = clock(), watchError = null) }
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // The client notes the failure in its connection state; try again below.
+                // The client's connection state reflects only some failures, so keep the reason too.
+                _state.update { it.copy(watchError = e.statusMessage()) }
             }
             delayer(retryDelayMs)
         }

@@ -5,6 +5,8 @@ package com.timelapserender.monitor.core.state
 
 import com.timelapserender.monitor.core.net.TrdClient
 import io.grpc.Status
+import io.grpc.StatusException
+import io.grpc.StatusRuntimeException
 import kotlinx.coroutines.CancellationException
 
 /** A failed command: [message] is the gRPC status description, [code] the status code. */
@@ -17,6 +19,9 @@ internal fun Throwable.statusMessage(): String {
 }
 
 internal fun Throwable.statusCode(): Status.Code = Status.fromThrowable(this).code
+
+/** Whether [this] is a failed RPC or stream, as opposed to a failure of the client's own code. */
+internal fun Throwable.isRpcFailure(): Boolean = this is StatusException || this is StatusRuntimeException
 
 /** One `suspend` function per control of overview §6.9. A failure carries the status description. */
 class Commands(private val client: TrdClient) {

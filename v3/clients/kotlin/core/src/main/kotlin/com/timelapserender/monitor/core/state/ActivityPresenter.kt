@@ -20,12 +20,13 @@ import com.timelapserender.trd.v1.VariantRow
 import com.timelapserender.trd.v1.VariantStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -141,6 +142,10 @@ data class ActivityUi(
     /** Whether the "Show older" row is offered. */
     val canLoadOlder: Boolean = false,
     val loadingOlder: Boolean = false,
+    /** Why the last "Show older" failed; the row stays offered for a retry. */
+    val olderError: String? = null,
+    /** Why the snapshot stream last failed, while the rows shown may be stale. */
+    val watchError: String? = null,
 ) {
     /** Every row key in display order (S4): problems, failures, each card then its variants, recently rendered. */
     val keys: List<String>
@@ -163,8 +168,19 @@ class ActivityPresenter(
     private val zone: ZoneId = ZoneId.systemDefault(),
     private val serverName: String = "",
     private val olderPageSize: Int = 50,
+    private val retryDelayMs: Long = 1000,
+    private val delayer: suspend (Long) -> Unit = { delay(it) },
 ) {
-    private data class Older(val videos: List<RenderedVideo> = emptyList(), val more: Boolean? = null, val loading: Boolean = false)
+    private data class Older(
+        val videos: List<RenderedVideo> = emptyList(),
+        val more: Boolean? = null,
+        val loading: Boolean = false,
+        val error: String? = null,
+    )
+
+    /** The last snapshot's videos, and those that newer renders pushed out of it since paging began. */
+    private var lastSnapshotVideos: List<RenderedVideo> = emptyList()
+    private var pushedOut: List<RenderedVideo> = emptyList()
 
     private val older = MutableStateFlow(Older())
     private val historyDays = MutableStateFlow<Int?>(null)
@@ -176,14 +192,22 @@ class ActivityPresenter(
 
     init {
         scope.launch {
-            repo.state.map { it.connection is ConnectionState.Connected }.distinctUntilChanged().filter { it }.collect {
-                try {
-                    historyDays.value = client.getConfig().config.recentRenderHistoryDays.toInt()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    // the empty text falls back to a general one
-                }
+            repo.state.map { it.connection is ConnectionState.Connected }.distinctUntilChanged().collectLatest { connected ->
+                if (connected) loadHistoryDays()
+            }
+        }
+    }
+
+    /** Asks until it answers; meanwhile the empty text is a general one. */
+    private suspend fun loadHistoryDays() {
+        while (true) {
+            try {
+                historyDays.value = client.getConfig().config.recentRenderHistoryDays.toInt()
+                return
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                delayer(retryDelayMs)
             }
         }
     }
@@ -193,7 +217,7 @@ class ActivityPresenter(
         val o = older.value
         if (o.loading) return
         val last = o.videos.lastOrNull() ?: repo.state.value.snapshot?.recentlyRenderedList?.lastOrNull() ?: return
-        older.update { it.copy(loading = true) }
+        older.update { it.copy(loading = true, error = null) }
         scope.launch {
             try {
                 val r = client.listRenderedVideos(olderPageSize, last.id)
@@ -204,7 +228,7 @@ class ActivityPresenter(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                older.update { it.copy(loading = false) }
+                older.update { it.copy(loading = false, error = e.statusMessage()) }
             }
         }
     }
@@ -229,7 +253,13 @@ class ActivityPresenter(
             .filter { c -> matches(f, c.exportPath, listOf(c.name) + c.variantsList.map { it.outputFilename }) }
             .map { cardRow(it) }
         val snapshotIds = s.recentlyRenderedList.mapTo(HashSet()) { it.id }
-        val combined = s.recentlyRenderedList + o.videos.filter { it.id !in snapshotIds }
+        pushedOut = if (o.loading || o.more != null) {
+            (lastSnapshotVideos + pushedOut).filter { it.id !in snapshotIds }.distinctBy { it.id }
+        } else {
+            emptyList()
+        }
+        lastSnapshotVideos = s.recentlyRenderedList
+        val combined = (s.recentlyRenderedList + pushedOut + o.videos.filter { it.id !in snapshotIds }).distinctBy { it.id }
         val recent = combined.filter { matches(f, it.exportPath, listOf(it.sequenceName, it.outputFilename)) }.map { videoRow(it, now) }
         val more = o.more ?: (s.recentlyRenderedTotal.toLong() > combined.size)
         return ActivityUi(
@@ -247,6 +277,8 @@ class ActivityPresenter(
             },
             canLoadOlder = more && combined.isNotEmpty(),
             loadingOlder = o.loading,
+            olderError = o.error,
+            watchError = r.watchError,
         )
     }
 
