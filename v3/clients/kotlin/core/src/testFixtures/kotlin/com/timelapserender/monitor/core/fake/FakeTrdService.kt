@@ -182,11 +182,21 @@ class FakeTrdService {
         private val server: Server,
         val channel: ManagedChannel?,
         val fingerprintSha256Hex: String?,
+        private val inProcessName: String? = null,
     ) : AutoCloseable {
+        private val extra = CopyOnWriteArrayList<ManagedChannel>()
+
         val port: Int get() = server.port
+
+        /** Another channel to an in-process fake, for a client that shuts its own channel down. */
+        fun newChannel(): ManagedChannel {
+            val name = checkNotNull(inProcessName) { "Only an in-process fake hands out channels" }
+            return InProcessChannelBuilder.forName(name).build().also { extra += it }
+        }
 
         override fun close() {
             channel?.shutdownNow()
+            extra.forEach { it.shutdownNow() }
             server.shutdownNow()
             server.awaitTermination(30, TimeUnit.SECONDS)
         }
@@ -195,7 +205,7 @@ class FakeTrdService {
     fun startInProcess(): Running {
         val name = "trd-fake-" + UUID.randomUUID()
         val server = InProcessServerBuilder.forName(name).addService(definition()).build().start()
-        return Running(server, InProcessChannelBuilder.forName(name).build(), null)
+        return Running(server, InProcessChannelBuilder.forName(name).build(), null, name)
     }
 
     /** A TLS server on a loopback port chosen by the OS; connect with a pin of [Running.fingerprintSha256Hex]. */

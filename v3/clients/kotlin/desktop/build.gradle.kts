@@ -21,10 +21,13 @@ dependencies {
     implementation(compose.material3)
     implementation(libs.kotlinx.coroutines.swing)
 
+    testImplementation(testFixtures(project(":core")))
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     @OptIn(org.jetbrains.compose.ExperimentalComposeLibrary::class)
     testImplementation(compose.uiTest)
+    @OptIn(org.jetbrains.compose.ExperimentalComposeLibrary::class)
+    testImplementation(compose.desktop.uiTestJUnit4)
 }
 
 compose.desktop {
