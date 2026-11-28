@@ -9,6 +9,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.input.key.KeyEventType
@@ -37,18 +38,22 @@ import com.timelapserender.monitor.desktop.platform.TrdService
 import com.timelapserender.monitor.desktop.platform.WindowGeometry
 import com.timelapserender.monitor.desktop.ui.AppMenuBar
 import com.timelapserender.monitor.desktop.ui.MainWindow
+import com.timelapserender.monitor.desktop.ui.config.ConfigWindowContent
+import com.timelapserender.monitor.desktop.ui.config.isSaveShortcut
 import com.timelapserender.monitor.desktop.ui.isSearchShortcut
 import com.timelapserender.monitor.desktop.ui.perform
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.swing.Swing
 import kotlinx.coroutines.Dispatchers
+import java.awt.Desktop
 import java.awt.Dimension
 import java.net.InetAddress
 import java.util.prefs.Preferences
 import kotlin.system.exitProcess
 
 const val WINDOW_TITLE = "Timelapse Render Monitor"
+private const val CONFIG_WINDOW_HEIGHT = 700
 
 /** The command line (spec 2 §6.1). [server] is the `--server` plaintext loopback override. */
 data class Options(val server: ServerEndpoint? = null)
@@ -99,6 +104,40 @@ fun StartScreen() {
     }
 }
 
+/** A Config window (spec 2 §6.5). */
+@Composable
+private fun ConfigWindow(config: ConfigWindowHandle, mac: Boolean) {
+    val controller = config.controller
+    val ui by controller.ui.collectAsState()
+    Window(
+        onCloseRequest = controller::requestClose,
+        state = rememberWindowState(size = DpSize(MIN_WINDOW_WIDTH.dp, CONFIG_WINDOW_HEIGHT.dp)),
+        title = "Config — ${config.serverName}",
+        onPreviewKeyEvent = { event ->
+            val save = event.type == KeyEventType.KeyDown &&
+                isSaveShortcut(event.key, event.isMetaPressed, event.isCtrlPressed, mac)
+            if (save) controller.save()
+            save
+        },
+    ) {
+        LaunchedEffect(ui.focusRequests) {
+            window.toFront()
+            window.requestFocus()
+        }
+        MaterialTheme { ConfigWindowContent(controller) }
+    }
+}
+
+private fun handleSystemQuit(quit: () -> Unit) {
+    if (!Desktop.isDesktopSupported()) return
+    val desktop = Desktop.getDesktop()
+    if (!desktop.isSupported(Desktop.Action.APP_QUIT_HANDLER)) return
+    desktop.setQuitHandler { _, response ->
+        response.cancelQuit()
+        quit()
+    }
+}
+
 private fun createAppState(options: Options): AppState {
     val home = System.getProperty("user.home")
     val dataDir = defaultDataDir(System.getProperty("os.name"), System::getenv, home)
@@ -134,9 +173,13 @@ fun main(args: Array<String>) {
             position = positionOf(geometry),
         )
         val quit = {
-            app.close()
-            exitApplication()
+            app.requestQuit {
+                app.close()
+                exitApplication()
+            }
         }
+        // The macOS Quit command asks about unsaved changes too.
+        LaunchedEffect(Unit) { handleSystemQuit(quit) }
         Window(
             onCloseRequest = quit,
             state = windowState,
@@ -155,6 +198,10 @@ fun main(args: Array<String>) {
             }
             AppMenuBar(ui, mac) { action -> app.perform(action, quit) }
             MainWindow(app)
+        }
+        val configWindows by app.configWindows.collectAsState()
+        for (config in configWindows) {
+            key(config) { ConfigWindow(config, mac) }
         }
     }
 }

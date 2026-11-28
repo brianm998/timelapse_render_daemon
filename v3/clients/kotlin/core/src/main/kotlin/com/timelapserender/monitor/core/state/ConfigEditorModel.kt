@@ -25,6 +25,9 @@ const val CONFIG_CONFLICT_MESSAGE = "The config changed on the server"
 
 data class ConfigEditorUi(
     val loading: Boolean = true,
+    /** The config file on the server, and its text as last read or saved. */
+    val path: String = "",
+    val rawJson: String = "",
     /** The editable copy; null until the first load succeeds. */
     val config: Config? = null,
     val codecs: List<VideoCodec> = emptyList(),
@@ -196,6 +199,8 @@ class ConfigEditorModel(
         val base = loaded
         _state.value = ConfigEditorUi(
             loading = false,
+            path = base?.path.orEmpty(),
+            rawJson = base?.rawJson.orEmpty(),
             config = config,
             codecs = codecs,
             issues = issues,

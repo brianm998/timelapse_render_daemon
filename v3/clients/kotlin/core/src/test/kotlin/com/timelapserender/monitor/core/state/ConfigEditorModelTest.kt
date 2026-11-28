@@ -72,6 +72,24 @@ class ConfigEditorModelTest {
     }
 
     @Test
+    fun theFilePathAndRawTextFollowTheLoadAndTheSave() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            env.fake.configState = base.toBuilder().setRawJson("{}").build()
+            val m = ConfigEditorModel(env.client, backgroundScope)
+            m.load()
+            val ui = m.state.first { !it.loading && it.config != null }
+            assertEquals("/cfg.json", ui.path)
+            assertEquals("{}", ui.rawJson)
+            env.fake.updateConfigResult = env.fake.configState.toBuilder()
+                .setConfig(addPath("/x")(baseConfig)).setRawJson("{ \"saved\": true }").build()
+            m.edit(addPath("/x"))
+            settle(m)
+            m.save()
+            assertEquals("{ \"saved\": true }", m.state.first { !it.saving }.rawJson)
+        }
+    }
+
+    @Test
     fun validatesOnlyAfter400msOfQuiet() = runTest(timeout = 60.seconds) {
         Env(backgroundScope).use { env ->
             env.fake.validateResponse = ValidateConfigResponse.newBuilder()

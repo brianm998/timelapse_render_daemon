@@ -56,7 +56,9 @@ class MenusTest {
         assertTrue(item(connected, MenuAction.RESCAN).enabled)
         assertTrue(item(connected, MenuAction.LOG_FOLDER).enabled)
         assertFalse(item(connected.copy(activeServerId = "other"), MenuAction.LOG_FOLDER).enabled)
-        for (later in listOf(MenuAction.PAIR_PHONE, MenuAction.CONFIG, MenuAction.LOG, MenuAction.PREFERENCES)) {
+        assertTrue(item(connected, MenuAction.CONFIG).enabled)
+        assertFalse(item(offline, MenuAction.CONFIG).enabled)
+        for (later in listOf(MenuAction.PAIR_PHONE, MenuAction.LOG, MenuAction.PREFERENCES)) {
             assertFalse(item(connected, later).enabled)
         }
     }

@@ -275,9 +275,21 @@ The `:core` contract tests (package `com.timelapserender.monitor.core.contract`,
 
 Overview §6.4 in a window with a sidebar of the groups and a form for the selected group. Path
 lists open a folder browser dialog (`DirectoryBrowserModel`) starting at the current value or the
-roots. The rendering table edits variants inline. Save (Cmd/Ctrl+S) is disabled while errors exist;
-issues show under their fields and as a count in the sidebar. Closing with unsaved changes asks to
-save, discard or cancel. A conflict shows "The config changed on the server" with **Reload**.
+roots (a `$YEAR` value starts at the folder before `$YEAR`); list entries can also be typed, which
+is how `$YEAR` is entered. The rendering table edits variants inline. Save (Cmd/Ctrl+S) is disabled
+while errors exist, and while nothing has changed; issues show under their fields and as a count in
+the sidebar, and an issue that names no field of the form is listed at the top of its group (Advanced
+when no group has it). Closing with unsaved changes, or quitting, asks to save, discard or cancel. A
+conflict shows "The config changed on the server" with **Reload**.
+
+- The window needs a connection to open (**Config…** is disabled otherwise). It has its own
+  connection, so it stays on its server when the main window switches; forgetting the server closes
+  it. Opening it again brings it to the front.
+- Removing or renaming a codec first asks `ValidateConfig` about the table without it; an `ERROR` at
+  a variant that uses the codec refuses the change and shows that issue. The last codec cannot be
+  removed.
+- Advanced: **Use this config** (`SetConfigPath`, without creating a file) is disabled while there
+  are unsaved changes.
 
 ### 6.6 Log window
 

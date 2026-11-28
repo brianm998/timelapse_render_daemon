@@ -65,7 +65,7 @@ class FakeTrdService {
     /** A handler of the named method (bare name) waits for this gate before it answers. */
     val gates = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
 
-    /** The request messages of GetRenderDetails, ListRenderedVideos, ListLog, WatchLog, ValidateConfig, UpdateConfig, UpdateCodecs and ListDirectory, in arrival order. */
+    /** The request messages of GetRenderDetails, ListRenderedVideos, ListLog, WatchLog, ValidateConfig, UpdateConfig, UpdateCodecs, SetConfigPath and ListDirectory, in arrival order. */
     val requests = CopyOnWriteArrayList<Any>()
 
     inline fun <reified T : Any> requestsOf(): List<T> = requests.filterIsInstance<T>()
@@ -145,7 +145,10 @@ class FakeTrdService {
             requests += request
             return updateCodecsResult ?: configState
         }
-        override suspend fun setConfigPath(request: SetConfigPathRequest) = configState
+        override suspend fun setConfigPath(request: SetConfigPathRequest): ConfigState {
+            requests += request
+            return configState
+        }
         override suspend fun listDirectory(request: ListDirectoryRequest): ListDirectoryResponse {
             requests += request
             val map = directories
