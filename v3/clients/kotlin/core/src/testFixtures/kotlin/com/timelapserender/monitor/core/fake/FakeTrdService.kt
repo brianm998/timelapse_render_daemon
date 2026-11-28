@@ -86,7 +86,10 @@ class FakeTrdService {
     }
 
     private val impl = object : TrdServiceGrpcKt.TrdServiceCoroutineImplBase() {
-        override suspend fun getServerInfo(request: GetServerInfoRequest) = serverInfo
+        override suspend fun getServerInfo(request: GetServerInfoRequest): ServerInfo {
+            gates["GetServerInfo"]?.await()
+            return serverInfo
+        }
         override suspend fun pair(request: PairRequest): PairResponse {
             requests += request
             return pairResponse

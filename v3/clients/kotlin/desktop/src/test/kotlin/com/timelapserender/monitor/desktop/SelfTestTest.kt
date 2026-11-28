@@ -5,6 +5,7 @@ package com.timelapserender.monitor.desktop
 
 import com.timelapserender.monitor.core.fake.FakeTrdService
 import io.grpc.Status
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -125,6 +126,17 @@ class SelfTestTest {
             assertFailed(run("--self-test", "--server", "127.0.0.1:${server.port}"), "calling GetServerInfo", "INTERNAL")
         }
         assertTrue('\n' !in printed.single())
+    }
+
+    @Test
+    fun aServerThatNeverAnswersFailsAtTheDeadline() {
+        val fake = FakeTrdService()
+        fake.gates["GetServerInfo"] = CompletableDeferred()
+        fake.startPlaintext().use { server ->
+            val args = listOf("--self-test", "--server", "127.0.0.1:${server.port}")
+            val code = runSelfTest(args, tempDir = temp.root, serverTimeoutMs = 1, print = { printed += it })
+            assertFailed(code, "calling GetServerInfo", "TimeoutCancellationException")
+        }
     }
 
     @Test
