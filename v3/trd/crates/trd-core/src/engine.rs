@@ -13,7 +13,8 @@
 //! on every change of content and stays put otherwise, so a tick that changes nothing publishes
 //! nothing.
 //!
-//! Tests drive the engine directly: [`Engine::startup`], [`Engine::tick`] and [`Engine::apply`] are
+//! Tests drive the engine directly: [`Engine::startup`], [`Engine::tick`], [`Engine::apply`] and
+//! [`Engine::set_config_path`] are
 //! callable without the run loop, and the clock is injected.
 //!
 //! An adopted foreign render (§6.11 step 3) is never signalled here. The engine's shutdown only
@@ -157,7 +158,16 @@ enum Command {
         control: Control,
         reply: oneshot::Sender<Result<(), ControlError>>,
     },
+    SetConfigPath(Box<SwitchConfig>),
     Shutdown,
+}
+
+/// The payload of [`Command::SetConfigPath`].
+struct SwitchConfig {
+    path: PathBuf,
+    codecs: VideoCodecs,
+    history_path: Option<PathBuf>,
+    reply: oneshot::Sender<()>,
 }
 
 /// The client side of an engine: sends controls and reads the snapshot. Cheap to clone.
@@ -190,6 +200,30 @@ impl EngineHandle {
             .unwrap_or_else(|_| Err(ControlError::Internal("the engine stopped".to_owned())))
     }
 
+    /// Switches the running engine to the config at `path` (see [`Engine::set_config_path`]) and
+    /// waits until the engine has done so. The engine ticks at once afterwards.
+    pub async fn set_config_path(
+        &self,
+        path: PathBuf,
+        codecs: VideoCodecs,
+        history_path: Option<PathBuf>,
+    ) -> Result<(), ControlError> {
+        let (reply, answer) = oneshot::channel();
+        let command = Command::SetConfigPath(Box::new(SwitchConfig {
+            path,
+            codecs,
+            history_path,
+            reply,
+        }));
+        self.commands
+            .send(command)
+            .await
+            .map_err(|_| ControlError::Internal("the engine is not running".to_owned()))?;
+        answer
+            .await
+            .map_err(|_| ControlError::Internal("the engine stopped".to_owned()))
+    }
+
     /// Asks the run loop to end. The engine drops its handles and signals no process.
     pub async fn shutdown(&self) {
         let _ = self.commands.send(Command::Shutdown).await;
@@ -209,6 +243,7 @@ pub struct Engine {
     fda_missing: bool,
     external_problems: Arc<Mutex<Vec<Problem>>>,
     scanner: Scanner,
+    scan_fs: Arc<dyn ScanFs>,
     renders: Renders,
     table: Box<dyn ProcessTable + Send>,
     policy: AdoptPolicy,
@@ -286,7 +321,7 @@ impl Engine {
             config_path,
         };
         let (tx, rx) = watch::channel(Arc::new(initial.clone()));
-        let scanner = Scanner::new(options.scan_fs, options.clock.clone());
+        let scanner = Scanner::new(options.scan_fs.clone(), options.clock.clone());
         let renders = Renders::new(&options.data_dir, options.thumbs).with_env(options.env);
         let engine = Engine {
             config: ConfigStore::new(&options.config_path, options.clock.clone()),
@@ -300,6 +335,7 @@ impl Engine {
             fda_missing: false,
             external_problems: options.external_problems,
             scanner,
+            scan_fs: options.scan_fs,
             renders,
             table: options.table,
             policy: options.policy,
@@ -358,6 +394,17 @@ impl Engine {
             let due = tokio::select! {
                 command = self.commands.recv() => match command {
                     None | Some(Command::Shutdown) => break,
+                    Some(Command::SetConfigPath(switch)) => {
+                        let SwitchConfig {
+                            path,
+                            codecs,
+                            history_path,
+                            reply,
+                        } = *switch;
+                        self.set_config_path(path, codecs, history_path);
+                        let _ = reply.send(());
+                        true
+                    }
                     Some(Command::Control { control, reply }) => {
                         let result = self.apply_control(control);
                         let scan = matches!(result, Ok(true));
@@ -371,6 +418,36 @@ impl Engine {
                 self.tick().await;
                 ticked = tokio::time::Instant::now();
             }
+        }
+    }
+
+    /// Switches to the config at `path` with its codec table (§6.1). Callable without the run loop.
+    ///
+    /// The same path only asks for a rescan, so the last good config stays until the file reads
+    /// again. A different path drops the old config, the scan, the unknown-codec list and the
+    /// scanner's backup state; the next tick reads the new file, and a missing or invalid one gives
+    /// `PHASE_NO_CONFIG`. `history_path` is kept only while start-up has not run, so a fresh
+    /// install imports the chosen config's history. No render is signalled or stopped; queued jobs
+    /// the new config does not want go at the next scan. Nothing is published here.
+    pub fn set_config_path(
+        &mut self,
+        path: PathBuf,
+        codecs: VideoCodecs,
+        history_path: Option<PathBuf>,
+    ) {
+        if path == self.config.path() {
+            self.rescan = true;
+            return;
+        }
+        self.config = ConfigStore::new(path, self.clock.clone());
+        self.codecs = codecs;
+        self.scan = None;
+        self.scanner = Scanner::new(self.scan_fs.clone(), self.clock.clone());
+        self.unknown_codecs.clear();
+        self.config_checked = false;
+        self.rescan = true;
+        if !self.begun {
+            self.history_path = history_path;
         }
     }
 

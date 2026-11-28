@@ -573,6 +573,39 @@ mod server {
         assert!(Path::new(&moved).is_file());
     }
 
+    /// `SetConfigPath` reaches the running engine: a daemon with no config file leaves
+    /// `PHASE_NO_CONFIG` once the path names an existing config.json, without a restart.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn set_config_path_leaves_no_config() {
+        let fixture = Fixture::new();
+        // No file at the `--config` path.
+        let daemon = Daemon::start(&fixture, &[]);
+        let mut client = daemon.client().await;
+        poll_snapshot(&mut client, |s| {
+            (s.phase == pb::Phase::NoConfig as i32).then_some(())
+        })
+        .await;
+
+        let other = fixture.path("other/config.json");
+        fs::create_dir_all(other.parent().expect("a folder")).expect("the folder");
+        fs::write(&other, empty_config(&fixture).to_json_pretty()).expect("config.json");
+        client
+            .set_config_path(pb::SetConfigPathRequest {
+                path: other.to_string_lossy().into_owned(),
+                create_if_missing: false,
+            })
+            .await
+            .expect("SetConfigPath");
+
+        let expected = other.to_string_lossy().into_owned();
+        poll_snapshot(&mut client, |s| {
+            let loaded =
+                s.phase != pb::Phase::NoConfig as i32 && s.phase != pb::Phase::Starting as i32;
+            (loaded && s.config_path == expected).then_some(())
+        })
+        .await;
+    }
+
     /// `UpdateConfig` refuses an edit with ERROR issues (INVALID_ARGUMENT, naming the field) and an
     /// edit over a file that does not parse (FAILED_PRECONDITION). Neither writes anything.
     /// `UpdateCodecs` refuses a codec without a name (INVALID_ARGUMENT).

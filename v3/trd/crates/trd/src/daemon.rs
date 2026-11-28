@@ -339,6 +339,7 @@ pub fn assemble(
         thumbs,
         tools: shared_tools,
         config: Mutex::new(slot),
+        config_switch: tokio::sync::Mutex::new(()),
         server_id,
         server_name,
         sandbox: settings.sandbox,
@@ -379,7 +380,7 @@ fn thumbnail_runner(tools: SharedTools) -> Runner {
 
 /// The Swift history file named by the config's `render_history_path` (§6.17). The Swift default
 /// location is not read here: a test must never read the owner's Application Support folder.
-fn history_path_from_config(config_path: &Path) -> Option<PathBuf> {
+pub(crate) fn history_path_from_config(config_path: &Path) -> Option<PathBuf> {
     let text = std::fs::read_to_string(config_path).ok()?;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
     value
