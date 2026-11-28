@@ -5,5 +5,6 @@
 # What v3-gate.yml's `kotlin` job runs: build and test the desktop client and verify coverage.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-exec ./gradlew --no-daemon --console=plain -Djava.awt.headless=true \
+./gradlew --no-daemon --console=plain -Djava.awt.headless=true \
   :proto:build :core:test :desktop:test :core:koverVerify :desktop:koverVerify
+bash scripts/check-system-tests.sh skipped
