@@ -24,6 +24,9 @@ const WAIT: Duration = Duration::from_secs(60);
 const STOP_WAIT: Duration = Duration::from_secs(30);
 /// The pause between two looks.
 const POLL: Duration = Duration::from_millis(500);
+/// The pause before the restart. Windows shows no pid and reports the last run time only to the
+/// second, so a restart in the same second as the previous start looks like no restart.
+const LAST_RUN_STEP: Duration = Duration::from_secs(2);
 
 /// Runs the trd binary under test with the given arguments.
 fn trd(args: &[&str]) -> Output {
@@ -130,6 +133,7 @@ system_test!(
         wait_for_answer(true, WAIT).await;
 
         let before = status();
+        tokio::time::sleep(LAST_RUN_STEP).await;
         let restarted = trd(&["service", "restart"]);
         assert!(
             restarted.status.success(),
