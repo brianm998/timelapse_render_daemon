@@ -56,9 +56,10 @@ class ConfigWindowTest : ConfigTestBase() {
 
     private fun assertIssueUnder(field: String, text: String) {
         compose.onNodeWithText(text).assert(hasAnyAncestor(hasTestTag(ConfigTags.issues(field))))
-        val input = node(ConfigTags.field(field)).fetchSemanticsNode().boundsInRoot
-        val issue = compose.onNodeWithText(text).fetchSemanticsNode().boundsInRoot
-        assertTrue("the issue is below the field", issue.top >= input.bottom - 1)
+        // Positions, not bounds: an issue scrolled out of view has empty bounds.
+        val input = node(ConfigTags.field(field)).fetchSemanticsNode()
+        val issue = compose.onNodeWithText(text).fetchSemanticsNode()
+        assertTrue("the issue is below the field", issue.positionInRoot.y >= input.positionInRoot.y + input.size.height - 1)
     }
 
     @Test
