@@ -36,6 +36,7 @@ import kotlinx.coroutines.swing.Swing
 import org.junit.After
 import org.junit.Rule
 import java.util.concurrent.atomic.AtomicInteger
+import javax.swing.SwingUtilities
 
 /** The Config window's content, offscreen, over an in-process [FakeTrdService]. */
 abstract class ConfigTestBase {
@@ -107,7 +108,16 @@ abstract class ConfigTestBase {
         await { !controller.editor.state.value.loading }
     }
 
-    protected fun await(condition: () -> Boolean) = compose.waitUntil(Harness.TIMEOUT_MS, condition)
+    /**
+     * Waits for [condition], then for the screen to show what made it true. The editor publishes on the
+     * Swing thread, where the window collects it within the same task, but this thread can see the new
+     * value before that task has finished.
+     */
+    protected fun await(condition: () -> Boolean) {
+        compose.waitUntil(Harness.TIMEOUT_MS, condition)
+        SwingUtilities.invokeAndWait {}
+        compose.waitForIdle()
+    }
 
     protected fun awaitText(text: String) =
         await { compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty() }
@@ -121,7 +131,6 @@ abstract class ConfigTestBase {
     /** Waits for the validation of the last edit. */
     protected fun settle() {
         await { !controller.editor.state.value.validationPending }
-        compose.waitForIdle()
     }
 
     protected fun node(tag: String): SemanticsNodeInteraction = compose.onNodeWithTag(tag)

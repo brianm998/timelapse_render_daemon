@@ -17,7 +17,9 @@ import io.grpc.Status
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -68,6 +70,19 @@ class ConfigEditorModelTest {
             assertFalse(ui.dirty)
             assertTrue(ui.canSave)
             assertFalse(ui.conflict)
+        }
+    }
+
+    @Test
+    fun aLoadNeverPublishesALoadedStateWithoutAConfig() = runTest(timeout = 60.seconds) {
+        Env(backgroundScope).use { env ->
+            env.fake.configState = base
+            val m = ConfigEditorModel(env.client, backgroundScope)
+            val seen = mutableListOf<ConfigEditorUi>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { m.state.collect { seen += it } }
+            m.load()
+            m.state.first { !it.loading && it.config != null }
+            assertEquals(emptyList<ConfigEditorUi>(), seen.filter { !it.loading && it.config == null })
         }
     }
 

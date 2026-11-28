@@ -81,7 +81,6 @@ class ConfigEditorModel(
                 loaded = s
                 config = s.config
                 codecs = s.codecsList
-                _state.value = ConfigEditorUi(loading = false)
                 publish(s.issuesList, emptyList(), conflict = false, error = null)
             } catch (e: CancellationException) {
                 throw e
