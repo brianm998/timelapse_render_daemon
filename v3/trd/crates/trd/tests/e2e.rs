@@ -274,6 +274,20 @@ impl Gate {
         fs::write(self.root.join("hold").join(pattern), "").expect("the hold file");
     }
 
+    /// Waits until the script marks a render as held for `pattern`, so a pattern that matches no
+    /// render fails here by name.
+    fn wait_held(&self, pattern: &str) {
+        let marker = self.root.join("held").join(pattern);
+        let started = Instant::now();
+        while !marker.exists() {
+            assert!(
+                started.elapsed() < HANG_GUARD,
+                "no render was held for {pattern} within {HANG_GUARD:?}"
+            );
+            std::thread::sleep(POLL);
+        }
+    }
+
     /// Lets the renders held for `pattern` go on to the real ffmpeg.
     fn release(&self, pattern: &str) {
         fs::rename(
@@ -820,6 +834,7 @@ async fn e2e_daemon_with_real_tools() {
         },
     )
     .await;
+    gate.wait_held(HOLD_A);
     client
         .suspend_render(pb::RenderRef {
             render_id: first_id.clone(),
@@ -975,6 +990,7 @@ async fn e2e_daemon_with_real_tools() {
         },
     )
     .await;
+    gate.wait_held(HOLD_ADDED);
     client
         .suspend_render(pb::RenderRef {
             render_id: run_id.clone(),
@@ -1175,14 +1191,7 @@ fn e2e_gate_holds_render_until_released() {
 
     let args = ["-progress", "progress.txt", "two words/held-name.mov"];
     let mut held = ffmpeg(&args).spawn().expect("the gate runs");
-    let started = Instant::now();
-    while !marker.exists() {
-        assert!(
-            started.elapsed() < HANG_GUARD,
-            "the render was not held within {HANG_GUARD:?}"
-        );
-        std::thread::sleep(POLL);
-    }
+    gate.wait_held("held-name");
     assert!(
         matches!(held.try_wait(), Ok(None)),
         "the held render is still running"
