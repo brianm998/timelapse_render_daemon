@@ -23,6 +23,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextInput
 import com.timelapserender.monitor.core.fake.FakeTrdService
+import com.timelapserender.monitor.core.net.ConnectionState
 import com.timelapserender.monitor.core.net.TrdClient
 import com.timelapserender.monitor.core.servers.ServerRecord
 import com.timelapserender.monitor.core.state.LogModel
@@ -166,6 +167,12 @@ class LogWindowTest {
         await { !exists(LogWindowTags.PILL) }
         row(105).assertIsDisplayed()
         assertTrue(compose.runOnIdle { scroll.atTop })
+
+        // Scrolling away again anchors the list as before.
+        scrollTo(40)
+        append(106L..106L)
+        awaitPill("↑ 1 new")
+        assertEquals("65", firstVisibleKey())
     }
 
     @Test
@@ -350,6 +357,8 @@ class LogWindowTest {
         fake.failWith["ListLog"] = Status.INTERNAL.withDescription("log unavailable")
         scrollTo(40)
         awaitText("log unavailable")
+        // The error line takes room from the list: bring the button fully back into view.
+        scrollTo(40)
         fake.failWith.clear()
         node(LogWindowTags.OLDER).performClick()
         await { model.state.value.rows.size == 50 }
@@ -426,7 +435,7 @@ class LogWindowTest {
         val h = connectedHarness()
         h.app.openLog()
         val log = h.app.logs.value.single()
-        h.awaitTrue { log.model.state.value.rows.size == 2 }
+        h.awaitTrue { log.model.state.value.rows.size == 2 && log.client.state.value is ConnectionState.Connected }
         log.scroll.listState.requestScrollToItem(1)
         assertEquals(1, log.scroll.listState.firstVisibleItemIndex)
         h.local.failWith["WatchLog"] = Status.UNAVAILABLE

@@ -118,7 +118,6 @@ class LogScroll {
     /** Puts the list at the top: first display, reconnect, a new level or search (S1). */
     fun reset() {
         keeper.reset()
-        keys = emptyList()
         inserted = 0
         listState.requestScrollToItem(0)
     }

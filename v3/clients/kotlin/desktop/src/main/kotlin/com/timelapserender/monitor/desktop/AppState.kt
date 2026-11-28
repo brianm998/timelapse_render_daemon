@@ -422,7 +422,8 @@ class AppState(
     private fun renewLog(server: RegisteredServer) {
         val open = _logs.value.firstOrNull { it.server.serverId == server.serverId } ?: return
         open.close()
-        _logs.update { logs -> logs.map { if (it === open) logSession(server, open.title) else it } }
+        val next = logSession(server, open.title)
+        _logs.update { logs -> logs.map { if (it === open) next else it } }
     }
 
     /** Overview §6.2 S1: on first display, reconnect and server switch the list is at the top. */
