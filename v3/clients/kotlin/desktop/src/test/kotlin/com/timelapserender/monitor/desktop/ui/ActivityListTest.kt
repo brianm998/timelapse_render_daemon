@@ -10,6 +10,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot as ComposeSnapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -52,6 +53,7 @@ import com.timelapserender.trd.v1.VariantStatus
 import io.grpc.Status
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -129,15 +131,15 @@ class ActivityListTest {
 
     private var activity by mutableStateOf(activityUi())
 
-    /** The list alone, tall enough that every row is composed. */
-    private fun showList(first: ActivityUi, posters: PosterLoader = PosterLoader { null }) {
+    /** The list alone; by default tall enough that every row is composed. */
+    private fun showList(first: ActivityUi, height: Int = 3000) {
         activity = first
         val listState = LazyListState()
         val keeper = ScrollKeeper()
         compose.setContent {
             MaterialTheme {
-                Box(Modifier.requiredSize(900.dp, 3000.dp)) {
-                    ActivityList(activity, listState, keeper, posters, true, null, {}, {})
+                Box(Modifier.requiredSize(900.dp, height.dp)) {
+                    ActivityList(activity, listState, keeper, PosterLoader { null }, true, null, {}, {})
                 }
             }
         }
@@ -265,10 +267,18 @@ class ActivityListTest {
         compose.onNodeWithTag("card:/exp/LRT_b").assertExists()
         compose.onNodeWithTag("video:LRT_b-1").assertDoesNotExist()
 
-        compose.runOnUiThread { activity = second }
-        compose.mainClock.advanceTimeByFrame()
-
-        compose.onNodeWithTag("card:/exp/LRT_b").assertDoesNotExist()
+        compose.runOnUiThread {
+            activity = second
+            ComposeSnapshot.sendApplyNotifications()
+        }
+        // Frame by frame: no frame may lack both the card and its video, or show both.
+        var frames = 0
+        while (exists("card:/exp/LRT_b")) {
+            assertFalse(exists("video:LRT_b-1"))
+            assertTrue("the update was never drawn", frames++ < 10)
+            compose.mainClock.advanceTimeByFrame()
+        }
+        compose.onNodeWithTag("video:LRT_b-1").assertExists()
         compose.onNodeWithTag("variant:/exp/LRT_b/run").assertDoesNotExist()
         // Directly below the remaining card, ahead of the older video.
         assertInOrder("card:/exp/LRT_a", "header:recent", "video:LRT_b-1", "video:LRT_b-2", "video:old")
@@ -290,8 +300,10 @@ class ActivityListTest {
         awaitText("history unavailable")
         h.local.failWith.remove("ListRenderedVideos")
         compose.onNodeWithText(SHOW_OLDER).performClick()
+        val ui = h.await { it.activity?.recent?.size == 4 }
+        assertEquals(listOf("v1", "v2", "v3", "v4"), ui.activity!!.recent.map { it.key })
         awaitNoTag("older")
-        assertEquals(listOf("v3", "v4"), h.app.ui.value.activity!!.recent.drop(2).map { it.key })
+        compose.onNodeWithTag("video:v4").assertExists()
     }
 
     @Test
@@ -332,9 +344,9 @@ class ActivityListTest {
     @OptIn(ExperimentalTestApi::class)
     @Test
     fun hoveringTheRelativeTimeShowsTheAbsoluteTime() {
-        showList(connect(everySection().toBuilder().clearRecentlyRendered().addRecentlyRendered(video("v-1")).build()) {
-            it.recent.size == 1
-        })
+        val snapshot = Snapshot.newBuilder().addRecentlyRendered(video("v-1")).setRecentlyRenderedTotal(1).build()
+        // Inside the window, so that the pointer can reach the row.
+        showList(connect(snapshot) { it.recent.size == 1 }, height = 600)
         val absolute = Format.absoluteTime(renderedAt, System.currentTimeMillis(), ZoneOffset.UTC)
         compose.onNodeWithText(absolute).assertDoesNotExist()
         compose.onNodeWithText("12 min ago", useUnmergedTree = true).performMouseInput { moveTo(center) }

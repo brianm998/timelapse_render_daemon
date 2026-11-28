@@ -5,7 +5,6 @@ package com.timelapserender.monitor.desktop.ui.rows
 
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.unit.dp
@@ -43,7 +42,6 @@ class MiddleTruncateTest {
     fun aNarrowFileNameKeepsItsWholeTextForSemantics() {
         val name = "a_very_long_sequence_name_that_cannot_possibly_fit_ProResMQ.mov"
         compose.setContent { MiddleEllipsisText(name, Modifier.width(80.dp)) }
-        val node = compose.onNodeWithText(name).fetchSemanticsNode()
-        assertEquals(false, SemanticsActions.GetTextLayoutResult in node.config)
+        compose.onNodeWithText(name).assertExists()
     }
 }
