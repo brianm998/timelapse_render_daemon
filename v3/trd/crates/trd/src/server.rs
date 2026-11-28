@@ -114,6 +114,8 @@ pub struct Shared {
     pub thumbs: Thumbnailer,
     pub tools: SharedTools,
     pub config: Mutex<ConfigSlot>,
+    /// Serialises `SetConfigPath`, so the server and the engine end on the same path.
+    pub config_switch: tokio::sync::Mutex<()>,
     pub server_id: String,
     pub server_name: String,
     pub sandbox: bool,
@@ -1807,26 +1809,30 @@ impl TrdService for Server {
             let text = CoreConfig::default().to_json_pretty();
             core_config::write_atomic(&path, text.as_bytes()).map_err(internal)?;
         }
+        let _switch = self.shared.config_switch.lock().await;
         self.shared
             .store
             .set_config_path(&request.path)
             .map_err(internal)?;
-        let state = {
+        let (state, codecs) = {
             let mut slot = self.shared.lock_config();
             let explicit = slot.explicit_codecs.clone();
-            *slot = ConfigSlot::open(path, PathSource::Setting, explicit);
+            *slot = ConfigSlot::open(path.clone(), PathSource::Setting, explicit);
             slot.reload();
             self.shared.log(
                 LogLevel::Info,
                 "config",
-                &format!(
-                    "config path set to {}; the running engine uses it after a restart",
-                    request.path
-                ),
+                &format!("config path set to {}", request.path),
                 &LogFields::default(),
             );
-            config_state(&slot, now_ms())
+            (config_state(&slot, now_ms()), slot.codec_table())
         };
+        let history = crate::daemon::history_path_from_config(&path);
+        self.shared
+            .handle
+            .set_config_path(path, codecs, history)
+            .await
+            .map_err(|_| shutting_down())?;
         Ok(Response::new(state))
     }
 

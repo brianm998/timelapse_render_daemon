@@ -1334,3 +1334,227 @@ async fn foreign_render_left_alone() {
         tokio::time::sleep(POLL).await;
     }
 }
+
+// ---- Switching the config path while the engine runs (spec 1 §6.1) ----
+
+/// Writes a config of the fixture's kind at `path`, with `edit` applied.
+fn write_config_at(w: &World, path: &Path, edit: impl FnOnce(&mut Config)) {
+    fs::write(path, w.base_config(edit).to_json_pretty()).expect("a config file");
+}
+
+/// The path of a second config file, next to the first.
+fn second_config(w: &World) -> PathBuf {
+    w.paths.config.with_file_name("config-second.json")
+}
+
+#[tokio::test]
+async fn switch_scans_the_new_folders() {
+    let mut w = World::new(Opts::default());
+    // S1 renders (held); Qb is complete and queued behind it.
+    w.add_raw("S1", 5);
+    w.set_export("S1", 5);
+    w.drive(|s| card(s, "LRT_S1").is_some_and(|c| c.stage == Stage::Rendering))
+        .await;
+    w.add_raw("Qb", 5);
+    w.set_export("Qb", 5);
+    w.drive(|s| card(s, "LRT_Qb").is_some_and(|c| c.stage == Stage::Queued))
+        .await;
+    assert_eq!(w.jobs(JobStatus::Running).len(), 1);
+    assert_eq!(w.jobs(JobStatus::Queued).len(), 1);
+
+    // The second config looks at other folders, where N exists.
+    let source_other = w.paths.source.with_file_name("source-other");
+    let raw = source_other.join("N");
+    fs::create_dir_all(&raw).expect("the other source");
+    for index in 1..=5 {
+        fs::write(raw.join(format!("raw_{index:04}.tif")), b"x").expect("a raw frame");
+    }
+    let export_n = w.paths.export_other.join(format!("{PREFIX}N"));
+    fs::create_dir_all(&export_n).expect("the other export");
+    for index in 1..=2 {
+        fs::write(export_n.join(format!("{PREFIX}{index:04}.tif")), b"x").expect("a frame");
+    }
+    let path = second_config(&w);
+    write_config_at(&w, &path, |c| {
+        c.export_paths = vec![w.paths.export_other.to_string_lossy().into_owned()];
+        c.source_paths = vec![source_other.to_string_lossy().into_owned()];
+    });
+
+    w.engine()
+        .set_config_path(path.clone(), codecs::builtin(), None);
+    w.tick().await;
+    let snap = w.snap();
+    assert_eq!(snap.config_path, path.to_string_lossy());
+    assert!(card(&snap, "LRT_N").is_some(), "the new sequence appears");
+    assert!(card(&snap, "LRT_Qb").is_none(), "the old sequence is gone");
+    assert!(w.jobs(JobStatus::Queued).is_empty(), "its queued job went");
+    assert_eq!(
+        w.jobs(JobStatus::Running).len(),
+        1,
+        "the render that was running is not stopped"
+    );
+    // Let S1's fake ffmpeg finish, so it does not outlive the test.
+    fs::write(&w.paths.release_render, b"").expect("the render release");
+}
+
+#[tokio::test]
+async fn switch_to_a_missing_or_invalid_file_gives_no_config() {
+    let mut w = World::new(Opts::default());
+    w.add_raw("S1", 5);
+    w.set_export("S1", 3);
+    w.drive(|s| card(s, "LRT_S1").is_some()).await;
+    assert_ne!(w.snap().phase, Phase::NoConfig);
+
+    // A missing file.
+    let missing = w.paths.config.with_file_name("nothing-here.json");
+    w.engine()
+        .set_config_path(missing.clone(), codecs::builtin(), None);
+    w.tick().await;
+    let snap = w.snap();
+    assert_eq!(snap.phase, Phase::NoConfig);
+    assert!(snap.in_progress.is_empty(), "the old config is not used");
+    let found = problem(&snap, "config").expect("the config problem");
+    assert_eq!(found.kind, "PROBLEM_CONFIG_MISSING");
+    assert_eq!(found.paths, vec![missing.to_string_lossy().into_owned()]);
+
+    // A file that does not parse.
+    let invalid = second_config(&w);
+    fs::write(&invalid, b"{ not json").expect("an invalid file");
+    w.engine()
+        .set_config_path(invalid.clone(), codecs::builtin(), None);
+    w.tick().await;
+    let snap = w.snap();
+    assert_eq!(snap.phase, Phase::NoConfig);
+    assert!(snap.in_progress.is_empty());
+    let found = problem(&snap, "config").expect("the config problem");
+    assert_eq!(found.kind, "PROBLEM_CONFIG_INVALID");
+    assert_eq!(found.paths, vec![invalid.to_string_lossy().into_owned()]);
+}
+
+#[tokio::test]
+async fn setting_the_current_path_keeps_the_last_good_config() {
+    let mut w = World::new(Opts::default());
+    w.add_raw("S1", 5);
+    w.set_export("S1", 3);
+    w.drive(|s| card(s, "LRT_S1").is_some()).await;
+
+    fs::write(&w.paths.config, b"{ broken").expect("a broken file");
+    let path = w.paths.config.clone();
+    w.engine().set_config_path(path, codecs::builtin(), None);
+    w.tick().await;
+    let snap = w.snap();
+    assert_ne!(snap.phase, Phase::NoConfig, "the last good config is kept");
+    assert!(card(&snap, "LRT_S1").is_some());
+    let found = problem(&snap, "config").expect("the broken file is reported");
+    assert_eq!(found.kind, "PROBLEM_CONFIG_INVALID");
+}
+
+#[tokio::test]
+async fn switch_uses_the_codec_table_passed_with_it() {
+    let mut w = World::new(Opts::default());
+    w.tick().await;
+    let mut table = codecs::builtin();
+    let extra = table["ProResUHQ"].clone();
+    table.insert("ExtraCodec".to_owned(), extra);
+
+    let path = second_config(&w);
+    write_config_at(&w, &path, |c| {
+        c.rendering = vec![RenderType {
+            codec: "ExtraCodec".to_owned(),
+            frame_rate: 25,
+            resolution: Some(vec![1280, 720]),
+        }];
+    });
+    w.add_raw("S1", 5);
+    w.set_export("S1", 3);
+    w.engine().set_config_path(path, table, None);
+    w.tick().await;
+    let snap = w.snap();
+    assert!(
+        problem(&snap, "codec:ExtraCodec").is_none(),
+        "no unknown-codec problem: {:?}",
+        snap.problems
+    );
+    let sequence = card(&snap, "LRT_S1").expect("the sequence");
+    assert!(
+        sequence
+            .variants
+            .iter()
+            .all(|v| v.status != VariantStatus::UnknownCodec),
+        "the codec is a known variant"
+    );
+    assert_eq!(sequence.variants.len(), 1);
+}
+
+#[tokio::test]
+async fn first_config_imports_its_history_once() {
+    let mut w = World::new(Opts {
+        config: false,
+        ..Opts::default()
+    });
+    w.tick().await;
+    assert_eq!(w.snap().phase, Phase::NoConfig);
+    assert!(!w.reader.swift_history_imported().expect("the setting"));
+
+    let history = w.paths.config.with_file_name("history.json");
+    fs::write(&history, b"[]").expect("a history file");
+    let path = second_config(&w);
+    write_config_at(&w, &path, |_| {});
+    w.engine()
+        .set_config_path(path, codecs::builtin(), Some(history));
+    w.tick().await;
+    assert_ne!(w.snap().phase, Phase::NoConfig);
+    assert!(
+        w.reader.swift_history_imported().expect("the setting"),
+        "the chosen config's history is imported at the first loaded tick"
+    );
+}
+
+#[tokio::test]
+async fn later_switch_does_not_import_history() {
+    let mut w = World::new(Opts::default());
+    w.tick().await;
+    let history = w.paths.config.with_file_name("history.json");
+    fs::write(&history, b"[]").expect("a history file");
+    let path = second_config(&w);
+    write_config_at(&w, &path, |_| {});
+    w.engine()
+        .set_config_path(path, codecs::builtin(), Some(history));
+    w.tick().await;
+    assert!(
+        !w.reader.swift_history_imported().expect("the setting"),
+        "start-up work does not run a second time"
+    );
+}
+
+#[tokio::test]
+async fn switch_loads_the_new_backups_and_drops_the_old() {
+    let mut w = World::new(Opts::default());
+    let root = w.paths.config.parent().expect("the root").to_path_buf();
+    let (old, new) = (root.join("backup-old"), root.join("backup-new"));
+    for (dir, name) in [(&old, "B1"), (&new, "B2")] {
+        fs::create_dir_all(dir).expect("a backup folder");
+        fs::write(
+            dir.join(format!("{name}.json")),
+            br#"{"number_source_images":5}"#,
+        )
+        .expect("a backup sidecar");
+    }
+    w.set_export("B1", 5);
+    w.set_export("B2", 5);
+    let old_text = old.to_string_lossy().into_owned();
+    w.write_config(|c| c.backup_paths = vec![old_text]);
+    w.drive(|s| card(s, "LRT_B1").is_some_and(|c| c.raw_from_backup))
+        .await;
+
+    let path = second_config(&w);
+    let new_text = new.to_string_lossy().into_owned();
+    write_config_at(&w, &path, |c| c.backup_paths = vec![new_text]);
+    w.engine().set_config_path(path, codecs::builtin(), None);
+    w.drive(|s| card(s, "LRT_B2").is_some_and(|c| c.raw_from_backup))
+        .await;
+    assert!(
+        card(&w.snap(), "LRT_B1").is_none_or(|c| !c.raw_from_backup),
+        "the old config's backup candidates are gone"
+    );
+}
