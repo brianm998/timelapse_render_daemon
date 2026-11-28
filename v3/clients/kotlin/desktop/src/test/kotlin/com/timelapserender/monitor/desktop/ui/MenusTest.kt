@@ -58,7 +58,9 @@ class MenusTest {
         assertFalse(item(connected.copy(activeServerId = "other"), MenuAction.LOG_FOLDER).enabled)
         assertTrue(item(connected, MenuAction.CONFIG).enabled)
         assertFalse(item(offline, MenuAction.CONFIG).enabled)
-        for (later in listOf(MenuAction.PAIR_PHONE, MenuAction.LOG, MenuAction.PREFERENCES)) {
+        assertTrue(item(connected, MenuAction.LOG).enabled)
+        assertFalse(item(offline, MenuAction.LOG).enabled)
+        for (later in listOf(MenuAction.PAIR_PHONE, MenuAction.PREFERENCES)) {
             assertFalse(item(connected, later).enabled)
         }
     }
@@ -83,6 +85,8 @@ class MenusTest {
             perform(MenuAction.START_TRD)
             perform(MenuAction.LOG_FOLDER)
             perform(MenuAction.RELEASES)
+            perform(MenuAction.LOG)
+            assertEquals(listOf("local"), h.app.logs.value.map { it.server.serverId })
             // id, launchctl, the log folder and the releases page.
             h.awaitTrue {
                 h.local.callCount("SetGlobalPause") == 1 && h.local.callCount("RescanNow") == 1 &&

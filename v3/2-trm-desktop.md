@@ -296,6 +296,15 @@ conflict shows "The config changed on the server" with **Reload**.
 Overview §6.5: a `LazyColumn` (newest first, the same scroll rules), a level picker (Debug, Info,
 Warning, Error; default Info), search, Copy selected lines.
 
+- **View ▸ Log…** (enabled while connected) opens the active server's window, or brings the one it
+  has to the front. A window has its own connection, so it stays live when the main window switches
+  servers; **Forget** closes it, and pairing again moves it to a connection with the new token.
+- A new level, a new search and a reconnect put the list at the top. Reaching the end of the list
+  loads the next older page; **Load older entries** there asks again after a failure.
+- A click selects or deselects a line, a Shift-click selects the lines from the one clicked before
+  it. **Copy selected lines** copies the selected lines the search shows, in list order, one per
+  line: time, level, subject and message.
+
 ### 6.7 Devices and first-run setup (loopback only)
 
 - **Pair a phone…**: the overview §6.7 dialog: the code in 48 pt digits grouped `123 456`, the

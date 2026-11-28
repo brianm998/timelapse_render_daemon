@@ -37,6 +37,7 @@ import com.timelapserender.monitor.desktop.platform.SystemCommandRunner
 import com.timelapserender.monitor.desktop.platform.TrdService
 import com.timelapserender.monitor.desktop.platform.WindowGeometry
 import com.timelapserender.monitor.desktop.ui.AppMenuBar
+import com.timelapserender.monitor.desktop.ui.LogWindow
 import com.timelapserender.monitor.desktop.ui.MainWindow
 import com.timelapserender.monitor.desktop.ui.config.ConfigWindowContent
 import com.timelapserender.monitor.desktop.ui.config.isSaveShortcut
@@ -203,5 +204,24 @@ fun main(args: Array<String>) {
         for (config in configWindows) {
             key(config) { ConfigWindow(config, mac) }
         }
+        val logs by app.logs.collectAsState()
+        for (log in logs) {
+            key(log) { LogFrame(log) { app.closeLog(log.server.serverId) } }
+        }
+    }
+}
+
+/** The window of one server's log; a new focus request brings it to the front. */
+@Composable
+private fun LogFrame(log: AppState.LogSession, onClose: () -> Unit) {
+    val state = rememberWindowState(size = DpSize(MIN_WINDOW_WIDTH.dp, MIN_WINDOW_HEIGHT.dp))
+    Window(onCloseRequest = onClose, state = state, title = log.title) {
+        val focus by log.focusRequests.collectAsState()
+        LaunchedEffect(focus) {
+            state.isMinimized = false
+            window.toFront()
+            window.requestFocus()
+        }
+        LogWindow(log.model, log.scroll)
     }
 }
