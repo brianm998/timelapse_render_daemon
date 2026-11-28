@@ -23,17 +23,25 @@ import com.timelapserender.monitor.core.state.ActivityFilter
 import com.timelapserender.monitor.core.state.ActivityPresenter
 import com.timelapserender.monitor.core.state.ActivityUi
 import com.timelapserender.monitor.core.state.Commands
+import com.timelapserender.monitor.core.state.DevicesModel
 import com.timelapserender.monitor.core.state.EventWatcher
 import com.timelapserender.monitor.core.state.LogModel
 import com.timelapserender.monitor.core.state.ScrollKeeper
 import com.timelapserender.monitor.core.state.SnapshotRepository
 import com.timelapserender.monitor.desktop.platform.DesktopSettings
+import com.timelapserender.monitor.desktop.platform.HostOs
 import com.timelapserender.monitor.desktop.platform.TrdService
 import com.timelapserender.monitor.desktop.platform.WindowGeometry
+import com.timelapserender.monitor.desktop.ui.BAD_FINGERPRINT
+import com.timelapserender.monitor.desktop.ui.FirstRunController
 import com.timelapserender.monitor.desktop.ui.LogScroll
 import com.timelapserender.monitor.desktop.ui.TrayStatus
 import com.timelapserender.monitor.desktop.ui.config.ConfigController
+import com.timelapserender.monitor.desktop.ui.normalizeFingerprint
+import com.timelapserender.monitor.desktop.ui.probeFingerprint
 import com.timelapserender.trd.v1.DevicePlatform
+import com.timelapserender.trd.v1.Phase
+import com.timelapserender.trd.v1.ProblemKind
 import com.timelapserender.trd.v1.Snapshot
 import io.grpc.ManagedChannel
 import kotlinx.coroutines.CancellationException
@@ -89,6 +97,12 @@ sealed interface AppDialog {
     data object Servers : AppDialog
 
     data class Pair(val server: RegisteredServer, val busy: Boolean = false, val error: String? = null) : AppDialog
+
+    /** "Add a server…": pairing with an address and a fingerprint typed in. */
+    data class PairByAddress(val busy: Boolean = false, val error: String? = null) : AppDialog
+
+    /** "Pair a phone…" and the paired devices; loopback only. */
+    class Devices internal constructor(val model: DevicesModel, internal val scope: CoroutineScope) : AppDialog
 
     data object About : AppDialog
 }
@@ -152,6 +166,12 @@ data class AppUi(
     val trayStatus: TrayStatus = TrayStatus.IDLE,
     val preferencesOpen: Boolean = false,
     val preferences: PreferencesUi = PreferencesUi(),
+    /** The phase of the latest snapshot. */
+    val phase: Phase = Phase.PHASE_UNSPECIFIED,
+    /** The latest snapshot of a `trd` on this Mac says it lacks Full Disk Access. */
+    val fullDiskAccessMissing: Boolean = false,
+    /** The open first-run setup. */
+    val setup: FirstRunController? = null,
 ) {
     val activeServer: RegisteredServer? get() = servers.firstOrNull { it.serverId == activeServerId }
 
@@ -234,6 +254,10 @@ class AppState(
     private val traySupported: Boolean = false,
     /** The wait before the event stream is asked for again. */
     private val eventDelayer: suspend (Long) -> Unit = { delay(it) },
+    /** Reads the fingerprint, starting with the given digits, of a hand-entered server. */
+    private val fingerprintProbe: suspend (String, Int, String) -> String = ::probeFingerprint,
+    /** The file chooser of first-run setup; null when cancelled. */
+    private val configChooser: () -> String? = { null },
 ) : AutoCloseable {
     /** The connection to one server and the models over it. */
     class Session internal constructor(
@@ -292,6 +316,9 @@ class AppState(
         ),
     )
     private var pairing: Job? = null
+
+    /** First-run setup was closed for this connection, so it does not come back by itself. */
+    private var setupDismissed = false
     private val _configWindows = MutableStateFlow(emptyList<ConfigWindowHandle>())
 
     /** Set while a quit waits for the answers about unsaved config changes. */
@@ -366,6 +393,8 @@ class AppState(
             session?.close()
             resetList()
             registry.select(server.serverId)
+            // The devices and the setup belonged to the old connection.
+            setupDismissed = false
 
             val sessionScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext.job))
             val client = clientFactory(server, sessionScope)
@@ -386,6 +415,10 @@ class AppState(
                     exportPaths = exportPaths(null, it.filter.exportPath),
                     lastScanText = AppUi.NOT_SCANNED,
                     notice = null,
+                    phase = Phase.PHASE_UNSPECIFIED,
+                    fullDiskAccessMissing = false,
+                    setup = null,
+                    dialog = it.dialog.takeUnless { dialog -> dialog is AppDialog.Devices },
                 )
             }
             // Unconfined, so that no connection state is conflated away before a reconnect is seen.
@@ -419,6 +452,8 @@ class AppState(
                                     trayStatus = trayStatus(up, repo.snapshot),
                                     exportPaths = exportPaths(repo.snapshot, it.filter.exportPath),
                                     lastScanText = lastScanText(repo.snapshot),
+                                    phase = repo.snapshot?.phase ?: Phase.PHASE_UNSPECIFIED,
+                                    fullDiskAccessMissing = diskAccessMissing(repo.snapshot),
                                     // A start failure is stale once the local server answers.
                                     start = if (up && server.serverId == LOCAL_SERVER_ID &&
                                         it.start is StartState.Failed
@@ -429,12 +464,92 @@ class AppState(
                                     },
                                 )
                             }
+                            updateLocalViews()
                         }
                     }
             }
             sessionScope.launch { watchEvents(client, repository) }
             client.start()
             repository.start()
+        }
+    }
+
+    private fun diskAccessMissing(snapshot: Snapshot?): Boolean = service.os == HostOs.MAC &&
+        snapshot?.problemsList?.any { it.kind == ProblemKind.PROBLEM_FULL_DISK_ACCESS_MISSING } == true
+
+    /**
+     * The devices dialog and first-run setup exist over loopback only. Setup also appears by itself
+     * while the local `trd` has no config. Called with [lock] held.
+     */
+    private fun updateLocalViews() {
+        val now = _ui.value
+        if (!now.loopback) {
+            if (now.dialog is AppDialog.Devices) showDialog(null)
+            if (now.setup != null) _ui.update { it.copy(setup = null) }
+            return
+        }
+        if (now.setup == null && !setupDismissed && now.phase == Phase.PHASE_NO_CONFIG) openSetup()
+        _ui.value.setup?.observeDiskAccess(now.fullDiskAccessMissing)
+    }
+
+    /** Called with [lock] held. */
+    private fun openSetup() {
+        val current = session ?: return
+        val controller = FirstRunController(
+            current.client,
+            current.scope,
+            defaultPath = { service.defaultConfigPath().toString() },
+            onChosen = { showChosenConfig(current) },
+        )
+        _ui.update { it.copy(setup = controller) }
+    }
+
+    /** Setup goes on in the Config window, which shows the file just chosen. */
+    private fun showChosenConfig(chosenIn: Session) {
+        synchronized(lock) {
+            if (session !== chosenIn) return
+            val open = _configWindows.value.firstOrNull { it.serverId == chosenIn.server.serverId }
+            if (open != null && !open.controller.dirty) open.controller.reload()
+            openConfig()
+        }
+    }
+
+    /** "How to fix" of the Full Disk Access problem: setup at its second step. */
+    fun openFullDiskAccessHelp() {
+        synchronized(lock) {
+            val now = _ui.value
+            if (!now.loopback || !now.fullDiskAccessMissing) return
+            if (now.setup == null) openSetup()
+            _ui.value.setup?.observeDiskAccess(true)
+        }
+    }
+
+    fun dismissSetup() {
+        synchronized(lock) {
+            setupDismissed = true
+            _ui.update { it.copy(setup = null) }
+        }
+    }
+
+    /** "Use an existing config.json…": asks for the file, then hands it to `trd`. */
+    fun chooseExistingConfig() {
+        val setup = _ui.value.setup ?: return
+        val path = configChooser() ?: return
+        setup.useExisting(path)
+    }
+
+    fun openPrivacySettings() = localAction { service.openPrivacySettings().error }
+
+    fun showTrdInFinder() = localAction { service.showTrdInFinder().error }
+
+    /** "Pair a phone…"; does nothing unless connected over loopback. */
+    fun showDevices() {
+        synchronized(lock) {
+            val current = session ?: return
+            if (!_ui.value.loopback || _ui.value.dialog is AppDialog.Devices) return
+            val dialogScope =
+                CoroutineScope(current.scope.coroutineContext + SupervisorJob(current.scope.coroutineContext.job))
+            showDialog(AppDialog.Devices(DevicesModel(current.client, dialogScope, clock, zone), dialogScope))
         }
     }
 
@@ -732,11 +847,15 @@ class AppState(
     private fun showDialog(dialog: AppDialog?) {
         synchronized(lock) {
             pairing?.cancel()
+            (_ui.value.dialog as? AppDialog.Devices)?.scope?.cancel()
             _ui.update { it.copy(dialog = dialog) }
         }
     }
 
     fun dismissDialog() = showDialog(null)
+
+    /** "Add a server…": pairing with one the network does not announce. */
+    fun showAddServer() = showDialog(AppDialog.PairByAddress())
 
     /** Pairs with the dialog's server using [code], stores the record and connects to it. */
     fun submitPairing(code: String) {
@@ -744,10 +863,41 @@ class AppState(
         if (dialog.busy) return
         val digits = code.filterNot { it.isWhitespace() }
         if (digits.isEmpty()) return
-        _ui.update { it.copy(dialog = dialog.copy(busy = true, error = null)) }
+        pair(digits, dialog.copy(busy = true, error = null), { dialog.copy(error = it) }) {
+            dialog.server.endpoint
+        }
+    }
+
+    /**
+     * Pairs with the server at [host]:[port] whose fingerprint starts with [fingerprint]: its whole
+     * fingerprint is read from it first and pinned.
+     */
+    fun submitPairingByAddress(host: String, port: Int, fingerprint: String, code: String) {
+        val dialog = _ui.value.dialog as? AppDialog.PairByAddress ?: return
+        if (dialog.busy) return
+        val address = host.trim().removePrefix("[").removeSuffix("]")
+        val digits = code.filterNot { it.isWhitespace() }
+        if (address.isEmpty() || port !in 1..65535 || digits.isEmpty()) return
+        val prefix = normalizeFingerprint(fingerprint)
+        if (prefix == null) {
+            _ui.update { it.copy(dialog = dialog.copy(error = BAD_FINGERPRINT)) }
+            return
+        }
+        pair(digits, AppDialog.PairByAddress(busy = true), { AppDialog.PairByAddress(error = it) }) {
+            ServerEndpoint(address, port, TlsMode.Pinned(fingerprintProbe(address, port, prefix)))
+        }
+    }
+
+    private fun pair(
+        code: String,
+        busy: AppDialog,
+        failed: (String) -> AppDialog,
+        endpoint: suspend () -> ServerEndpoint,
+    ) {
+        _ui.update { it.copy(dialog = busy) }
         pairing = scope.launch {
             try {
-                val record = pairer(dialog.server.endpoint, digits, withContext(io) { deviceName() })
+                val record = pairer(endpoint(), code, withContext(io) { deviceName() })
                 synchronized(lock) {
                     // Dismissing takes the same lock, so a dismissed pairing stores nothing.
                     ensureActive()
@@ -765,7 +915,7 @@ class AppState(
                 val message = (e as? PairingException)?.message ?: e.message ?: PairingClient.CONNECTION_FAILED
                 synchronized(lock) {
                     ensureActive()
-                    _ui.update { it.copy(dialog = dialog.copy(busy = false, error = message)) }
+                    _ui.update { it.copy(dialog = failed(message)) }
                 }
             }
         }

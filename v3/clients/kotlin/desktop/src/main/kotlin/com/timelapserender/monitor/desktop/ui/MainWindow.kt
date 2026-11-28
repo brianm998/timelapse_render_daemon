@@ -68,6 +68,9 @@ fun MainWindow(app: AppState) {
                     ) { Text(notice) }
                 }
                 AppDialogs(ui, app)
+                // Setup waits while another dialog is open.
+                val setup = ui.setup
+                if (setup != null && ui.dialog == null) FirstRunSetup(ui, setup, app)
             }
         }
     }
@@ -117,6 +120,10 @@ private fun ActivityPlaceholder(ui: AppUi, app: AppState, modifier: Modifier) {
         verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        if (ui.loopback && ui.fullDiskAccessMissing) {
+            Text("Full Disk Access is needed")
+            Button(onClick = app::openFullDiskAccessHelp) { Text("How to fix") }
+        }
         if (ui.connection is ConnectionState.NeedsPairing) {
             Text("This computer is not paired with the server.")
             Button(onClick = { app.openPairing(ui.activeServerId) }) { Text("Pair…") }
