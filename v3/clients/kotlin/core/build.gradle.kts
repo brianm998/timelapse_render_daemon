@@ -39,6 +39,15 @@ dependencies {
     testImplementation(libs.grpc.testing)
 }
 
+// The contract tests (spec 2 §5.7) run a trd binary and read environment variables, neither of which
+// Gradle tracks: with TRM_E2E=1 the tests always run, never from an earlier run or the build cache.
+tasks.test {
+    if (providers.environmentVariable("TRM_E2E").orNull == "1") {
+        outputs.upToDateWhen { false }
+        outputs.cacheIf { false }
+    }
+}
+
 kover {
     reports {
         filters {

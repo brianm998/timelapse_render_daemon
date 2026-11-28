@@ -203,12 +203,15 @@ The `:core` contract tests (package `com.timelapserender.monitor.core.contract`,
   (`NeedsPairing`); `EventWatcher` receiving `EVENT_SEQUENCE_FINISHED` and `EVENT_RENDER_FAILED`;
   `ThumbnailCache` fetching a real thumbnail; `DirectoryBrowserModel` listing the sandbox; and
   `LogModel` paging.
-- `scripts/contract-test.sh`: when `TRM_TRD_BIN` is unset it builds `trd` and the fake tools
-  (`cargo build -p trd --locked --manifest-path v3/trd/Cargo.toml`, `bash
-  v3/trd/scripts/fake-tools-dir.sh <tmp>`), sets the variables, and runs
+- `scripts/contract-test.sh`: when `TRM_TRD_BIN` is unset it builds `trd` (`cargo build -p trd
+  --locked` in `v3/trd`, so that its `rust-toolchain.toml` applies), and when
+  `TRM_FAKE_TOOLS_DIR` is unset the fake tools (`bash v3/trd/scripts/fake-tools-dir.sh <tmp>`);
+  it sets the variables, runs
   `./gradlew --no-daemon :core:test --tests 'com.timelapserender.monitor.core.contract.*'` with
-  `TRM_E2E=1`. It is safe on the owner's Mac (temporary directories, port 0, LAN on `127.0.0.1`,
-  no mDNS) and is what the gate's `contract` job runs on Linux.
+  `TRM_E2E=1`, and fails unless every contract class reports tests that all ran and passed
+  (with `TRM_E2E=1` the test task is never up to date nor taken from the build cache). It is
+  safe on the owner's Mac (temporary directories, port 0, LAN on `127.0.0.1`, no mDNS) and is
+  what the gate's `contract` job runs on Linux.
 
 ## 6. The desktop app
 
