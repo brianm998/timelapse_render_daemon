@@ -90,6 +90,8 @@ class TopBarTest {
     fun thePauseSwitchCallsTheServer() {
         val h = show()
         compose.onNodeWithTag(TopBarTags.PAUSE).performClick()
+        awaitText(DONT_ASK_AGAIN)
+        compose.onNodeWithTag(CONFIRM_BUTTON_TAG).performClick()
         compose.waitUntil(Harness.TIMEOUT_MS) { h.local.callCount("SetGlobalPause") == 1 }
     }
 

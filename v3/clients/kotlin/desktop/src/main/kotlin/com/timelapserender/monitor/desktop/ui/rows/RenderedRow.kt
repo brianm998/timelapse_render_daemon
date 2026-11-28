@@ -38,6 +38,10 @@ import com.timelapserender.monitor.core.net.ConnectionState
 import com.timelapserender.monitor.core.net.TrdClient
 import com.timelapserender.monitor.core.state.RenderedRowUi
 import com.timelapserender.monitor.core.state.ThumbnailCache
+import com.timelapserender.monitor.desktop.ui.ActionButtons
+import com.timelapserender.monitor.desktop.ui.RowAction
+import com.timelapserender.monitor.desktop.ui.onDoubleClick
+import com.timelapserender.monitor.desktop.ui.videoActions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -98,12 +102,17 @@ fun RenderedRow(
     connected: Boolean,
     selected: Boolean,
     onSelect: () -> Unit,
+    loopback: Boolean,
+    onAction: (RowAction) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val actions = videoActions(loopback, video.fileExists)
     Surface(
         color = rowColor(selected),
         shape = MaterialTheme.shapes.medium,
-        modifier = modifier.fillMaxWidth().selectable(selected, onClick = onSelect),
+        // A double click opens the video wherever Open is offered (spec 2 §6.3).
+        modifier = modifier.fillMaxWidth().selectable(selected, onClick = onSelect)
+            .onDoubleClick { if (RowAction.OPEN in actions) onAction(RowAction.OPEN) },
     ) {
         Row(Modifier.padding(8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Poster(video, posters, connected)
@@ -126,6 +135,7 @@ fun RenderedRow(
                 }
                 SecondaryText(video.exportPath)
                 video.missingText?.let { SecondaryText(it) }
+                ActionButtons(actions, onAction)
             }
         }
     }

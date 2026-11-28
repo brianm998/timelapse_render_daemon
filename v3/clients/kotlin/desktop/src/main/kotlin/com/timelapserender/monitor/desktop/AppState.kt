@@ -23,14 +23,23 @@ import com.timelapserender.monitor.core.state.ActivityFilter
 import com.timelapserender.monitor.core.state.ActivityPresenter
 import com.timelapserender.monitor.core.state.ActivityUi
 import com.timelapserender.monitor.core.state.Commands
+import com.timelapserender.monitor.core.state.DetailsModel
+import com.timelapserender.monitor.core.state.DetailsTarget
 import com.timelapserender.monitor.core.state.EventWatcher
 import com.timelapserender.monitor.core.state.LogModel
 import com.timelapserender.monitor.core.state.ScrollKeeper
 import com.timelapserender.monitor.core.state.SnapshotRepository
+import com.timelapserender.monitor.desktop.platform.ActionResult
 import com.timelapserender.monitor.desktop.platform.DesktopSettings
+import com.timelapserender.monitor.desktop.platform.FileOpener
 import com.timelapserender.monitor.desktop.platform.TrdService
 import com.timelapserender.monitor.desktop.platform.WindowGeometry
+import com.timelapserender.monitor.desktop.ui.ActionTarget
+import com.timelapserender.monitor.desktop.ui.Confirmation
+import com.timelapserender.monitor.desktop.ui.DetailsSelection
 import com.timelapserender.monitor.desktop.ui.LogScroll
+import com.timelapserender.monitor.desktop.ui.RowAction
+import com.timelapserender.monitor.desktop.ui.copyToClipboard
 import com.timelapserender.monitor.desktop.ui.rows.PosterLoader
 import com.timelapserender.monitor.desktop.ui.rows.ThumbnailPosters
 import com.timelapserender.monitor.desktop.ui.TrayStatus
@@ -94,7 +103,13 @@ sealed interface AppDialog {
     data class Pair(val server: RegisteredServer, val busy: Boolean = false, val error: String? = null) : AppDialog
 
     data object About : AppDialog
+
+    /** A control waiting to be confirmed. */
+    data class Confirm(val confirmation: Confirmation) : AppDialog
 }
+
+/** One `GetRenderDetails` request and the circumstances it was made in. */
+private data class DetailsRequest(val target: DetailsTarget, val version: Long, val connected: Boolean)
 
 /** An open Config window and the server it edits. */
 class ConfigWindowHandle internal constructor(
@@ -150,6 +165,8 @@ data class AppUi(
     val searchFocusRequests: Int = 0,
     /** The Activity row the user selected, by its list key; null with nothing selected. */
     val selectedKey: String? = null,
+    /** The selected item as the Details pane shows it; null when it is no longer listed. */
+    val selection: DetailsSelection? = null,
     /** False while the app is only in the tray. */
     val windowVisible: Boolean = true,
     /** Counts the requests to bring the window to the front. */
@@ -241,6 +258,10 @@ class AppState(
     private val traySupported: Boolean = false,
     /** The wait before the event stream is asked for again. */
     private val eventDelayer: suspend (Long) -> Unit = { delay(it) },
+    /** Opens and reveals rendered videos. */
+    private val opener: FileOpener,
+    /** Puts text on the clipboard. */
+    private val copier: (String) -> Unit = { copyToClipboard(it) },
 ) : AutoCloseable {
     /** The connection to one server and the models over it. */
     class Session internal constructor(
@@ -250,6 +271,7 @@ class AppState(
         val presenter: ActivityPresenter,
         val commands: Commands,
         val posters: PosterLoader,
+        val details: DetailsModel,
         internal val scope: CoroutineScope,
     ) {
         internal fun close() {
@@ -300,6 +322,9 @@ class AppState(
         ),
     )
     private var pairing: Job? = null
+
+    /** What the details of the selection were last asked for. */
+    private var detailsRequest: DetailsRequest? = null
     private val _configWindows = MutableStateFlow(emptyList<ConfigWindowHandle>())
 
     /** Set while a quit waits for the answers about unsaved config changes. */
@@ -382,8 +407,10 @@ class AppState(
                 repository, filter, client, sessionScope, clock, zone, serverName = server.name,
             )
             val posters = posterCacheDir?.let { ThumbnailPosters(client, it) } ?: PosterLoader { null }
-            val next = Session(server, client, repository, presenter, Commands(client), posters, sessionScope)
+            val details = DetailsModel(client, sessionScope)
+            val next = Session(server, client, repository, presenter, Commands(client), posters, details, sessionScope)
             session = next
+            detailsRequest = null
             _ui.update {
                 it.copy(
                     servers = registry.servers.value,
@@ -396,6 +423,9 @@ class AppState(
                     lastScanText = AppUi.NOT_SCANNED,
                     notice = null,
                     selectedKey = null,
+                    selection = null,
+                    // A confirmation was about the server that is being left.
+                    dialog = it.dialog.takeUnless { dialog -> dialog is AppDialog.Confirm },
                 )
             }
             // Unconfined, so that no connection state is conflated away before a reconnect is seen.
@@ -439,6 +469,7 @@ class AppState(
                                     },
                                 )
                             }
+                            refreshSelection()
                         }
                     }
             }
@@ -607,7 +638,139 @@ class AppState(
     }
 
     /** A single click on an Activity row (spec 2 §6.3). */
-    fun select(key: String) = _ui.update { it.copy(selectedKey = key) }
+    fun select(key: String) {
+        synchronized(lock) {
+            _ui.update { it.copy(selectedKey = key) }
+            refreshSelection()
+        }
+    }
+
+    /**
+     * Finds the selected item in the last snapshot and loads its render details when the item, its
+     * status or the connection calls for it. Called with [lock] held.
+     */
+    private fun refreshSelection() {
+        val current = session ?: return
+        val repo = current.repository.state.value
+        val selection = _ui.value.selectedKey?.let { selectionOf(it, repo.snapshot, current.presenter) }
+        val target = selection?.target
+        if (target != null) {
+            val connected = repo.connection is ConnectionState.Connected
+            val request = DetailsRequest(target, detailsVersion(selection), connected)
+            val last = detailsRequest
+            // Without a connection only another item is asked for, so that what is shown stays.
+            if (request != last && (connected || target != last?.target)) {
+                current.details.load(target)
+                detailsRequest = request
+            } else if (!connected) {
+                detailsRequest = last?.copy(connected = false)
+            }
+        }
+        // After the load, so that the pane never pairs this item with another one's details.
+        _ui.update { it.copy(selection = selection) }
+    }
+
+    private fun selectionOf(key: String, snapshot: Snapshot?, presenter: ActivityPresenter): DetailsSelection? {
+        val kind = key.substringBefore(':')
+        val id = key.substringAfter(':')
+        return when (kind) {
+            "card" -> snapshot?.inProgressList?.firstOrNull { it.id == id }?.let { DetailsSelection.Sequence(key, it) }
+            "variant" -> snapshot?.inProgressList?.firstNotNullOfOrNull { card ->
+                card.variantsList.firstOrNull { "${card.id}/${it.variantKey}" == id }
+                    ?.let { DetailsSelection.Variant(key, card, it) }
+            }
+            "failure" -> snapshot?.failuresList?.firstOrNull { it.id == id }?.let { DetailsSelection.Failure(key, it) }
+            "video" -> presenter.renderedVideo(id)?.let { DetailsSelection.Video(key, it) }
+            else -> null
+        }
+    }
+
+    /** What changes when the details of an unchanged target are worth asking for again. */
+    private fun detailsVersion(selection: DetailsSelection): Long = when (selection) {
+        is DetailsSelection.Variant -> selection.variant.statusValue.toLong()
+        is DetailsSelection.Failure -> selection.failure.lastSeenMs
+        else -> 0
+    }
+
+    fun refreshDetails() {
+        session?.details?.reload()
+    }
+
+    /** A time of the Details pane, in the format of every other one. */
+    fun formatTime(ms: Long): String = Format.absoluteTime(ms, clock(), zone)
+
+    /** A control of a row or of the Details pane (spec 2 §6.4). */
+    fun perform(action: RowAction, target: ActionTarget) {
+        when (action) {
+            RowAction.DETAILS -> {
+                select(target.key)
+                if (!_ui.value.detailsVisible) toggleDetails()
+            }
+            RowAction.PAUSE_SEQUENCE ->
+                (target as? ActionTarget.Sequence)?.let { t -> command { it.pauseSequence(t.sequenceName) } }
+            RowAction.RESUME_SEQUENCE ->
+                (target as? ActionTarget.Sequence)?.let { t -> command { it.resumeSequence(t.sequenceName) } }
+            RowAction.SUSPEND ->
+                (target as? ActionTarget.Variant)?.let { t -> command { it.suspendRender(t.renderId) } }
+            RowAction.RESUME_RENDER ->
+                (target as? ActionTarget.Variant)?.let { t -> command { it.resumeRender(t.renderId) } }
+            RowAction.STOP -> (target as? ActionTarget.Variant)?.let { stopRender(it.renderId) }
+            RowAction.PAUSE_VARIANT ->
+                (target as? ActionTarget.Variant)?.let { t -> command { it.pauseVariant(t.sequenceName, t.variantKey) } }
+            RowAction.RESUME_VARIANT ->
+                (target as? ActionTarget.Variant)?.let { t -> command { it.resumeVariant(t.sequenceName, t.variantKey) } }
+            RowAction.RETRY -> when (target) {
+                is ActionTarget.Variant -> command { it.retryVariant(target.sequenceName, target.variantKey) }
+                is ActionTarget.Failure -> command { it.retryVariant(target.sequenceName, target.variantKey) }
+                else -> Unit
+            }
+            RowAction.DISMISS ->
+                (target as? ActionTarget.Failure)?.let { t -> command { it.dismissFailure(t.failureId) } }
+            RowAction.OPEN -> (target as? ActionTarget.Video)?.let { t -> fileAction { opener.open(t.outputPath) } }
+            RowAction.REVEAL -> (target as? ActionTarget.Video)?.let { t -> fileAction { opener.reveal(t.outputPath) } }
+            RowAction.COPY_PATH -> (target as? ActionTarget.Video)?.let { copy(it.outputPath) }
+        }
+    }
+
+    /** Open and Reveal act on this computer's files, so only for its own `trd`. */
+    private fun fileAction(block: () -> ActionResult) {
+        if (_ui.value.loopback) localAction { block().error }
+    }
+
+    fun copy(text: String) {
+        try {
+            copier(text)
+        } catch (e: Exception) {
+            _ui.update { it.copy(notice = "Could not copy: ${e.message ?: e}") }
+        }
+    }
+
+    private fun stopRender(renderId: String) {
+        if (preferences.skipStopConfirmation) {
+            command { it.stopRender(renderId) }
+        } else {
+            showDialog(AppDialog.Confirm(Confirmation.StopRender(renderId)))
+        }
+    }
+
+    /** The confirmation dialog's answer; [dontAskAgain] is its checkbox. */
+    fun confirm(dontAskAgain: Boolean) {
+        val confirmation = synchronized(lock) {
+            val dialog = _ui.value.dialog as? AppDialog.Confirm ?: return
+            _ui.update { it.copy(dialog = null) }
+            dialog.confirmation
+        }
+        when (confirmation) {
+            is Confirmation.StopRender -> {
+                if (dontAskAgain) changePreferences { skipStopConfirmation = true }
+                command { it.stopRender(confirmation.renderId) }
+            }
+            Confirmation.PauseAll -> {
+                if (dontAskAgain) changePreferences { skipPauseAllConfirmation = true }
+                command { it.setGlobalPause(true) }
+            }
+        }
+    }
 
     /**
      * Opens the Config window of the active server, or brings it to the front. It has its own
@@ -670,7 +833,15 @@ class AppState(
         _ui.update { it.copy(detailsVisible = visible) }
     }
 
-    fun setGlobalPause(paused: Boolean) = command { it.setGlobalPause(paused) }
+    /** The switch, the menu and the tray. Pausing is confirmed in the main window, which is opened for it. */
+    fun setGlobalPause(paused: Boolean) {
+        if (paused && !preferences.skipPauseAllConfirmation) {
+            openWindow()
+            showDialog(AppDialog.Confirm(Confirmation.PauseAll))
+        } else {
+            command { it.setGlobalPause(paused) }
+        }
+    }
 
     fun rescanNow() = command { it.rescanNow() }
 

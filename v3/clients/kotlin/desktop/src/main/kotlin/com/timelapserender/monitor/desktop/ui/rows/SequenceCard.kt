@@ -6,6 +6,7 @@ package com.timelapserender.monitor.desktop.ui.rows
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -25,11 +26,22 @@ import androidx.compose.ui.unit.dp
 import com.timelapserender.monitor.core.state.ChipRole
 import com.timelapserender.monitor.core.state.SequenceCardUi
 import com.timelapserender.monitor.core.state.VariantRowUi
+import com.timelapserender.monitor.desktop.ui.ActionMenu
+import com.timelapserender.monitor.desktop.ui.IconActionButtons
+import com.timelapserender.monitor.desktop.ui.RowAction
+import com.timelapserender.monitor.desktop.ui.sequenceActions
+import com.timelapserender.monitor.desktop.ui.variantActions
 import com.timelapserender.trd.v1.VariantStatus
 
 /** The head of an in-progress card (overview §6.1, lines 1–3). Its variants are rows of their own. */
 @Composable
-fun SequenceCardRow(card: SequenceCardUi, selected: Boolean, onSelect: () -> Unit, modifier: Modifier = Modifier) {
+fun SequenceCardRow(
+    card: SequenceCardUi,
+    selected: Boolean,
+    onSelect: () -> Unit,
+    onAction: (RowAction) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Surface(
         color = rowColor(selected),
         shape = MaterialTheme.shapes.medium,
@@ -45,6 +57,8 @@ fun SequenceCardRow(card: SequenceCardUi, selected: Boolean, onSelect: () -> Uni
                 )
                 Chip(card.stageText, card.stageRole)
                 if (card.paused) Chip("paused", ChipRole.Warning)
+                Spacer(Modifier.weight(1f))
+                ActionMenu(sequenceActions(card.paused), onAction)
             }
             LinearProgressIndicator(progress = { card.progress }, modifier = Modifier.fillMaxWidth())
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -60,7 +74,13 @@ fun SequenceCardRow(card: SequenceCardUi, selected: Boolean, onSelect: () -> Uni
 
 /** One variant of a complete sequence: status icon, label, progress or result. */
 @Composable
-fun VariantRowView(variant: VariantRowUi, selected: Boolean, onSelect: () -> Unit, modifier: Modifier = Modifier) {
+fun VariantRowView(
+    variant: VariantRowUi,
+    selected: Boolean,
+    onSelect: () -> Unit,
+    onAction: (RowAction) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Surface(
         color = rowColor(selected),
         shape = MaterialTheme.shapes.small,
@@ -77,6 +97,7 @@ fun VariantRowView(variant: VariantRowUi, selected: Boolean, onSelect: () -> Uni
                 Text(variant.label, Modifier.weight(1f))
                 variantStatusLabel(variant)
                 variant.sizeText?.let { Text(it) }
+                IconActionButtons(variantActions(variant.status), onAction)
             }
             val progress = variant.progress
             if (progress != null) {

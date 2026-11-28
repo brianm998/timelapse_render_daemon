@@ -110,10 +110,10 @@ class TrdService(
         if (os == HostOs.MAC) {
             val id = runner.run(listOf("/usr/bin/id", "-u"))
             uid = id.output.trim()
-            if (id.exitCode != 0 || uid.toLongOrNull() == null) return failure(id)
+            if (id.exitCode != 0 || uid.toLongOrNull() == null) return commandFailure(id)
         }
         val result = runner.run(startCommand(uid))
-        return if (result.exitCode == 0) ActionResult() else failure(result)
+        return if (result.exitCode == 0) ActionResult() else commandFailure(result)
     }
 
     /** Where `trd` writes its log (overview §4). */
@@ -137,14 +137,8 @@ class TrdService(
             HostOs.LINUX -> "xdg-open"
             HostOs.WINDOWS -> "explorer.exe"
         }
-        val result = runner.runOpener(listOf(program, target))
-        // explorer.exe exits with 1 even when it opened the target.
-        val ok = result.exitCode == 0 || (os == HostOs.WINDOWS && result.exitCode == 1)
-        return if (ok) ActionResult() else failure(result)
+        return openerResult(os, runner.runOpener(listOf(program, target)))
     }
-
-    private fun failure(result: CommandResult) =
-        ActionResult(result.output.trim().ifEmpty { "The command failed with exit code ${result.exitCode}." })
 
     companion object {
         const val LAUNCHD_LABEL = "com.timelapserender.trd"

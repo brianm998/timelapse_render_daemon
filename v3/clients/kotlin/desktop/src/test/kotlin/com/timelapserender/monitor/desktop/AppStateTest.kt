@@ -379,6 +379,7 @@ class AppStateTest {
         h.app.start()
         h.awaitConnectedTo("Fake trd")
         h.app.setGlobalPause(true)
+        h.app.confirm(false)
         h.app.rescanNow()
         h.awaitTrue { h.local.callCount("SetGlobalPause") == 1 && h.local.callCount("RescanNow") == 1 }
         h.local.failWith["RescanNow"] = Status.FAILED_PRECONDITION.withDescription("no config")

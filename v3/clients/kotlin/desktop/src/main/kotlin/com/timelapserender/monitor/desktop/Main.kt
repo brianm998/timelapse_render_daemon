@@ -33,6 +33,7 @@ import com.timelapserender.monitor.core.net.TlsMode
 import com.timelapserender.monitor.core.servers.JsonFileServerStore
 import com.timelapserender.monitor.core.servers.ServerRegistry
 import com.timelapserender.monitor.core.servers.defaultDataDir
+import com.timelapserender.monitor.desktop.platform.FileOpener
 import com.timelapserender.monitor.desktop.platform.HostOs
 import com.timelapserender.monitor.desktop.platform.PreferencesSettings
 import com.timelapserender.monitor.desktop.platform.SystemCommandRunner
@@ -156,6 +157,7 @@ private fun createAppState(options: Options, notify: (Notification) -> Unit, tra
         discovery = JmdnsDiscovery(),
         settings = PreferencesSettings(node),
         service = TrdService(HostOs.current, SystemCommandRunner(), home),
+        opener = FileOpener(HostOs.current, SystemCommandRunner()),
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Swing),
         localOverride = options.server != null,
         deviceName = { runCatching { InetAddress.getLocalHost().hostName }.getOrDefault("Desktop") },

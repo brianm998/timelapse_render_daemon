@@ -265,11 +265,21 @@ The `:core` contract tests (package `com.timelapserender.monitor.core.contract`,
   Details. Rendered rows: Open and Reveal (loopback and `file_exists` only), Copy path, Details.
 - Stop asks for confirmation ("Stop this render? ffmpeg is stopped, the partial file deleted and
   the variant paused.") with a "Don't ask again" checkbox stored in preferences; Pause all
-  rendering asks the first time only, with the same checkbox.
+  rendering asks the first time only, with the same checkbox. That checkbox therefore starts
+  ticked (Stop's starts clear); cancelling remembers nothing, resuming is never asked about, and a
+  pause chosen in the tray opens the window to ask.
+- "Otherwise" is every status but QUEUED, RUNNING and SUSPENDED: a PAUSED variant has Resume
+  variant, the others Pause variant. Variant buttons are icons named by their tooltips.
+- A double click on a rendered row opens it where Open is offered; the first click still selects at
+  once.
 - Open / Reveal: macOS `open <path>` / `open -R <path>`; Linux `xdg-open <path>` /
   `xdg-open <directory>`; Windows `explorer.exe <path>` / `explorer.exe /select,<path>`.
 - A failed command shows a snackbar with the message.
 - Details pane content: overview §6.3, with Copy buttons for the command line and the report.
+  The selected item follows the snapshot; once it is no longer listed the pane shows the last scan.
+  A failure and a rendered video also show what `GetRenderDetails` returns for them. The details are
+  asked for again when a variant's status or a failure's last occurrence changes, after a
+  reconnect, and with **Refresh**.
 
 ### 6.5 Config window
 

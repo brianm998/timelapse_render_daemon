@@ -184,6 +184,9 @@ class ActivityPresenter(
     private var lastSnapshotVideos: List<RenderedVideo> = emptyList()
     private var pushedOut: List<RenderedVideo> = emptyList()
 
+    @Volatile
+    private var listedVideos: List<RenderedVideo> = emptyList()
+
     private val older = MutableStateFlow(Older())
     private val historyDays = MutableStateFlow<Int?>(null)
     private var knownName = serverName
@@ -213,6 +216,9 @@ class ActivityPresenter(
             }
         }
     }
+
+    /** The whole video behind a recently rendered row, whether from the snapshot or an older page. */
+    fun renderedVideo(id: String): RenderedVideo? = listedVideos.firstOrNull { it.id == id }
 
     /** Pages `ListRenderedVideos` by `before_id` (the oldest row shown). */
     fun loadOlder() {
@@ -262,6 +268,7 @@ class ActivityPresenter(
         }
         lastSnapshotVideos = s.recentlyRenderedList
         val combined = (s.recentlyRenderedList + pushedOut + o.videos.filter { it.id !in snapshotIds }).distinctBy { it.id }
+        listedVideos = combined
         val recent = combined.filter { matches(f, it.exportPath, listOf(it.sequenceName, it.outputFilename)) }.map { videoRow(it, now) }
         val more = o.more ?: (s.recentlyRenderedTotal.toLong() > combined.size)
         return ActivityUi(

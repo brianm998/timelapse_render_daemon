@@ -39,6 +39,7 @@ fun AppDialogs(ui: AppUi, app: AppState) {
         null -> Unit
         AppDialog.Servers -> ServersDialog(ui, app)
         is AppDialog.Pair -> PairDialog(dialog, app)
+        is AppDialog.Confirm -> ConfirmDialog(dialog.confirmation, app::confirm, app::dismissDialog)
         AppDialog.About -> AlertDialog(
             onDismissRequest = app::dismissDialog,
             title = { Text(WINDOW_TITLE) },
